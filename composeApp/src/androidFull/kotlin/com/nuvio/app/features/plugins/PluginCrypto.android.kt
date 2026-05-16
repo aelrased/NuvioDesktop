@@ -171,11 +171,11 @@ internal fun pluginUtf8ToHex(value: String): String =
         byte.toUByte().toString(16).padStart(2, '0')
     }
 
-internal fun pluginHexToUtf8(hex: String): String {
+internal fun pluginHexToByteArray(hex: String): ByteArray {
     val normalized = hex.trim().lowercase()
         .replace(" ", "")
         .removePrefix("0x")
-    if (normalized.isEmpty()) return ""
+    if (normalized.isEmpty()) return ByteArray(0)
 
     val evenHex = if (normalized.length % 2 == 0) normalized else "0$normalized"
     val out = ByteArray(evenHex.length / 2)
@@ -183,5 +183,9 @@ internal fun pluginHexToUtf8(hex: String): String {
         val part = evenHex.substring(index * 2, index * 2 + 2)
         out[index] = part.toInt(16).toByte()
     }
-    return out.decodeToString()
+    return out
+}
+
+internal fun pluginHexToUtf8(hex: String): String {
+    return pluginHexToByteArray(hex).decodeToString()
 }

@@ -5,8 +5,8 @@ import com.nuvio.app.features.plugins.runtime.host.HostModule
 
 /**
  * Lightweight WASM Helpers bridge.
- * For now, this is a placeholder for running small WASM modules.
- * In the future, this could integrate a lightweight WASM interpreter like Chasm or wasm-interp.js.
+ * TODO: In the future, this will integrate a lightweight WASM interpreter like Chasm or wasm-interp.js
+ * to support advanced extraction logic (e.g. FlixCloud).
  */
 internal class WasmBridge : HostModule {
     override fun register(runtime: QuickJs) {

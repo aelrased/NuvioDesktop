@@ -8,6 +8,7 @@ import com.nuvio.app.features.plugins.runtime.host.HostFunctions
 import com.nuvio.app.features.plugins.runtime.js.JsBindings
 import com.nuvio.app.features.plugins.runtime.js.JsRuntime
 import com.nuvio.app.features.plugins.runtime.network.FetchBridge
+import com.nuvio.app.features.plugins.runtime.network.UrlBridge
 import com.nuvio.app.features.plugins.runtime.wasm.WasmBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -65,6 +66,7 @@ internal object PluginRuntime {
         val hostRegistry = HostApiRegistry().apply {
             addModule(HostFunctions(scraperId) { resultJson = it })
             addModule(FetchBridge())
+            addModule(UrlBridge())
             addModule(CryptoBridge())
             addModule(WasmBridge())
             addModule(domBridge)
