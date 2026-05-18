@@ -99,7 +99,7 @@ internal object PluginRuntime {
                     """.trimIndent()
                     
                     var captureResult: String? = null
-                    jsRuntime.function("__capture_settings_result") { args: Array<Any?> ->
+                    function("__capture_settings_result") { args: Array<Any?> ->
                         captureResult = args.getOrNull(0)?.toString()
                         null
                     }
