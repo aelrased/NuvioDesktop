@@ -83,21 +83,28 @@ internal object PluginRuntime {
                     val callCode = """
                         (async function() {
                             try {
-                                var onSettings = module.exports.onSettings || globalThis.onSettings;
-                                if (onSettings) {
+                                var onSettings = (typeof module !== 'undefined' && module.exports && module.exports.onSettings) || globalThis.onSettings;
+                                if (typeof onSettings === 'function') {
                                     var layout = await onSettings();
-                                    globalThis.__settings_layout_result = JSON.stringify(layout || []);
+                                    __capture_settings_result(JSON.stringify(layout || []));
                                 } else {
-                                    globalThis.__settings_layout_result = null;
+                                    __capture_settings_result("[]");
                                 }
                             } catch (e) {
                                 console.error("onSettings error:", e);
-                                globalThis.__settings_layout_result = null;
+                                __capture_settings_result("[]");
                             }
                         })();
                     """.trimIndent()
+                    
+                    var captureResult: String? = null
+                    jsRuntime.function("__capture_settings_result") { args ->
+                        captureResult = args.getOrNull(0)?.toString()
+                        null
+                    }
+                    
                     evaluate<Any?>(callCode)
-                    resultJson = evaluate<String?>("globalThis.__settings_layout_result")
+                    resultJson = captureResult
                 }
                 resultJson
             } catch (e: Exception) {
