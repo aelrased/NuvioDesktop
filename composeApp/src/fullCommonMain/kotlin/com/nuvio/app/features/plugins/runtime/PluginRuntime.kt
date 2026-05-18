@@ -178,9 +178,9 @@ internal object PluginRuntime {
                 """.trimIndent()
                 evaluate<Any?>(callCode)
                 
-                val resultJson = deferred.await()
-                return parseJsonResults(resultJson)
+                deferred.await()
             }
+            return parseJsonResults(resultJson)
         } finally {
             domBridge.clear()
         }
