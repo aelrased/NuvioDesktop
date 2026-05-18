@@ -35,8 +35,12 @@ internal object PluginRuntime {
         season: Int?,
         episode: Int?,
         scraperId: String,
-        scraperSettings: Map<String, Any> = emptyMap(),
     ): List<PluginRuntimeResult> = withContext(Dispatchers.Default) {
+        val scraperSettingsJson = PluginStorage.loadScraperSettings(scraperId) ?: "{}"
+        val scraperSettingsMap = runCatching {
+            json.decodeFromString<Map<String, JsonElement>>(scraperSettingsJson)
+        }.getOrElse { emptyMap() }
+
         withTimeout(PLUGIN_TIMEOUT_MS) {
             executePluginInternal(
                 code = code,
@@ -45,8 +49,59 @@ internal object PluginRuntime {
                 season = season,
                 episode = episode,
                 scraperId = scraperId,
-                scraperSettings = scraperSettings,
+                scraperSettings = scraperSettingsMap,
             )
+        }
+    }
+
+    suspend fun getPluginSettingsLayout(
+        code: String,
+        scraperId: String,
+    ): String? = withContext(Dispatchers.Default) {
+        withTimeout(PLUGIN_TIMEOUT_MS) {
+            val jsRuntime = JsRuntime()
+            var resultJson: String? = null
+
+            try {
+                jsRuntime.use {
+                    val polyfillCode = JsBindings.buildPolyfillCode(
+                        scraperIdJson = JsonPrimitive(scraperId).toString(),
+                        settingsJson = "{}"
+                    )
+                    evaluate<Any?>(polyfillCode)
+
+                    val wrappedCode = """
+                        var module = { exports: {} };
+                        var exports = module.exports;
+                        (function() {
+                            $code
+                        })();
+                    """.trimIndent()
+                    evaluate<Any?>(wrappedCode)
+
+                    val callCode = """
+                        (async function() {
+                            try {
+                                var onSettings = module.exports.onSettings || globalThis.onSettings;
+                                if (onSettings) {
+                                    var layout = await onSettings();
+                                    globalThis.__settings_layout_result = JSON.stringify(layout || []);
+                                } else {
+                                    globalThis.__settings_layout_result = null;
+                                }
+                            } catch (e) {
+                                console.error("onSettings error:", e);
+                                globalThis.__settings_layout_result = null;
+                            }
+                        })();
+                    """.trimIndent()
+                    evaluate<Any?>(callCode)
+                    resultJson = evaluate<String?>("globalThis.__settings_layout_result")
+                }
+                resultJson
+            } catch (e: Exception) {
+                null
+            }
         }
     }
 
@@ -57,7 +112,7 @@ internal object PluginRuntime {
         season: Int?,
         episode: Int?,
         scraperId: String,
-        scraperSettings: Map<String, Any>,
+        scraperSettings: Map<String, JsonElement>,
     ): List<PluginRuntimeResult> {
         val jsRuntime = JsRuntime()
         var resultJson = "[]"
@@ -76,7 +131,7 @@ internal object PluginRuntime {
             jsRuntime.use {
                 hostRegistry.registerAll(this)
 
-                val settingsJson = toJsonElement(scraperSettings).toString()
+                val settingsJson = JsonObject(scraperSettings).toString()
                 val polyfillCode = JsBindings.buildPolyfillCode(
                     scraperIdJson = JsonPrimitive(scraperId).toString(),
                     settingsJson = settingsJson,

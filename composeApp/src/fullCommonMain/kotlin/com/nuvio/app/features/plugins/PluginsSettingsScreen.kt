@@ -12,8 +12,10 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -62,6 +64,9 @@ fun PluginsSettingsPageContent(
 
     var testingScraperId by remember { mutableStateOf<String?>(null) }
     val testResults = remember { mutableStateMapOf<String, List<PluginRuntimeResult>>() }
+
+    var configuringScraper by remember { mutableStateOf<PluginScraper?>(null) }
+    var configuringLayout by remember { mutableStateOf<String?>(null) }
 
     val sortedRepos = remember(uiState.repositories) {
         uiState.repositories.sortedBy { it.name.lowercase() }
@@ -350,11 +355,30 @@ fun PluginsSettingsPageContent(
                                 )
                             }
                         }
-                        Switch(
-                            checked = scraper.enabled,
-                            onCheckedChange = { PluginRepository.toggleScraper(scraper.id, it) },
-                            enabled = scraper.manifestEnabled,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (scraper.hasSettings) {
+                                IconButton(onClick = {
+                                    coroutineScope.launch {
+                                        val layout = PluginRuntime.getPluginSettingsLayout(scraper.code, scraper.id)
+                                        if (layout != null) {
+                                            configuringScraper = scraper
+                                            configuringLayout = layout
+                                        }
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Settings,
+                                        contentDescription = "Provider settings",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = scraper.enabled,
+                                onCheckedChange = { PluginRepository.toggleScraper(scraper.id, it) },
+                                enabled = scraper.manifestEnabled,
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -438,6 +462,18 @@ fun PluginsSettingsPageContent(
                 }
             }
         }
+    }
+
+    if (configuringScraper != null && configuringLayout != null) {
+        PluginSettingsDialog(
+            scraperId = configuringScraper!!.id,
+            scraperName = configuringScraper!!.name,
+            layoutJson = configuringLayout!!,
+            onDismiss = {
+                configuringScraper = null
+                configuringLayout = null
+            }
+        )
     }
 }
 
