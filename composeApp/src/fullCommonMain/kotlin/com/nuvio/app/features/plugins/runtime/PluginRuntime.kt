@@ -8,6 +8,7 @@ import com.nuvio.app.features.plugins.runtime.host.HostApiRegistry
 import com.nuvio.app.features.plugins.runtime.host.HostFunctions
 import com.nuvio.app.features.plugins.runtime.js.JsBindings
 import com.nuvio.app.features.plugins.runtime.js.JsRuntime
+import com.dokar.quickjs.binding.function
 import com.nuvio.app.features.plugins.runtime.network.FetchBridge
 import com.nuvio.app.features.plugins.runtime.network.UrlBridge
 import com.nuvio.app.features.plugins.runtime.wasm.WasmBridge
@@ -98,7 +99,7 @@ internal object PluginRuntime {
                     """.trimIndent()
                     
                     var captureResult: String? = null
-                    jsRuntime.function("__capture_settings_result") { args ->
+                    jsRuntime.function("__capture_settings_result") { args: Array<Any?> ->
                         captureResult = args.getOrNull(0)?.toString()
                         null
                     }
