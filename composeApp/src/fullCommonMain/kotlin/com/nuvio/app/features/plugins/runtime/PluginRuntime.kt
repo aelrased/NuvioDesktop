@@ -77,7 +77,10 @@ internal object PluginRuntime {
                 hostRegistry.registerAll(this)
 
                 val settingsJson = toJsonElement(scraperSettings).toString()
-                val polyfillCode = JsBindings.buildPolyfillCode(scraperId, settingsJson)
+                val polyfillCode = JsBindings.buildPolyfillCode(
+                    scraperIdJson = JsonPrimitive(scraperId).toString(),
+                    settingsJson = settingsJson,
+                )
                 evaluate<Any?>(polyfillCode)
 
                 val wrappedCode = """
@@ -89,6 +92,8 @@ internal object PluginRuntime {
                 """.trimIndent()
                 evaluate<Any?>(wrappedCode)
 
+                val tmdbIdArg = JsonPrimitive(tmdbId).toString()
+                val mediaTypeArg = JsonPrimitive(mediaType).toString()
                 val seasonArg = season?.toString() ?: "undefined"
                 val episodeArg = episode?.toString() ?: "undefined"
                 val callCode = """
@@ -100,7 +105,7 @@ internal object PluginRuntime {
                                 __capture_result(JSON.stringify([]));
                                 return;
                             }
-                            var result = await getStreams("$tmdbId", "$mediaType", $seasonArg, $episodeArg);
+                            var result = await getStreams($tmdbIdArg, $mediaTypeArg, $seasonArg, $episodeArg);
                             __capture_result(JSON.stringify(result || []));
                         } catch (e) {
                             console.error("getStreams error:", e && e.message ? e.message : e, e && e.stack ? e.stack : "");

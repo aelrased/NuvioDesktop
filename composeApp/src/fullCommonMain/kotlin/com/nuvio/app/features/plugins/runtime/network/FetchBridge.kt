@@ -12,7 +12,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
-private const val MAX_FETCH_BODY_CHARS = 256 * 1024
 private const val MAX_FETCH_HEADER_VALUE_CHARS = 8 * 1024
 private const val FETCH_TRUNCATION_SUFFIX = "\n...[truncated]"
 
@@ -67,16 +66,15 @@ internal class FetchBridge : HostModule {
             )
         }
 
-        val responseHeaders = response.headers.mapValues { (_, value) ->
-            truncateString(value, MAX_FETCH_HEADER_VALUE_CHARS)
-        }
+        val responseHeaders = response.headers.mapKeys { (key, _) -> key.lowercase() }
+            .mapValues { (_, value) -> truncateString(value, MAX_FETCH_HEADER_VALUE_CHARS) }
         val result = JsonObject(
             mapOf(
                 "ok" to JsonPrimitive(response.status in 200..299),
                 "status" to JsonPrimitive(response.status),
                 "statusText" to JsonPrimitive(response.statusText),
                 "url" to JsonPrimitive(response.url),
-                "body" to JsonPrimitive(truncateString(response.body, MAX_FETCH_BODY_CHARS)),
+                "body" to JsonPrimitive(response.body),
                 "headers" to JsonObject(responseHeaders.mapValues { JsonPrimitive(it.value) }),
             ),
         )

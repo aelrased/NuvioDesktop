@@ -1,9 +1,9 @@
 package com.nuvio.app.features.plugins.runtime.js
 
 internal object JsBindings {
-    fun buildPolyfillCode(scraperId: String, settingsJson: String): String {
+    fun buildPolyfillCode(scraperIdJson: String, settingsJson: String): String {
         return """
-            globalThis.SCRAPER_ID = "$scraperId";
+            globalThis.SCRAPER_ID = $scraperIdJson;
             globalThis.SCRAPER_SETTINGS = $settingsJson;
             if (typeof globalThis.global === 'undefined') globalThis.global = globalThis;
             if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
@@ -24,10 +24,27 @@ internal object JsBindings {
     }
 
     private fun fetchPolyfill() = """
+        function __normalize_fetch_headers(headers) {
+            var out = {};
+            if (!headers) return out;
+            if (typeof headers.forEach === 'function') {
+                headers.forEach(function(value, key) { out[key] = String(value); });
+                return out;
+            }
+            if (Array.isArray(headers)) {
+                headers.forEach(function(pair) {
+                    if (pair && pair.length >= 2) out[pair[0]] = String(pair[1]);
+                });
+                return out;
+            }
+            Object.keys(headers).forEach(function(key) { out[key] = String(headers[key]); });
+            return out;
+        }
+
         var fetch = async function(url, options) {
             options = options || {};
             var method = (options.method || 'GET').toUpperCase();
-            var headers = options.headers || {};
+            var headers = __normalize_fetch_headers(options.headers);
             var body = options.body || '';
             var followRedirects = options.redirect !== 'manual';
             var result = __native_fetch(url, method, JSON.stringify(headers), body, followRedirects);
@@ -223,6 +240,41 @@ internal object JsBindings {
             return hex;
         }
 
+        function __bytesToHex(bytes) {
+            bytes = __toUint8Array(bytes);
+            var hex = '';
+            for (var i = 0; i < bytes.length; i++) {
+                var part = bytes[i].toString(16);
+                if (part.length < 2) part = '0' + part;
+                hex += part;
+            }
+            return hex;
+        }
+
+        function __hexToBytes(hex) {
+            var normalizedHex = (hex || '').toLowerCase();
+            if (normalizedHex.length % 2 !== 0) normalizedHex = '0' + normalizedHex;
+            var bytes = new Uint8Array(normalizedHex.length / 2);
+            for (var i = 0; i < normalizedHex.length; i += 2) {
+                bytes[i / 2] = parseInt(normalizedHex.substring(i, i + 2), 16) || 0;
+            }
+            return bytes;
+        }
+
+        function __binaryStringToBytes(value) {
+            var text = value == null ? '' : String(value);
+            var bytes = new Uint8Array(text.length);
+            for (var i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+            return bytes;
+        }
+
+        function __bytesToBinaryString(bytes) {
+            bytes = __toUint8Array(bytes);
+            var out = '';
+            for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+            return out;
+        }
+
         function __wordArrayToHex(value) {
             if (!value) return '';
             if (typeof value.__hex === 'string') return value.__hex.toLowerCase();
@@ -243,7 +295,7 @@ internal object JsBindings {
                 toString: function(encoder) {
                     if (!encoder || encoder === CryptoJS.enc.Hex) return this.__hex;
                     if (encoder === CryptoJS.enc.Utf8) return this.__utf8;
-                    if (encoder === CryptoJS.enc.Base64) return typeof __crypto_base64_encode !== 'undefined' ? __crypto_base64_encode(this.__utf8) : '';
+                    if (encoder === CryptoJS.enc.Base64) return btoa(__bytesToBinaryString(__hexToBytes(this.__hex)));
                     return this.__hex;
                 },
                 clamp: function() { return this; },
@@ -266,8 +318,11 @@ internal object JsBindings {
             return __buildWordArray(hex, utf8);
         }
         function __wordArrayFromBase64(base64) {
-            var utf8 = typeof __crypto_base64_decode !== 'undefined' ? __crypto_base64_decode(base64 || '') : '';
-            return __wordArrayFromUtf8(utf8);
+            return __buildWordArray(__bytesToHex(__binaryStringToBytes(atob(base64 || ''))), undefined);
+        }
+
+        function __wordArrayToBytes(value) {
+            return __hexToBytes(__wordArrayToHex(value));
         }
 
         function __normalizeWordArrayInput(value) {
@@ -278,6 +333,13 @@ internal object JsBindings {
             }
             if (value == null) return '';
             return String(value);
+        }
+
+        function __toUint8Array(data) {
+            if (data instanceof Uint8Array) return data;
+            if (data instanceof ArrayBuffer) return new Uint8Array(data);
+            if (data && typeof data.length === 'number') return new Uint8Array(Array.prototype.slice.call(data));
+            return new Uint8Array(0);
         }
 
         function __bufferToUint8(data) {
@@ -302,31 +364,36 @@ internal object JsBindings {
             SHA256: function(m) { return __wordArrayFromHex(__crypto_digest_hex('SHA256', __normalizeWordArrayInput(m))); },
             SHA512: function(m) { return __wordArrayFromHex(__crypto_digest_hex('SHA512', __normalizeWordArrayInput(m))); },
             PBKDF2: function(pass, salt, options) {
+                options = options || {};
                 var pBytes = __bufferToUint8(__normalizeWordArrayInput(pass));
                 var sBytes = __bufferToUint8(__normalizeWordArrayInput(salt));
                 var iter = options.iterations || 1000;
                 var kSize = options.keySize || (256/32);
                 var algo = options.hasher === CryptoJS.algo.SHA256 ? 'SHA256' : 'SHA1';
                 var resBytes = typeof __crypto_pbkdf2_raw !== 'undefined' ? __crypto_pbkdf2_raw(pBytes, sBytes, iter, kSize * 32, algo) : new Uint8Array(0);
-                return __wordArrayFromHex(__wordsToHex(Array.from(resBytes), resBytes.length));
+                return __wordArrayFromHex(__bytesToHex(resBytes));
             },
             AES: {
                 encrypt: function(message, key, options) {
+                    options = options || {};
                     var data = __bufferToUint8(__normalizeWordArrayInput(message));
-                    var kBytes = __bufferToUint8(__wordArrayToHex(key));
-                    var ivBytes = __bufferToUint8(__wordArrayToHex(options.iv || ''));
+                    var kBytes = __wordArrayToBytes(key);
+                    var ivBytes = __wordArrayToBytes(options.iv || '');
                     var mode = options.mode || 'AES-CBC';
                     var resBytes = typeof __crypto_aes_encrypt_raw !== 'undefined' ? __crypto_aes_encrypt_raw(mode, kBytes, ivBytes, data) : new Uint8Array(0);
-                    var wa = __wordArrayFromHex(__wordsToHex(Array.from(resBytes), resBytes.length));
+                    var wa = __wordArrayFromHex(__bytesToHex(resBytes));
                     return {
                         ciphertext: wa,
                         toString: function() { return wa.toString(CryptoJS.enc.Base64); }
                     };
                 },
                 decrypt: function(cipher, key, options) {
-                    var data = typeof cipher === 'string' ? __bufferToUint8(typeof __crypto_base64_decode !== 'undefined' ? __crypto_base64_decode(cipher) : '') : (cipher.ciphertext ? __bufferToUint8(typeof __crypto_base64_decode !== 'undefined' ? __crypto_base64_decode(cipher.ciphertext.toString(CryptoJS.enc.Base64)) : '') : __bufferToUint8(cipher));
-                    var kBytes = __bufferToUint8(__wordArrayToHex(key));
-                    var ivBytes = __bufferToUint8(__wordArrayToHex(options.iv || ''));
+                    options = options || {};
+                    var data = typeof cipher === 'string'
+                        ? __binaryStringToBytes(atob(cipher))
+                        : (cipher.ciphertext ? __wordArrayToBytes(cipher.ciphertext) : __bufferToUint8(cipher));
+                    var kBytes = __wordArrayToBytes(key);
+                    var ivBytes = __wordArrayToBytes(options.iv || '');
                     var mode = options.mode || 'AES-CBC';
                     var resBytes = typeof __crypto_aes_decrypt_raw !== 'undefined' ? __crypto_aes_decrypt_raw(mode, kBytes, ivBytes, data) : new Uint8Array(0);
                     var plain = new TextDecoder().decode(resBytes);
@@ -341,35 +408,35 @@ internal object JsBindings {
                 digest: async function(algo, data) {
                     var bytes = __bufferToUint8(data);
                     var res = typeof __crypto_digest_raw !== 'undefined' ? __crypto_digest_raw(algo.name || algo, bytes) : new Uint8Array(0);
-                    return res.buffer;
+                    return __toUint8Array(res).buffer;
                 },
                 importKey: async function(fmt, data, algo, ext, use) { return { _raw: data, _algo: algo }; },
                 deriveBits: async function(params, key, len) {
                     var pBytes = __bufferToUint8(key._raw);
                     var sBytes = __bufferToUint8(params.salt);
                     var res = typeof __crypto_pbkdf2_raw !== 'undefined' ? __crypto_pbkdf2_raw(pBytes, sBytes, params.iterations, len, params.hash) : new Uint8Array(0);
-                    return res.buffer;
+                    return __toUint8Array(res).buffer;
                 },
                 encrypt: async function(params, key, data) {
                     var kBytes = __bufferToUint8(key._raw);
                     var ivBytes = __bufferToUint8(params.iv || '');
                     var dBytes = __bufferToUint8(data);
                     var res = typeof __crypto_aes_encrypt_raw !== 'undefined' ? __crypto_aes_encrypt_raw(params.name, kBytes, ivBytes, dBytes) : new Uint8Array(0);
-                    return res.buffer;
+                    return __toUint8Array(res).buffer;
                 },
                 decrypt: async function(params, key, data) {
                     var kBytes = __bufferToUint8(key._raw);
                     var ivBytes = __bufferToUint8(params.iv || '');
                     var dBytes = __bufferToUint8(data);
                     var res = typeof __crypto_aes_decrypt_raw !== 'undefined' ? __crypto_aes_decrypt_raw(params.name, kBytes, ivBytes, dBytes) : new Uint8Array(0);
-                    return res.buffer;
+                    return __toUint8Array(res).buffer;
                 },
                 sign: async function(algo, key, data) {
                     var algoName = typeof algo === 'string' ? algo : (algo.name || '');
                     var kBytes = __bufferToUint8(key._raw);
                     var dBytes = __bufferToUint8(data);
                     var res = typeof __crypto_sign_raw !== 'undefined' ? __crypto_sign_raw(algoName, kBytes, dBytes) : new Uint8Array(0);
-                    return res.buffer;
+                    return __toUint8Array(res).buffer;
                 },
                 verify: async function(algo, key, sig, data) {
                     var algoName = typeof algo === 'string' ? algo : (algo.name || '');
