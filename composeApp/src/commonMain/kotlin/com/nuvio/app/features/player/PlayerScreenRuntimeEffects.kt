@@ -244,8 +244,17 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     BindPlayerMetadataAndSkipEffects()
 
     DisposableEffect(playbackSession.videoId, activeSourceUrl, activeSourceAudioUrl) {
+        val effectVideoId = playbackSession.videoId
+        val effectSourceUrl = activeSourceUrl
+        val effectSourceAudioUrl = activeSourceAudioUrl
         onDispose {
-            flushWatchProgress()
+            if (
+                playbackSession.videoId == effectVideoId &&
+                activeSourceUrl == effectSourceUrl &&
+                activeSourceAudioUrl == effectSourceAudioUrl
+            ) {
+                flushWatchProgress()
+            }
         }
     }
 
@@ -551,6 +560,7 @@ internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message:
         activeSourceAudioUrl = null
         activeSourceHeaders = sanitizePlaybackHeaders(stream.behaviorHints.proxyHeaders?.request)
         activeSourceResponseHeaders = sanitizePlaybackResponseHeaders(stream.behaviorHints.proxyHeaders?.response)
+        activeStreamType = stream.streamType
         activeStreamTitle = stream.streamLabel
         activeStreamSubtitle = stream.streamSubtitle
         activeProviderName = stream.addonName

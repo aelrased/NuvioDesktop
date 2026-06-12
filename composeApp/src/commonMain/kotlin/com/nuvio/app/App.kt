@@ -1815,7 +1815,7 @@ private fun MainAppContent(
                         replaceStreamRoute: Boolean,
                     ) {
                         val infoHash = stream.p2pInfoHash ?: return
-                        val sentinelUrl = p2pSentinelUrl(infoHash, stream.fileIdx)
+                        val sentinelUrl = p2pSentinelUrl(infoHash, stream.p2pFileIdx)
                         if (playerSettings.streamReuseLastLinkEnabled) {
                             val cacheKey = StreamLinkCacheRepository.contentKey(
                                 type = launch.type,
@@ -1835,7 +1835,7 @@ private fun MainAppContent(
                                 filename = stream.behaviorHints.filename,
                                 videoSize = stream.behaviorHints.videoSize,
                                 infoHash = infoHash,
-                                fileIdx = stream.fileIdx,
+                                fileIdx = stream.p2pFileIdx,
                                 sources = stream.sources,
                                 bingeGroup = stream.behaviorHints.bingeGroup,
                             )
@@ -1845,6 +1845,7 @@ private fun MainAppContent(
                             sourceUrl = sentinelUrl,
                             sourceHeaders = emptyMap(),
                             sourceResponseHeaders = emptyMap(),
+                            streamType = stream.streamType,
                             logo = launch.logo,
                             poster = launch.poster,
                             background = launch.background,
@@ -1863,7 +1864,7 @@ private fun MainAppContent(
                             parentMetaId = launch.parentMetaId ?: effectiveVideoId,
                             parentMetaType = launch.parentMetaType ?: launch.type,
                             torrentInfoHash = infoHash,
-                            torrentFileIdx = stream.fileIdx,
+                            torrentFileIdx = stream.p2pFileIdx,
                             torrentFilename = stream.behaviorHints.filename,
                             torrentTrackers = stream.p2pTrackers,
                             initialPositionMs = resolvedResumePositionMs ?: 0L,
@@ -1964,6 +1965,7 @@ private fun MainAppContent(
                                     sourceUrl = cached.url,
                                     sourceHeaders = sanitizePlaybackHeaders(cached.requestHeaders),
                                     sourceResponseHeaders = sanitizePlaybackResponseHeaders(cached.responseHeaders),
+                                    streamType = cached.streamType,
                                     logo = launch.logo,
                                     poster = launch.poster,
                                     background = launch.background,
@@ -2089,6 +2091,7 @@ private fun MainAppContent(
                                 filename = stream.behaviorHints.filename,
                                 videoSize = stream.behaviorHints.videoSize,
                                 bingeGroup = stream.behaviorHints.bingeGroup,
+                                streamType = stream.streamType,
                             )
                         }
                         val playerLaunch = PlayerLaunch(
@@ -2096,6 +2099,7 @@ private fun MainAppContent(
                                 sourceUrl = sourceUrl,
                                 sourceHeaders = sanitizePlaybackHeaders(stream.behaviorHints.proxyHeaders?.request),
                                 sourceResponseHeaders = sanitizePlaybackResponseHeaders(stream.behaviorHints.proxyHeaders?.response),
+                                streamType = stream.streamType,
                                 logo = launch.logo,
                                 poster = launch.poster,
                                 background = launch.background,
@@ -2213,6 +2217,7 @@ private fun MainAppContent(
                                 filename = stream.behaviorHints.filename,
                                 videoSize = stream.behaviorHints.videoSize,
                                 bingeGroup = stream.behaviorHints.bingeGroup,
+                                streamType = stream.streamType,
                             )
                         }
                         val playerLaunch = PlayerLaunch(
@@ -2220,6 +2225,7 @@ private fun MainAppContent(
                             sourceUrl = sourceUrl,
                             sourceHeaders = sanitizePlaybackHeaders(stream.behaviorHints.proxyHeaders?.request),
                             sourceResponseHeaders = sanitizePlaybackResponseHeaders(stream.behaviorHints.proxyHeaders?.response),
+                            streamType = stream.streamType,
                             logo = launch.logo,
                             poster = launch.poster,
                             background = launch.background,
@@ -2378,6 +2384,7 @@ private fun MainAppContent(
                         sourceAudioUrl = launch.sourceAudioUrl,
                         sourceHeaders = launch.sourceHeaders,
                         sourceResponseHeaders = launch.sourceResponseHeaders,
+                        streamType = launch.streamType,
                         logo = launch.logo,
                         poster = launch.poster,
                         background = launch.background,
