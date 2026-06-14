@@ -15,7 +15,6 @@ import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.plugins.pluginContentId
 import com.nuvio.app.features.plugins.PluginRuntimeResult
 import com.nuvio.app.features.plugins.PluginScraper
-import com.nuvio.app.features.streams.AddonStreamWarmupRepository
 import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamBadgePresentation
@@ -225,21 +224,12 @@ object PlayerStreamsRepository {
         }
 
         val installedAddonOrder = streamAddons.map { it.addonName }
-        val warmedAddonGroups = if (forceRefresh) {
-            emptyMap()
-        } else {
-            AddonStreamWarmupRepository
-                .cachedGroups(type = type, videoId = videoId, season = season, episode = episode)
-                .orEmpty()
-                .associateBy { it.addonId }
-        }
-        val warmedAddonIds = warmedAddonGroups.keys
         log.d {
             "targets $panelName request=$requestKey installed=${installedAddons.size} " +
-                "compatible=${streamAddons.size} plugins=${pluginScrapers.size} warmed=${warmedAddonIds.size}"
+                "compatible=${streamAddons.size} plugins=${pluginScrapers.size}"
         }
         val initialGroups = StreamAutoPlaySelector.orderAddonStreams(streamAddons.map { addon ->
-            warmedAddonGroups[addon.addonId] ?: AddonStreamGroup(
+            AddonStreamGroup(
                 addonName = addon.addonName,
                 addonId = addon.addonId,
                 streams = emptyList(),
@@ -262,7 +252,6 @@ object PlayerStreamsRepository {
         log.d { "state $panelName request=$requestKey stage=initial ${stateFlow.value.streamDiagnostics()}" }
 
         val job = scope.launch {
-            val pendingStreamAddons = streamAddons.filterNot { it.addonId in warmedAddonIds }
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
             val debridAvailabilityJobs = mutableListOf<Job>()
             fun emptyStateReason(groups: List<AddonStreamGroup>, anyLoading: Boolean) =
@@ -343,7 +332,7 @@ object PlayerStreamsRepository {
                 debridAvailabilityJobs += availabilityJob
             }
 
-            val addonJobs = pendingStreamAddons.map { addon ->
+            val addonJobs = streamAddons.map { addon ->
                 async {
                     val url = buildAddonResourceUrl(
                         manifestUrl = addon.manifest.transportUrl,
