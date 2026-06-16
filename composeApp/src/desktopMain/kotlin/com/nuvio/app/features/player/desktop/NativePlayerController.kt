@@ -110,6 +110,7 @@ internal class NativePlayerController(
 
     fun updateControls(state: PlayerControlsState) {
         controlsState = state
+        host.setControlsVisible(state.controlsVisible)
         val currentHandle = handle
         val structureKey = state.nativeControlsStructureKey()
         val current = currentHandle.takeIf { it != 0L } ?: return
@@ -133,6 +134,7 @@ internal class NativePlayerController(
 
     private fun handlePlayerEvent(type: String, value: Double) {
         when (type) {
+            "cursorActivity" -> host.noteCursorActivity()
             "scrubChange" -> {
                 if (!onScrubChange(value.toLong())) {
                     updateLocalProgress(value.toLong())
@@ -231,6 +233,7 @@ internal class NativePlayerController(
     }
 
     fun dispose() {
+        host.resetCursorVisibility()
         disposePlayerHandle()
     }
 

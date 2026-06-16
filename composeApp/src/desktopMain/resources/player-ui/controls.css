@@ -144,6 +144,10 @@ button:disabled {
   height: 100%;
 }
 
+.player.cursor-hidden {
+  cursor: none;
+}
+
 .player:focus {
   outline: none;
 }

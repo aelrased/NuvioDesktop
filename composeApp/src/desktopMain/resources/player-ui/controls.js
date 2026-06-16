@@ -345,12 +345,17 @@ let chromeInteractionLastNotedAt = 0;
 let isChromePointerInside = false;
 let isChromePointerDown = false;
 let isChromeFocusInside = false;
+let hiddenCursorTimer = 0;
+let hiddenCursorTemporarilyVisible = false;
+let cursorActivityLastSentAt = 0;
 let nativeViewportTimer = 0;
 const prefersReducedMotion = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const modalTransitionMs = prefersReducedMotion ? 1 : 240;
 const chromeAutoHideDelayMs = 3500;
 const chromeActivityThrottleMs = 300;
+const hiddenCursorHideDelayMs = 3000;
+const cursorActivityThrottleMs = 100;
 const chromeInteractionSelector = [
   "button",
   "input",
@@ -1612,6 +1617,49 @@ const clearChromeAutoHideTimer = () => {
   chromeAutoHideKey = "";
 };
 
+const shouldHideCursorForIdleChrome = () => Boolean(
+  !playbackErrorText() &&
+  !state.controlsVisible &&
+  !(state.isLocked && state.lockedOverlayVisible),
+);
+
+const clearHiddenCursorTimer = () => {
+  window.clearTimeout(hiddenCursorTimer);
+  hiddenCursorTimer = 0;
+};
+
+const syncHiddenCursor = () => {
+  if (!shouldHideCursorForIdleChrome()) {
+    clearHiddenCursorTimer();
+    hiddenCursorTemporarilyVisible = false;
+    root.classList.remove("cursor-hidden");
+    return;
+  }
+  root.classList.toggle("cursor-hidden", !hiddenCursorTemporarilyVisible);
+};
+
+const noteCursorActivity = () => {
+  if (!shouldHideCursorForIdleChrome()) {
+    syncHiddenCursor();
+    return;
+  }
+
+  const now = window.performance ? window.performance.now() : Date.now();
+  hiddenCursorTemporarilyVisible = true;
+  syncHiddenCursor();
+  clearHiddenCursorTimer();
+  hiddenCursorTimer = window.setTimeout(() => {
+    hiddenCursorTimer = 0;
+    hiddenCursorTemporarilyVisible = false;
+    syncHiddenCursor();
+  }, hiddenCursorHideDelayMs);
+
+  if (now - cursorActivityLastSentAt >= cursorActivityThrottleMs) {
+    cursorActivityLastSentAt = now;
+    send("cursorActivity", 0);
+  }
+};
+
 const hideChromeFromAutoTimer = () => {
   if (!canAutoHideChrome(isOpeningOverlayActive())) return;
   state = { ...state, controlsVisible: false };
@@ -1676,6 +1724,7 @@ const renderChrome = () => {
   root.classList.toggle("locked-visible", Boolean(state.isLocked && state.lockedOverlayVisible));
   root.classList.toggle("chrome-hidden", Boolean(showError || (!state.controlsVisible && !(state.isLocked && state.lockedOverlayVisible))));
   root.classList.toggle("source-visible", Boolean(!showError && !isPlaying && !state.isLoading && (state.streamTitle || state.providerName)));
+  syncHiddenCursor();
   const showOpening = renderOpeningOverlay(showError);
   renderPauseMetadataOverlay(showOpening || showError);
   syncParentalGuide(showOpening || showError);
@@ -1986,6 +2035,7 @@ document.addEventListener("pointerdown", event => {
 }, true);
 
 document.addEventListener("pointermove", event => {
+  noteCursorActivity();
   const inside = isChromeInteractionTarget(event.target);
   updateChromePointerInside(inside);
   if (inside) {
