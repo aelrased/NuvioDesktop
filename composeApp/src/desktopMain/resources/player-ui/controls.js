@@ -2,6 +2,7 @@ const root = document.getElementById("playerRoot");
 const seek = document.getElementById("seek");
 const positionLabel = document.getElementById("position");
 const durationLabel = document.getElementById("duration");
+const timeLabel = document.getElementById("timeLabel");
 const bufferingStatus = document.getElementById("bufferingStatus");
 const playbackError = document.getElementById("playbackError");
 const playbackErrorTitle = document.getElementById("playbackErrorTitle");
@@ -17,6 +18,7 @@ const pauseEpisodeTitle = document.getElementById("pauseEpisodeTitle");
 const pauseDescription = document.getElementById("pauseDescription");
 const toggle = document.getElementById("toggle");
 const toggleIcon = document.getElementById("toggleIcon");
+const toggleLabel = document.getElementById("toggleLabel");
 const lockIcon = document.getElementById("lockIcon");
 const title = document.getElementById("title");
 const episode = document.getElementById("episode");
@@ -307,6 +309,7 @@ let scrubPositionMs = 0;
 let tapTimer = 0;
 let activeModal = "";
 let pressedButton = null;
+let focusedActionCommand = "";
 let sourceFilterId = "";
 let sourceVirtualKey = "";
 let sourceVirtualItems = [];
@@ -540,6 +543,9 @@ const setProgress = (positionMs, durationMs) => {
   seek.style.setProperty("--progress", `${percent}%`);
   positionLabel.textContent = formatTime(positionMs);
   durationLabel.textContent = formatTime(durationMs);
+  if (timeLabel) {
+    timeLabel.textContent = `${formatTime(positionMs)} / ${formatTime(durationMs)}`;
+  }
 };
 
 const setText = (element, text) => {
@@ -549,6 +555,15 @@ const setText = (element, text) => {
 
 const setVisible = (element, visible) => {
   element.hidden = !visible;
+};
+
+const setActionButtonLabel = (command, label) => {
+  const button = document.querySelector(`.action[data-command="${command}"]`);
+  if (!button) return;
+  const text = String(label || "").trim();
+  if (!text) return;
+  button.setAttribute("aria-label", text);
+  button.setAttribute("title", text);
 };
 
 const setImageVisualState = (element, stateName) => {
@@ -1632,6 +1647,7 @@ const noteChromeActivity = (force = false) => {
   chromeInteractionLastNotedAt = now;
   chromeAutoHideActivity += 1;
   syncChromeAutoHideTimer(isOpeningOverlayActive());
+  send("keepChromeVisible", 0);
 };
 
 const updateChromePointerInside = inside => {
@@ -1674,6 +1690,12 @@ const renderChrome = () => {
   audioLabel.textContent = state.audioLabel || "Audio";
   sourcesLabel.textContent = state.sourcesLabel || "Sources";
   episodesLabel.textContent = state.episodesLabel || "Episodes";
+  setActionButtonLabel("resize", state.resizeModeLabel || "Fit");
+  setActionButtonLabel("speed", state.playbackSpeedLabel || "1x");
+  setActionButtonLabel("subtitles", state.subtitlesLabel || "Subs");
+  setActionButtonLabel("audio", state.audioLabel || "Audio");
+  setActionButtonLabel("sources", state.sourcesLabel || "Sources");
+  setActionButtonLabel("episodes", state.episodesLabel || "Episodes");
   lockedLabel.textContent = state.tapToUnlockLabel || "Tap to unlock";
   const showBuffering = Boolean(!showError && state.isLoading && !state.isLocked && !activeModal && !showOpening);
   bufferingStatus.classList.toggle("visible", showBuffering);
@@ -1683,6 +1705,7 @@ const renderChrome = () => {
   setVisible(videoSettingsButton, Boolean(state.showVideoSettings));
   setVisible(sourcesButton, Boolean(state.showSources));
   setVisible(episodesButton, Boolean(state.showEpisodes));
+  syncActionFocusState();
 
   const playPauseLabel = isPlaying ? state.pauseLabel : state.playLabel;
   if (toggle) {
@@ -1690,6 +1713,9 @@ const renderChrome = () => {
   }
   if (toggleIcon) {
     toggleIcon.setAttribute("href", isPlaying ? "#icon-pause" : "#icon-play");
+  }
+  if (toggleLabel) {
+    toggleLabel.textContent = playPauseLabel || (isPlaying ? "Pause" : "Play");
   }
   lockButton.setAttribute("aria-label", state.isLocked ? state.unlockLabel : state.lockLabel);
   lockIcon.setAttribute("href", state.isLocked ? "#icon-lock-open" : "#icon-lock");
@@ -1741,6 +1767,179 @@ const shortcutCommandForEvent = event => {
     default:
       return "";
   }
+};
+
+const visibleActionButtons = () =>
+  Array.from(document.querySelectorAll(".action-pill .action"))
+    .filter(button => !button.hidden && !button.disabled && window.getComputedStyle(button).display !== "none");
+
+const setFocusedActionButton = (button, { focus = true } = {}) => {
+  if (!button || button.hidden || button.disabled) return false;
+  visibleActionButtons().forEach(control => {
+    if (control !== button) control.classList.remove("focused");
+  });
+  focusedActionCommand = button.dataset.command || "";
+  button.classList.add("focused");
+  if (focus) {
+    button.focus({ preventScroll: true });
+  }
+  return true;
+};
+
+const ensureActionFocus = ({ focus = true } = {}) => {
+  const controls = visibleActionButtons();
+  if (!controls.length) {
+    focusedActionCommand = "";
+    return false;
+  }
+  const current = controls.find(button => button.classList.contains("focused"));
+  const preferred = current ||
+    controls.find(button => button.dataset.command === focusedActionCommand) ||
+    controls[0];
+  return setFocusedActionButton(preferred, { focus });
+};
+
+const syncActionFocusState = () => {
+  const controls = visibleActionButtons();
+  const visibleSet = new Set(controls);
+  document.querySelectorAll(".action-pill .action.focused").forEach(button => {
+    if (!visibleSet.has(button)) button.classList.remove("focused");
+  });
+  if (controls.some(button => button.classList.contains("focused"))) return;
+  if (!focusedActionCommand) return;
+  const preferred = controls.find(button => button.dataset.command === focusedActionCommand);
+  if (preferred) {
+    setFocusedActionButton(preferred, { focus: false });
+  }
+};
+
+const moveActionFocus = delta => {
+  const controls = visibleActionButtons();
+  if (!controls.length) return false;
+  const current = controls.find(button => button.classList.contains("focused"));
+  const currentIndex = Math.max(0, current ? controls.indexOf(current) : 0);
+  const nextIndex = Math.max(0, Math.min(controls.length - 1, currentIndex + delta));
+  return setFocusedActionButton(controls[nextIndex], { focus: true });
+};
+
+const performActionCommand = command => {
+  if (!command) return false;
+  const button = visibleActionButtons().find(control => control.dataset.command === command);
+  if (!button) return false;
+  setFocusedActionButton(button, { focus: true });
+  button.click();
+  return true;
+};
+
+const actionShortcutCommandForEvent = event => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return "";
+  switch (event.code) {
+    case "KeyS":
+      return "subtitles";
+    case "KeyT":
+      return "audio";
+    case "KeyC":
+      return "sources";
+    case "KeyE":
+      return "episodes";
+    case "KeyP":
+      return "keyboardToggle";
+    default:
+      return "";
+  }
+};
+
+const keepChromeVisibleFromKeyboard = () => {
+  noteChromeActivity(true);
+};
+
+const setChromeVisibleFromKeyboard = (visible, { focusAction = false } = {}) => {
+  if (playbackErrorText()) return false;
+  if (state.isLocked) {
+    send("revealLockedOverlay", 0);
+    return true;
+  }
+  const nextVisible = Boolean(visible);
+  if (state.controlsVisible !== nextVisible) {
+    state = { ...state, controlsVisible: nextVisible };
+    renderChrome();
+    send(nextVisible ? "toggleChrome" : "hideChrome", 0);
+  }
+  if (nextVisible) {
+    keepChromeVisibleFromKeyboard();
+    if (focusAction) {
+      ensureActionFocus({ focus: true });
+    }
+  } else {
+    clearChromeAutoHideTimer();
+    focusShortcutRoot();
+  }
+  return true;
+};
+
+const handleTvStyleControlKey = event => {
+  if (event.metaKey || event.ctrlKey || event.altKey || activeModal || isTextEntryTarget(event.target)) return false;
+  if (state.isLocked) {
+    const controlKey = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "NumpadEnter", "Space"].includes(event.code);
+    if (!controlKey) return false;
+    event.preventDefault();
+    send("revealLockedOverlay", 0);
+    return true;
+  }
+
+  if (event.code === "ArrowUp") {
+    event.preventDefault();
+    setChromeVisibleFromKeyboard(true, { focusAction: true });
+    return true;
+  }
+
+  if (event.code === "ArrowDown") {
+    event.preventDefault();
+    if (state.controlsVisible) {
+      setChromeVisibleFromKeyboard(false);
+    } else {
+      setChromeVisibleFromKeyboard(true, { focusAction: true });
+    }
+    return true;
+  }
+
+  if (state.controlsVisible && event.code === "ArrowLeft") {
+    event.preventDefault();
+    keepChromeVisibleFromKeyboard();
+    moveActionFocus(-1);
+    return true;
+  }
+
+  if (state.controlsVisible && event.code === "ArrowRight") {
+    event.preventDefault();
+    keepChromeVisibleFromKeyboard();
+    moveActionFocus(1);
+    return true;
+  }
+
+  if (event.code === "Enter" || event.code === "NumpadEnter") {
+    event.preventDefault();
+    if (!state.controlsVisible) {
+      setChromeVisibleFromKeyboard(true, { focusAction: true });
+      send("keyboardToggle", 0);
+      return true;
+    }
+    keepChromeVisibleFromKeyboard();
+    ensureActionFocus({ focus: true });
+    document.querySelector(".action-pill .action.focused")?.click();
+    return true;
+  }
+
+  const actionCommand = actionShortcutCommandForEvent(event);
+  if (!actionCommand) return false;
+  event.preventDefault();
+  focusShortcutRoot();
+  keepChromeVisibleFromKeyboard();
+  if (actionCommand === "keyboardToggle") {
+    send("keyboardToggle", 0);
+    return true;
+  }
+  return performActionCommand(actionCommand);
 };
 
 const toggleChrome = () => {
@@ -1802,6 +2001,10 @@ document.addEventListener("pointerleave", () => {
 }, true);
 document.addEventListener("focusin", event => {
   isChromeFocusInside = isChromeInteractionTarget(event.target);
+  const actionButton = event.target.closest && event.target.closest(".action-pill .action");
+  if (actionButton) {
+    setFocusedActionButton(actionButton, { focus: false });
+  }
   if (isChromeFocusInside) {
     noteChromeActivity(true);
   }
@@ -1823,6 +2026,9 @@ window.addEventListener("blur", () => {
 document.querySelectorAll("[data-command]").forEach(button => {
   button.addEventListener("click", event => {
     event.stopPropagation();
+    if (button.closest(".action-pill")) {
+      setFocusedActionButton(button, { focus: false });
+    }
     noteChromeActivity(true);
     const command = button.dataset.command;
     if (command === "audio") {
@@ -2178,6 +2384,9 @@ document.addEventListener("keydown", event => {
     return;
   }
   if (activeModal || isTextEntryTarget(event.target)) {
+    return;
+  }
+  if (handleTvStyleControlKey(event)) {
     return;
   }
   const command = shortcutCommandForEvent(event);

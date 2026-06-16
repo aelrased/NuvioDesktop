@@ -632,6 +632,10 @@ private fun PlayerScreenRuntime.handlePlayerControlsEvent(type: String, value: D
         "hideChrome" -> {
             controlsVisible = false
         }
+        "keepChromeVisible" -> {
+            controlsVisible = true
+            controlsActivityTick += 1
+        }
         "reloadSources" -> {
             prepareSourcesForPlayerControls(forceRefresh = true)
         }
