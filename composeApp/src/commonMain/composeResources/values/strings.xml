@@ -1862,6 +1862,7 @@
     <string name="trakt_disconnected_status">Disconnected from Trakt</string>
     <string name="unit_bytes_tb">TB</string>
     <string name="updates_apk_asset_missing">No APK asset found in the release</string>
+    <string name="updates_update_asset_missing">No compatible update asset found in the release</string>
     <string name="updates_download_failed_http">Download failed with HTTP %1$d</string>
     <string name="updates_downloaded_file_missing">Downloaded update file is missing.</string>
     <string name="updates_empty_download_body">Empty download body</string>
