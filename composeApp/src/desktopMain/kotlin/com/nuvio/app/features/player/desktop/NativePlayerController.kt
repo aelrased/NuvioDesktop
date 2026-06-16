@@ -182,8 +182,17 @@ internal class NativePlayerController(
             PlayerControlsAction.KeyboardSeekBack -> fallbackSeekBy(-10_000L)
             PlayerControlsAction.SeekForward,
             PlayerControlsAction.KeyboardSeekForward -> fallbackSeekBy(10_000L)
+            PlayerControlsAction.KeyboardVolumeDown -> adjustFallbackVolume(-5f)
+            PlayerControlsAction.KeyboardVolumeUp -> adjustFallbackVolume(5f)
             PlayerControlsAction.Speed -> cycleFallbackSpeed()
             else -> Unit
+        }
+    }
+
+    private fun adjustFallbackVolume(delta: Float) {
+        val current = handle
+        if (current != 0L) {
+            NativePlayerBridge.adjustVolume(current, delta)
         }
     }
 
@@ -443,6 +452,8 @@ private fun String.toPlayerControlsAction(): PlayerControlsAction? =
         "keyboardSeekBack" -> PlayerControlsAction.KeyboardSeekBack
         "seekForward" -> PlayerControlsAction.SeekForward
         "keyboardSeekForward" -> PlayerControlsAction.KeyboardSeekForward
+        "keyboardVolumeDown" -> PlayerControlsAction.KeyboardVolumeDown
+        "keyboardVolumeUp" -> PlayerControlsAction.KeyboardVolumeUp
         "resize" -> PlayerControlsAction.ResizeMode
         "speed" -> PlayerControlsAction.Speed
         "subtitles" -> PlayerControlsAction.Subtitles

@@ -1853,6 +1853,10 @@ const keepChromeVisibleFromKeyboard = () => {
   noteChromeActivity(true);
 };
 
+const sendKeyboardVolume = delta => {
+  send(delta < 0 ? "keyboardVolumeDown" : "keyboardVolumeUp", 0);
+};
+
 const setChromeVisibleFromKeyboard = (visible, { focusAction = false } = {}) => {
   if (playbackErrorText()) return false;
   if (state.isLocked) {
@@ -1889,17 +1893,13 @@ const handleTvStyleControlKey = event => {
 
   if (event.code === "ArrowUp") {
     event.preventDefault();
-    setChromeVisibleFromKeyboard(true, { focusAction: true });
+    sendKeyboardVolume(1);
     return true;
   }
 
   if (event.code === "ArrowDown") {
     event.preventDefault();
-    if (state.controlsVisible) {
-      setChromeVisibleFromKeyboard(false);
-    } else {
-      setChromeVisibleFromKeyboard(true, { focusAction: true });
-    }
+    sendKeyboardVolume(-1);
     return true;
   }
 

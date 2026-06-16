@@ -586,6 +586,10 @@ private fun PlayerScreenRuntime.handlePlayerControlsAction(action: PlayerControl
             prepareSeekByForNativeFallback(10_000L, revealControls = false)
             return false
         }
+        PlayerControlsAction.KeyboardVolumeDown,
+        PlayerControlsAction.KeyboardVolumeUp -> {
+            return false
+        }
         PlayerControlsAction.ResizeMode -> cycleResizeMode()
         PlayerControlsAction.Speed -> cyclePlaybackSpeed()
         PlayerControlsAction.Subtitles -> {
