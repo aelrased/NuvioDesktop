@@ -1006,11 +1006,15 @@
     <string name="settings_trakt_connected_as">Connected as %1$s</string>
     <string name="settings_trakt_default_user">Trakt user</string>
     <string name="settings_trakt_disconnect">Disconnect</string>
+    <string name="settings_trakt_device_code_copied">Code copied.</string>
+    <string name="settings_trakt_device_finish_sign_in">Enter this code on Trakt</string>
+    <string name="settings_trakt_device_instructions">Open the link and enter this code to approve Nuvio. This screen will update automatically.</string>
     <string name="settings_trakt_failed_open_browser">Failed to open browser</string>
     <string name="settings_trakt_features">FEATURES</string>
     <string name="settings_trakt_finish_sign_in">Finish Trakt sign in in your browser</string>
     <string name="settings_trakt_intro_description">Sync your watchlist, watch progress, continue watching, scrobbles, and personal lists with Trakt.</string>
     <string name="settings_trakt_missing_credentials">Missing Trakt credentials in local.properties (TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET).</string>
+    <string name="settings_trakt_open_activation">Open Trakt Activate</string>
     <string name="settings_trakt_open_login">Open Trakt Login</string>
     <string name="settings_trakt_save_actions_description">Your Save actions can now target Trakt watchlist and personal lists.</string>
     <string name="settings_trakt_sign_in_description">Sign in with Trakt to enable list-based saving and Trakt library mode.</string>
@@ -1379,6 +1383,10 @@
     <string name="trakt_authorization_denied">Authorization denied</string>
     <string name="trakt_complete_sign_in_browser">Complete Trakt sign in in your browser</string>
     <string name="trakt_connected">Connected to Trakt</string>
+    <string name="trakt_device_authorization_expired">Trakt authorization expired. Try again.</string>
+    <string name="trakt_device_authorization_failed">Could not start Trakt device authorization.</string>
+    <string name="trakt_device_authorization_starting">Starting Trakt sign in...</string>
+    <string name="trakt_device_authorization_waiting">Waiting for Trakt approval...</string>
     <string name="trakt_disconnected">Disconnected from Trakt</string>
     <string name="trakt_invalid_callback">Invalid Trakt callback</string>
     <string name="trakt_invalid_callback_state">Invalid Trakt callback state</string>
