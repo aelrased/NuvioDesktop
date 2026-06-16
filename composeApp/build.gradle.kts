@@ -977,6 +977,35 @@ fun publishMacosDmgArtifact(dmg: File) {
     logger.lifecycle("Published macOS DMG artifact: ${publishedDmg.absolutePath}")
 }
 
+fun publishWindowsMsiOutput(release: Boolean) {
+    if (!isWindowsHost) return
+
+    val distributionName = if (release) "main-release" else "main"
+    val outputDir = layout.buildDirectory.dir("compose/binaries/$distributionName/msi").get().asFile
+    val finalMsi = outputDir.resolve("Nuvio-Windows-$windowsPlayerBridgeArch-$desktopReleaseVersionName.msi")
+    val defaultMsi = outputDir.resolve("Nuvio-$desktopReleasePackageVersion.msi")
+    val sourceMsi = defaultMsi.takeIf { it.exists() }
+        ?: finalMsi.takeIf { it.exists() }
+        ?: error("Expected Windows MSI output in ${outputDir.absolutePath}")
+
+    if (sourceMsi.canonicalFile != finalMsi.canonicalFile) {
+        sourceMsi.copyTo(finalMsi, overwrite = true)
+    }
+
+    logger.lifecycle("Windows MSI artifact: ${finalMsi.absolutePath}")
+    publishWindowsMsiArtifact(finalMsi)
+}
+
+fun publishWindowsMsiArtifact(msi: File) {
+    val publishedDir = layout.buildDirectory.dir("compose/release-msis").get().asFile
+    publishedDir.mkdirs()
+    val publishedMsi = publishedDir.resolve(msi.name)
+    if (msi.canonicalFile != publishedMsi.canonicalFile) {
+        msi.copyTo(publishedMsi, overwrite = true)
+    }
+    logger.lifecycle("Published Windows MSI artifact: ${publishedMsi.absolutePath}")
+}
+
 tasks.matching { it.name == "packageDmg" }.configureEach {
     doLast {
         if (!isMacosDmgNotarizationRequested) {
@@ -1004,6 +1033,20 @@ tasks.matching { it.name == "notarizeReleaseDmg" }.configureEach {
     notCompatibleWithConfigurationCache("Compose Desktop notarization settings are not configuration-cache safe.")
     doLast {
         renameMacosDmgOutput(release = true)
+    }
+}
+
+tasks.matching { it.name == "packageMsi" }.configureEach {
+    notCompatibleWithConfigurationCache("Windows MSI artifact publication uses script file operations.")
+    doLast {
+        publishWindowsMsiOutput(release = false)
+    }
+}
+
+tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
+    notCompatibleWithConfigurationCache("Windows MSI artifact publication uses script file operations.")
+    doLast {
+        publishWindowsMsiOutput(release = true)
     }
 }
 

@@ -40,6 +40,7 @@ actual object AppUpdaterPlatform {
         owner = "NuvioMedia",
         repo = "NuvioDesktop",
         channelBranch = null,
+        includePrereleases = true,
         userAgent = "NuvioDesktop",
     )
 

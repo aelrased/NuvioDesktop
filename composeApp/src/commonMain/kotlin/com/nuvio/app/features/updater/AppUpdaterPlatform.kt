@@ -4,6 +4,7 @@ data class AppUpdateReleaseSource(
     val owner: String,
     val repo: String,
     val channelBranch: String? = null,
+    val includePrereleases: Boolean = false,
     val userAgent: String,
 )
 
