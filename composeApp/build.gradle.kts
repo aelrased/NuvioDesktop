@@ -12,9 +12,12 @@ import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.Sync
 import org.gradle.api.tasks.TaskAction
 import org.gradle.jvm.tasks.Jar
+import org.gradle.process.ExecOperations
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.io.File
 import java.util.Properties
+import javax.inject.Inject
 
 abstract class GenerateRuntimeConfigsTask : DefaultTask() {
     @get:OutputDirectory
@@ -146,6 +149,89 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
     }
 }
 
+abstract class NotarizeMacosDmgWithKeychainTask @Inject constructor(
+    private val execOperations: ExecOperations,
+) : DefaultTask() {
+    @get:InputDirectory
+    abstract val dmgDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val artifactDir: DirectoryProperty
+
+    @get:Input
+    abstract val finalDmgName: Property<String>
+
+    @get:Input
+    abstract val defaultDmgName: Property<String>
+
+    @get:Input
+    abstract val keychainProfile: Property<String>
+
+    init {
+        outputs.upToDateWhen { false }
+    }
+
+    @TaskAction
+    fun notarize() {
+        val profile = keychainProfile.get().trim()
+        require(profile.isNotEmpty()) {
+            "Set NUVIO_MACOS_NOTARY_PASSWORD=@keychain:<profile> or NUVIO_MACOS_NOTARY_KEYCHAIN_PROFILE=<profile>."
+        }
+
+        val dmg = ensureFinalDmg()
+        execOperations.exec {
+            commandLine(
+                "xcrun",
+                "notarytool",
+                "submit",
+                dmg.absolutePath,
+                "--wait",
+                "--keychain-profile",
+                profile,
+            )
+        }
+        execOperations.exec {
+            commandLine("xcrun", "stapler", "staple", dmg.absolutePath)
+        }
+        publishDmg(dmg)
+        logger.lifecycle("Notarized and stapled macOS DMG: ${dmg.absolutePath}")
+    }
+
+    private fun ensureFinalDmg(): File {
+        val outputDir = dmgDir.get().asFile
+        val finalDmg = outputDir.resolve(finalDmgName.get())
+        val defaultDmg = outputDir.resolve(defaultDmgName.get())
+        val sourceDmg = defaultDmg.takeIf { it.exists() }
+            ?: finalDmg.takeIf { it.exists() }
+            ?: error("Expected macOS DMG output in ${outputDir.absolutePath}")
+
+        if (sourceDmg != finalDmg) {
+            if (finalDmg.exists() && !finalDmg.delete()) {
+                error("Could not replace existing DMG: ${finalDmg.absolutePath}")
+            }
+            if (!sourceDmg.renameTo(finalDmg)) {
+                sourceDmg.copyTo(finalDmg, overwrite = true)
+                if (!sourceDmg.delete()) {
+                    logger.warn("Could not delete old DMG after copy: ${sourceDmg.absolutePath}")
+                }
+            }
+        }
+
+        logger.lifecycle("macOS DMG artifact: ${finalDmg.absolutePath}")
+        return finalDmg
+    }
+
+    private fun publishDmg(dmg: File) {
+        val publishedDir = artifactDir.get().asFile
+        publishedDir.mkdirs()
+        val publishedDmg = publishedDir.resolve(dmg.name)
+        if (dmg.canonicalFile != publishedDmg.canonicalFile) {
+            dmg.copyTo(publishedDmg, overwrite = true)
+        }
+        logger.lifecycle("Published macOS DMG artifact: ${publishedDmg.absolutePath}")
+    }
+}
+
 fun readXcconfigValue(file: File, key: String): String? {
     if (!file.exists()) return null
     return file.readLines()
@@ -227,6 +313,14 @@ val macosSigningIdentity = localOrEnvProperty("NUVIO_MACOS_SIGNING_IDENTITY")
 val macosNotaryAppleId = localOrEnvProperty("NUVIO_MACOS_NOTARY_APPLE_ID")
 val macosNotaryTeamId = localOrEnvProperty("NUVIO_MACOS_NOTARY_TEAM_ID")
 val macosNotaryPassword = localOrEnvProperty("NUVIO_MACOS_NOTARY_PASSWORD")
+val macosNotaryKeychainProfile = localOrEnvProperty("NUVIO_MACOS_NOTARY_KEYCHAIN_PROFILE")
+    ?: macosNotaryPassword
+        ?.takeIf { it.startsWith("@keychain:", ignoreCase = true) }
+        ?.substringAfter(':')
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+val macosNotaryAppSpecificPassword = macosNotaryPassword
+    ?.takeUnless { it.startsWith("@keychain:", ignoreCase = true) }
 
 val appVersionConfigFile = rootProject.file("iosApp/Configuration/Version.xcconfig")
 val releaseAppVersionName = readXcconfigValue(appVersionConfigFile, "MARKETING_VERSION")
@@ -304,10 +398,33 @@ val isWindowsHost = System.getProperty("os.name").contains("win", ignoreCase = t
 val mpvKitDir = providers.gradleProperty("nuvio.mpvkit.dir")
     .orElse(rootProject.layout.projectDirectory.dir("MPVKit").asFile.absolutePath)
 val macosPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/macos/player_bridge.mm")
-val macosPlayerBridgeOutput = layout.buildDirectory.file("native/macos/libplayer_bridge.dylib")
-val macosPlayerBridgeArch = when (System.getProperty("os.arch").lowercase()) {
-    "aarch64", "arm64" -> "arm64"
-    else -> "x86_64"
+fun normalizedMacosArch(value: String): String =
+    when (value.lowercase()) {
+        "aarch64", "arm64" -> "arm64"
+        "amd64", "x64", "x86_64" -> "x86_64"
+        else -> error("Unsupported macOS architecture '$value'. Use arm64 or x86_64.")
+    }
+val macosHostJvmArch = normalizedMacosArch(System.getProperty("os.arch"))
+val requestedMacosArch = providers.gradleProperty("nuvio.macos.arch").orNull
+    ?: System.getenv("NUVIO_MACOS_ARCH")
+val macosPlayerBridgeArch = requestedMacosArch?.let(::normalizedMacosArch) ?: macosHostJvmArch
+val isMacosDmgBuildRequested = requestedGradleTasks.any { taskName ->
+    taskName == "packagedmg" ||
+        taskName == "packagereleasedmg" ||
+        taskName == "notarizedmg" ||
+        taskName == "notarizereleasedmg" ||
+        taskName == "notarizereleasedmgwithkeychain"
+}
+if (isMacHost && isMacosDmgBuildRequested && macosPlayerBridgeArch != macosHostJvmArch) {
+    error(
+        "macOS DMG architecture '$macosPlayerBridgeArch' must match the Gradle JVM architecture '$macosHostJvmArch'. " +
+            "Run Gradle with a $macosPlayerBridgeArch JDK/Rosetta, then pass -Pnuvio.macos.arch=$macosPlayerBridgeArch."
+    )
+}
+val macosPlayerBridgeOutput = layout.buildDirectory.file("native/macos/$macosPlayerBridgeArch/libplayer_bridge.dylib")
+val macosDmgArchName = macosPlayerBridgeArch
+val isMacosDmgNotarizationRequested = requestedGradleTasks.any { taskName ->
+    taskName == "notarizedmg" || taskName == "notarizereleasedmg"
 }
 val mpvKitRoot = File(mpvKitDir.get())
 val mpvKitDistRoot = File(mpvKitRoot, "dist")
@@ -794,11 +911,15 @@ compose.desktop {
                         identity.set(macosSigningIdentity)
                     }
                 }
-                if (macosNotaryAppleId != null && macosNotaryTeamId != null && macosNotaryPassword != null) {
+                if (
+                    macosNotaryAppleId != null &&
+                    macosNotaryTeamId != null &&
+                    macosNotaryAppSpecificPassword != null
+                ) {
                     notarization {
                         appleID.set(macosNotaryAppleId)
                         teamID.set(macosNotaryTeamId)
-                        password.set(macosNotaryPassword)
+                        password.set(macosNotaryAppSpecificPassword)
                     }
                 }
             }
@@ -816,6 +937,86 @@ compose.desktop {
         buildTypes.release.proguard {
             isEnabled.set(false)
         }
+    }
+}
+
+fun renameMacosDmgOutput(release: Boolean) {
+    if (!isMacHost) return
+
+    val distributionName = if (release) "main-release" else "main"
+    val outputDir = layout.buildDirectory.dir("compose/binaries/$distributionName/dmg").get().asFile
+    val finalDmg = outputDir.resolve("Nuvio-macOS-$macosDmgArchName-$desktopReleaseVersionName.dmg")
+    val defaultDmg = outputDir.resolve("Nuvio-$desktopReleasePackageVersion.dmg")
+    val sourceDmg = defaultDmg.takeIf { it.exists() }
+        ?: finalDmg.takeIf { it.exists() }
+        ?: error("Expected macOS DMG output in ${outputDir.absolutePath}")
+
+    if (sourceDmg != finalDmg) {
+        if (finalDmg.exists() && !finalDmg.delete()) {
+            error("Could not replace existing DMG: ${finalDmg.absolutePath}")
+        }
+        if (!sourceDmg.renameTo(finalDmg)) {
+            sourceDmg.copyTo(finalDmg, overwrite = true)
+            if (!sourceDmg.delete()) {
+                logger.warn("Could not delete old DMG after copy: ${sourceDmg.absolutePath}")
+            }
+        }
+    }
+
+    logger.lifecycle("macOS DMG artifact: ${finalDmg.absolutePath}")
+    publishMacosDmgArtifact(finalDmg)
+}
+
+fun publishMacosDmgArtifact(dmg: File) {
+    val publishedDir = layout.buildDirectory.dir("compose/release-dmgs").get().asFile
+    publishedDir.mkdirs()
+    val publishedDmg = publishedDir.resolve(dmg.name)
+    if (dmg.canonicalFile != publishedDmg.canonicalFile) {
+        dmg.copyTo(publishedDmg, overwrite = true)
+    }
+    logger.lifecycle("Published macOS DMG artifact: ${publishedDmg.absolutePath}")
+}
+
+tasks.matching { it.name == "packageDmg" }.configureEach {
+    doLast {
+        if (!isMacosDmgNotarizationRequested) {
+            renameMacosDmgOutput(release = false)
+        }
+    }
+}
+
+tasks.matching { it.name == "packageReleaseDmg" }.configureEach {
+    doLast {
+        if (!isMacosDmgNotarizationRequested) {
+            renameMacosDmgOutput(release = true)
+        }
+    }
+}
+
+tasks.matching { it.name == "notarizeDmg" }.configureEach {
+    notCompatibleWithConfigurationCache("Compose Desktop notarization settings are not configuration-cache safe.")
+    doLast {
+        renameMacosDmgOutput(release = false)
+    }
+}
+
+tasks.matching { it.name == "notarizeReleaseDmg" }.configureEach {
+    notCompatibleWithConfigurationCache("Compose Desktop notarization settings are not configuration-cache safe.")
+    doLast {
+        renameMacosDmgOutput(release = true)
+    }
+}
+
+if (isMacHost) {
+    tasks.register<NotarizeMacosDmgWithKeychainTask>("notarizeReleaseDmgWithKeychain") {
+        group = "distribution"
+        description = "Packages, notarizes, and staples the release macOS DMG using a notarytool keychain profile."
+        dependsOn("packageReleaseDmg")
+        dmgDir.set(layout.buildDirectory.dir("compose/binaries/main-release/dmg"))
+        artifactDir.set(layout.buildDirectory.dir("compose/release-dmgs"))
+        finalDmgName.set("Nuvio-macOS-$macosDmgArchName-$desktopReleaseVersionName.dmg")
+        defaultDmgName.set("Nuvio-$desktopReleasePackageVersion.dmg")
+        keychainProfile.set(macosNotaryKeychainProfile.orEmpty())
     }
 }
 
