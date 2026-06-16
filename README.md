@@ -57,6 +57,7 @@ Useful commands:
 ```bash
 ./gradlew :composeApp:assembleDebug
 ./gradlew :composeApp:compileKotlinIosSimulatorArm64
+./scripts/build-macos-release-dmgs.sh --package-only
 ./scripts/build-distribution.sh
 ```
 
