@@ -4,16 +4,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.player.PlatformPlayerSurface
+import com.nuvio.app.features.player.desktop.DesktopAppFullscreenController
 import com.nuvio.app.features.player.desktop.applyNativeDesktopWindowChrome
 import com.nuvio.app.features.player.desktop.installDesktopAppFullscreenShortcuts
 import com.nuvio.app.features.player.desktop.preloadNativePlayerBridgeAsync
@@ -36,7 +35,7 @@ fun main() {
             )
             ?.takeIf { it.isNotBlank() }
         val windowState = rememberWindowState(width = 1280.dp, height = 820.dp)
-        val restoreWindowPlacement = remember { mutableStateOf(WindowPlacement.Floating) }
+        val fullscreenController = remember { DesktopAppFullscreenController() }
 
         Window(
             onCloseRequest = ::exitApplication,
@@ -56,17 +55,11 @@ fun main() {
             DisposableEffect(window, windowState) {
                 val unregisterFullscreenToggle = registerDesktopAppFullscreenToggle { targetWindow ->
                     if (targetWindow != null && targetWindow !== window) return@registerDesktopAppFullscreenToggle
-                    if (windowState.placement == WindowPlacement.Fullscreen) {
-                        windowState.placement = restoreWindowPlacement.value
-                    } else {
-                        restoreWindowPlacement.value = windowState.placement
-                            .takeUnless { it == WindowPlacement.Fullscreen }
-                            ?: WindowPlacement.Floating
-                        windowState.placement = WindowPlacement.Fullscreen
-                    }
+                    fullscreenController.toggle(window, windowState)
                 }
                 val uninstallFullscreenShortcuts = installDesktopAppFullscreenShortcuts(window)
                 onDispose {
+                    fullscreenController.dispose(window)
                     uninstallFullscreenShortcuts()
                     unregisterFullscreenToggle()
                 }

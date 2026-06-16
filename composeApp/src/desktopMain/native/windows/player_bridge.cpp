@@ -362,6 +362,7 @@ void registerWindowClasses() {
 
         WNDCLASSEXW containerClass = {};
         containerClass.cbSize = sizeof(containerClass);
+        containerClass.style = CS_DBLCLKS;
         containerClass.lpfnWndProc = containerWindowProc;
         containerClass.hInstance = gModule;
         containerClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -887,6 +888,7 @@ private:
     ComPtr<ICoreWebView2Controller> controller;
     ComPtr<ICoreWebView2> webView;
     EventRegistrationToken messageToken = {};
+    EventRegistrationToken acceleratorToken = {};
 
     std::mutex uiTaskMutex;
     std::deque<std::function<void()>> uiTasks;
@@ -1014,6 +1016,10 @@ private:
             webView->remove_WebMessageReceived(messageToken);
             messageToken.value = 0;
         }
+        if (controller && acceleratorToken.value != 0) {
+            controller->remove_AcceleratorKeyPressed(acceleratorToken);
+            acceleratorToken.value = 0;
+        }
         if (controller) {
             controller->Close();
             controller.Reset();
@@ -1114,6 +1120,33 @@ private:
                                 }
 
                                 if (controllerSelf->webView) {
+                                    auto acceleratorWeakSelf = controllerWeakSelf;
+                                    controllerSelf->controller->add_AcceleratorKeyPressed(
+                                        Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
+                                            [acceleratorWeakSelf](ICoreWebView2Controller *, ICoreWebView2AcceleratorKeyPressedEventArgs *args) -> HRESULT {
+                                                auto acceleratorSelf = acceleratorWeakSelf.lock();
+                                                if (!acceleratorSelf || acceleratorSelf->shuttingDown.load() || !args) return S_OK;
+
+                                                COREWEBVIEW2_KEY_EVENT_KIND keyEventKind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+                                                UINT virtualKey = 0;
+                                                args->get_KeyEventKind(&keyEventKind);
+                                                args->get_VirtualKey(&virtualKey);
+                                                if (
+                                                    virtualKey == VK_F11 &&
+                                                    (
+                                                        keyEventKind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN ||
+                                                        keyEventKind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN
+                                                    )
+                                                ) {
+                                                    args->put_Handled(TRUE);
+                                                    acceleratorSelf->sendPlayerEvent("toggleFullscreen", 0.0);
+                                                }
+                                                return S_OK;
+                                            }
+                                        ).Get(),
+                                        &controllerSelf->acceleratorToken
+                                    );
+
                                     auto messageWeakSelf = controllerWeakSelf;
                                     controllerSelf->webView->add_WebMessageReceived(
                                         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
@@ -1691,7 +1724,18 @@ LRESULT CALLBACK containerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
         return TRUE;
     }
+    auto *player = reinterpret_cast<WindowsMpvWebPlayer *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (message) {
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            if (wParam == VK_F11) {
+                if (player) player->sendPlayerEvent("toggleFullscreen", 0.0);
+                return 0;
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        case WM_LBUTTONDBLCLK:
+            if (player) player->sendPlayerEvent("toggleFullscreen", 0.0);
+            return 0;
         case WM_SIZE:
             return 0;
         case WM_ERASEBKGND: {
