@@ -167,6 +167,9 @@ abstract class NotarizeMacosDmgWithKeychainTask @Inject constructor(
     @get:Input
     abstract val keychainProfile: Property<String>
 
+    @get:Input
+    abstract val signingIdentity: Property<String>
+
     init {
         outputs.upToDateWhen { false }
     }
@@ -177,8 +180,13 @@ abstract class NotarizeMacosDmgWithKeychainTask @Inject constructor(
         require(profile.isNotEmpty()) {
             "Set NUVIO_MACOS_NOTARY_PASSWORD=@keychain:<profile> or NUVIO_MACOS_NOTARY_KEYCHAIN_PROFILE=<profile>."
         }
+        val identity = signingIdentity.get().trim()
+        require(identity.isNotEmpty()) {
+            "Set NUVIO_MACOS_SIGNING_IDENTITY to a Developer ID Application identity."
+        }
 
         val dmg = ensureFinalDmg()
+        signDmg(dmg, identity)
         execOperations.exec {
             commandLine(
                 "xcrun",
@@ -195,6 +203,20 @@ abstract class NotarizeMacosDmgWithKeychainTask @Inject constructor(
         }
         publishDmg(dmg)
         logger.lifecycle("Notarized and stapled macOS DMG: ${dmg.absolutePath}")
+    }
+
+    private fun signDmg(dmg: File, identity: String) {
+        execOperations.exec {
+            commandLine(
+                "codesign",
+                "--force",
+                "--sign",
+                identity,
+                "--timestamp",
+                dmg.absolutePath,
+            )
+        }
+        logger.lifecycle("Signed macOS DMG: ${dmg.absolutePath}")
     }
 
     private fun ensureFinalDmg(): File {
@@ -1085,6 +1107,7 @@ if (isMacHost) {
         finalDmgName.set("Nuvio-macOS-$macosDmgArchName-$desktopReleaseVersionName.dmg")
         defaultDmgName.set("Nuvio-$desktopReleasePackageVersion.dmg")
         keychainProfile.set(macosNotaryKeychainProfile.orEmpty())
+        signingIdentity.set(macosSigningIdentity.orEmpty())
     }
 }
 
