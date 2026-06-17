@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using Microsoft::WRL::Callback;
@@ -66,6 +67,15 @@ constexpr DWORD kDwmwaUseImmersiveDarkModeLegacy = 19;
 constexpr DWORD kDwmwaBorderColor = 34;
 constexpr DWORD kDwmwaCaptionColor = 35;
 constexpr DWORD kDwmwaTextColor = 36;
+
+struct BorderlessFullscreenState {
+    LONG_PTR style = 0;
+    LONG_PTR exStyle = 0;
+    WINDOWPLACEMENT placement = {};
+};
+
+std::mutex gBorderlessFullscreenMutex;
+std::unordered_map<HWND, BorderlessFullscreenState> gBorderlessFullscreenStates;
 
 std::wstring toWide(const std::string &value) {
     if (value.empty()) return std::wstring();
@@ -166,6 +176,73 @@ void applyDwmWindowChrome(HWND hwnd, bool darkMode, COLORREF captionColor, COLOR
     setDwmWindowAttribute(hwnd, kDwmwaCaptionColor, &captionColor, sizeof(captionColor));
     setDwmWindowAttribute(hwnd, kDwmwaBorderColor, &borderColor, sizeof(borderColor));
     setDwmWindowAttribute(hwnd, kDwmwaTextColor, &textColor, sizeof(textColor));
+}
+
+void setBorderlessFullscreen(HWND hwnd, bool fullscreen, int x, int y, int width, int height) {
+    if (!hwnd || !IsWindow(hwnd)) return;
+
+    if (fullscreen) {
+        {
+            std::lock_guard<std::mutex> lock(gBorderlessFullscreenMutex);
+            if (gBorderlessFullscreenStates.find(hwnd) == gBorderlessFullscreenStates.end()) {
+                BorderlessFullscreenState state;
+                state.style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                state.exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                state.placement.length = sizeof(WINDOWPLACEMENT);
+                GetWindowPlacement(hwnd, &state.placement);
+                gBorderlessFullscreenStates.emplace(hwnd, state);
+            }
+        }
+
+        if (IsIconic(hwnd) || IsZoomed(hwnd)) {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        style &= ~(LONG_PTR)(WS_CAPTION | WS_THICKFRAME);
+        exStyle &= ~(LONG_PTR)(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
+
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            x,
+            y,
+            std::max(1, width),
+            std::max(1, height),
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE
+        );
+        return;
+    }
+
+    BorderlessFullscreenState state;
+    bool hasState = false;
+    {
+        std::lock_guard<std::mutex> lock(gBorderlessFullscreenMutex);
+        auto iterator = gBorderlessFullscreenStates.find(hwnd);
+        if (iterator != gBorderlessFullscreenStates.end()) {
+            state = iterator->second;
+            gBorderlessFullscreenStates.erase(iterator);
+            hasState = true;
+        }
+    }
+    if (!hasState) return;
+
+    SetWindowLongPtrW(hwnd, GWL_STYLE, state.style);
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, state.exStyle);
+    state.placement.length = sizeof(WINDOWPLACEMENT);
+    SetWindowPlacement(hwnd, &state.placement);
+    SetWindowPos(
+        hwnd,
+        nullptr,
+        0,
+        0,
+        0,
+        0,
+        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE
+    );
 }
 
 bool containsCaseInsensitive(const std::string &haystack, const std::string &needle) {
@@ -1988,6 +2065,27 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applyWindowChrome(
         rgbIntToColorRef(captionColorRgb),
         rgbIntToColorRef(borderColorRgb),
         rgbIntToColorRef(textColorRgb)
+    );
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowBorderlessFullscreen(
+    JNIEnv *,
+    jobject,
+    jlong windowHwnd,
+    jboolean fullscreen,
+    jint x,
+    jint y,
+    jint width,
+    jint height
+) {
+    setBorderlessFullscreen(
+        (HWND)(intptr_t)windowHwnd,
+        fullscreen == JNI_TRUE,
+        x,
+        y,
+        width,
+        height
     );
 }
 

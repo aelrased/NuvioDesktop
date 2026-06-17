@@ -65,6 +65,14 @@ internal object NativePlayerBridge {
         borderColorRgb: Int,
         textColorRgb: Int,
     )
+    external fun setWindowBorderlessFullscreen(
+        windowHwnd: Long,
+        fullscreen: Boolean,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+    )
 
     external fun setSubtitleDelayMs(handle: Long, delayMs: Int)
     external fun applySubtitleStyle(
