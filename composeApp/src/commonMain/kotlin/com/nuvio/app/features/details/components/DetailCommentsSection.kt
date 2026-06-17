@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nuvio.app.core.ui.nuvioDesktopDragScroll
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
 import com.nuvio.app.features.trakt.TraktCommentReview
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -80,8 +81,12 @@ fun DetailCommentsSection(
 
         when {
             isLoading -> {
+                val loadingListState = rememberLazyListState()
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
+                    state = loadingListState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .nuvioDesktopDragScroll(loadingListState),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(3) {
@@ -119,8 +124,10 @@ fun DetailCommentsSection(
 
             else -> {
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
                     state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .nuvioDesktopDragScroll(listState),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(
