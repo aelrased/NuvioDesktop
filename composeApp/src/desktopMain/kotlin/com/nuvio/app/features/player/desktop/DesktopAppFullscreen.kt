@@ -74,16 +74,21 @@ internal class DesktopAppFullscreenController {
     }
 
     private fun enterWindowsFullscreen(window: Window) {
-        val screenBounds = window.graphicsConfiguration?.bounds
-            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration.bounds
+        val gc = window.graphicsConfiguration
+            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration
+        val screenBounds = gc.bounds
+        val transform = gc.defaultTransform
+        val scaleX = transform.scaleX
+        val scaleY = transform.scaleY
+
         val hwnd = AwtNativeViewResolver.resolveNativeViewPointer(window)
         NativePlayerBridge.setWindowBorderlessFullscreen(
             windowHwnd = hwnd,
             fullscreen = true,
-            x = screenBounds.x,
-            y = screenBounds.y,
-            width = screenBounds.width,
-            height = screenBounds.height,
+            x = (screenBounds.x * scaleX).toInt(),
+            y = (screenBounds.y * scaleY).toInt(),
+            width = (screenBounds.width * scaleX).toInt(),
+            height = (screenBounds.height * scaleY).toInt(),
         )
         windowsFullscreenState = WindowsFullscreenState(window = window, windowHwnd = hwnd)
         window.toFront()
