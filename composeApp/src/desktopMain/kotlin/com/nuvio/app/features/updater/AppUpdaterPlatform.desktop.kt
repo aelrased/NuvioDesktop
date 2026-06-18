@@ -24,6 +24,11 @@ import kotlin.system.exitProcess
 
 private const val desktopUpdaterPreferencesName = "nuvio_updater"
 private const val ignoredTagKey = "ignored_release_tag"
+private const val composeResourcesDirProperty = "compose.application.resources.dir"
+private const val jpackageAppPathProperty = "jpackage.app-path"
+private const val windowsLauncherFileName = "Nuvio.exe"
+private const val jpackageAppDirName = "app"
+private const val jpackageResourcesDirName = "resources"
 
 private val desktopUpdaterHttpClient: HttpClient = HttpClient.newBuilder()
     .connectTimeout(Duration.ofSeconds(60))
@@ -120,16 +125,32 @@ actual object AppUpdaterPlatform {
 
     private fun launchInstaller(updateFile: File) {
         val command = when (currentOs) {
-            DesktopUpdaterOs.WINDOWS -> if (updateFile.extension.equals("msi", ignoreCase = true)) {
-                listOf("msiexec", "/i", updateFile.absolutePath)
-            } else {
-                listOf(updateFile.absolutePath)
-            }
+            DesktopUpdaterOs.WINDOWS -> windowsInstallerCommand(updateFile, currentWindowsInstallDir())
             DesktopUpdaterOs.MACOS -> listOf("open", updateFile.absolutePath)
             DesktopUpdaterOs.LINUX -> listOf("xdg-open", updateFile.absolutePath)
             DesktopUpdaterOs.UNKNOWN -> error("Desktop updates are not supported on this operating system.")
         }
         ProcessBuilder(command).start()
+    }
+
+    private fun currentWindowsInstallDir(): File? {
+        val processCommand = ProcessHandle.current().info().command().orElse(null)
+        val codeSourcePath = runCatching {
+            AppUpdaterPlatform::class.java.protectionDomain.codeSource?.location
+                ?.takeIf { it.protocol.equals("file", ignoreCase = true) }
+                ?.toURI()
+                ?.let(::File)
+                ?.path
+        }.getOrNull()
+
+        return inferWindowsInstallDir(
+            jpackageAppPath = System.getProperty(jpackageAppPathProperty),
+            processCommand = processCommand,
+            composeResourcesDir = System.getProperty(composeResourcesDirProperty),
+            codeSourcePath = codeSourcePath,
+        )
+            ?.let { dir -> runCatching { dir.canonicalFile }.getOrDefault(dir.absoluteFile) }
+            ?.takeIf { it.isDirectory }
     }
 
     private fun scheduleAppExit() {
@@ -191,3 +212,55 @@ private fun desktopArchitectureFragments(): List<String> {
         else -> emptyList()
     }
 }
+
+internal fun windowsInstallerCommand(updateFile: File, installDir: File?): List<String> {
+    if (!updateFile.extension.equals("msi", ignoreCase = true)) {
+        return listOf(updateFile.absolutePath)
+    }
+
+    return buildList {
+        add("msiexec")
+        add("/i")
+        add(updateFile.absolutePath)
+        installDir?.let { add("INSTALLDIR=${it.absolutePath}") }
+    }
+}
+
+internal fun inferWindowsInstallDir(
+    jpackageAppPath: String?,
+    processCommand: String?,
+    composeResourcesDir: String?,
+    codeSourcePath: String?,
+): File? =
+    installDirFromWindowsLauncher(jpackageAppPath)
+        ?: installDirFromWindowsLauncher(processCommand)
+        ?: installDirFromJpackageResourcesDir(composeResourcesDir)
+        ?: installDirFromJpackageAppPath(codeSourcePath)
+
+private fun installDirFromWindowsLauncher(path: String?): File? {
+    val executable = path?.cleanWindowsPath()?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
+    if (!executable.name.equals(windowsLauncherFileName, ignoreCase = true)) return null
+    return executable.parentFile
+}
+
+private fun installDirFromJpackageResourcesDir(path: String?): File? {
+    val resourcesDir = path?.cleanWindowsPath()?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
+    if (!resourcesDir.name.equals(jpackageResourcesDirName, ignoreCase = true)) return null
+
+    val appDir = resourcesDir.parentFile ?: return null
+    if (!appDir.name.equals(jpackageAppDirName, ignoreCase = true)) return null
+
+    return appDir.parentFile
+}
+
+private fun installDirFromJpackageAppPath(path: String?): File? {
+    val appPath = path?.cleanWindowsPath()?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
+    val appDir = appPath.takeIf { it.name.equals(jpackageAppDirName, ignoreCase = true) }
+        ?: appPath.parentFile
+        ?: return null
+    if (!appDir.name.equals(jpackageAppDirName, ignoreCase = true)) return null
+
+    return appDir.parentFile
+}
+
+private fun String.cleanWindowsPath(): String = trim().trim('"')
