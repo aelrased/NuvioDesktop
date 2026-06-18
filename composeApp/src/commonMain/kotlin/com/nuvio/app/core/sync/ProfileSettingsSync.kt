@@ -99,13 +99,19 @@ object ProfileSettingsSync {
     suspend fun pull(profileId: Int): Boolean {
         ensureRepositoriesLoaded()
         return syncMutex.withLock {
+            if (ProfileRepository.activeProfileId != profileId) {
+                log.d { "pull(profileId=$profileId) — skipped because profile is no longer active" }
+                return@withLock false
+            }
             isServerSyncInFlight = true
             try {
                 val remoteJson = fetchRemoteSettingsJson(profileId)
+                if (ProfileRepository.activeProfileId != profileId) return@withLock false
 
                 if (remoteJson == null) {
                     log.i { "pull(profileId=$profileId) — no remote settings blob found" }
                     clearPreservedRemotePlayerSettings(profileId)
+                    if (ProfileRepository.activeProfileId != profileId) return@withLock false
                     val localBlob = exportSettingsBlob(profileId)
                     val localSignature = buildSignature(localBlob)
                     if (localSignature != defaultSignature()) {
@@ -133,6 +139,7 @@ object ProfileSettingsSync {
                         return@withLock false
                     }
 
+                    if (ProfileRepository.activeProfileId != profileId) return@withLock false
                     applyRemoteBlob(profileId, remoteBlob)
                     skipNextPushSignature = currentObservedStateSignature()
                 } finally {
@@ -155,7 +162,9 @@ object ProfileSettingsSync {
         syncMutex.withLock {
             runCatching {
                 val profileId = ProfileRepository.activeProfileId
-                pushToRemoteLocked(profileId, exportSettingsBlob(profileId))
+                val blob = exportSettingsBlob(profileId)
+                if (ProfileRepository.activeProfileId != profileId) return@runCatching
+                pushToRemoteLocked(profileId, blob)
             }.onFailure { error ->
                 log.e(error) { "pushCurrentProfileToRemote() — FAILED" }
             }
