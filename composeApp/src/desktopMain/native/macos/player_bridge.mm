@@ -1971,7 +1971,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     double outline = MAX(0.0, MIN(8.0, outlineSize));
     mpv_set_property(_mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline);
 
-    double size = MAX(24.0, MIN(96.0, fontSize));
+    double size = MAX(18.0, MIN(96.0, fontSize));
     mpv_set_property(_mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size);
 
     int64_t position = MAX(0, MIN(150, subPos));

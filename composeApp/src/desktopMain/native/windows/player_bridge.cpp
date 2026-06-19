@@ -946,7 +946,7 @@ public:
             std::lock_guard<std::mutex> lock(mpvMutex);
             if (!mpv) return;
             double outline = std::max(0.0, std::min(8.0, outlineSize));
-            double size = std::max(24.0, std::min(96.0, fontSize));
+            double size = std::max(18.0, std::min(96.0, fontSize));
             int64_t position = std::max(0, std::min(150, subPos));
             mpvApi().setProperty(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline);
             mpvApi().setProperty(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size);
