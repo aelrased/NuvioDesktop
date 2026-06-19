@@ -619,11 +619,11 @@ private fun ContinueWatchingCard(
 
     Box(
         modifier = Modifier
+            .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
             .width(cardMetrics.width)
             .aspectRatio(PosterLandscapeAspectRatio)
             .clip(RoundedCornerShape(cardMetrics.cornerRadius))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .posterCardClickable(onClick = onClick, onLongClick = onLongClick),
+            .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
         if (imageUrl != null) {
             AsyncImage(
@@ -788,6 +788,7 @@ private fun ContinueWatchingWideCard(
 ) {
     Row(
         modifier = Modifier
+            .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
             .width(layout.wideCardWidth)
             .height(layout.wideCardHeight)
             .clip(RoundedCornerShape(layout.cardRadius))
@@ -796,8 +797,7 @@ private fun ContinueWatchingWideCard(
                 width = 1.5.dp,
                 color = Color.White.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(layout.cardRadius),
-            )
-            .posterCardClickable(onClick = onClick, onLongClick = onLongClick),
+            ),
     ) {
         val shouldBlurArtwork = blurNextUp && useEpisodeThumbnails && item.isNextUp
         val artworkUrl = item.continueWatchingArtworkUrl(useEpisodeThumbnails)
@@ -909,7 +909,9 @@ private fun ContinueWatchingPosterCard(
     onLongClick: (() -> Unit)?,
 ) {
     Column(
-        modifier = Modifier.width(layout.posterCardWidth),
+        modifier = Modifier
+            .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
+            .width(layout.posterCardWidth),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
@@ -917,8 +919,7 @@ private fun ContinueWatchingPosterCard(
                 .fillMaxWidth()
                 .height(layout.posterCardHeight)
                 .clip(RoundedCornerShape(layout.cardRadius))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .posterCardClickable(onClick = onClick, onLongClick = onLongClick),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             val imageUrl = item.continueWatchingPosterArtworkUrl(useEpisodeThumbnails)
             val shouldBlurArtwork = blurNextUp &&
