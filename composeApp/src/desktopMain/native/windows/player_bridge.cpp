@@ -676,6 +676,7 @@ public:
         long long initialPositionMs,
         const std::string &controlsUrl,
         JavaVM *vm,
+        int decoderPriority,
         jobject sink,
         jmethodID method
     ) {
@@ -691,8 +692,8 @@ public:
         auto initState = std::make_shared<InitializationState>();
         auto self = shared_from_this();
         uiThread = std::thread(
-            [self, sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, initState]() {
-                self->runNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, initState);
+            [self, sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority, initState]() {
+                self->runNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority, initState);
             }
         );
 
@@ -975,6 +976,7 @@ private:
     std::thread eventThread;
     std::atomic_bool stopping = false;
     std::atomic_bool shuttingDown = false;
+    std::atomic_bool hwdecLogged = false;  // one-shot log for hwdec-current
 
     JavaVM *javaVm = nullptr;
     jobject eventSink = nullptr;
@@ -994,11 +996,12 @@ private:
         bool playWhenReady,
         long long initialPositionMs,
         std::string controlsUrl,
+        int decoderPriority,
         std::shared_ptr<InitializationState> initState
     ) {
         std::string failure;
         try {
-            initializeOnNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl);
+            initializeOnNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority);
         } catch (const std::exception &error) {
             failure = error.what();
             cleanupUiResources();
@@ -1027,7 +1030,8 @@ private:
         const std::vector<std::string> &headerLines,
         bool playWhenReady,
         long long initialPositionMs,
-        const std::string &controlsUrl
+        const std::string &controlsUrl,
+        int decoderPriority
     ) {
         registerWindowClasses();
         uiThreadId = GetCurrentThreadId();
@@ -1078,7 +1082,7 @@ private:
         }
 
         startWebView(controlsUrl);
-        startMpv(sourceUrl, headerLines, playWhenReady, initialPositionMs);
+        startMpv(sourceUrl, headerLines, playWhenReady, initialPositionMs, decoderPriority);
         layoutNativeSubviews();
         if (!SetTimer(messageHwnd, NUVIO_TIMER_ID, 500, nullptr)) {
             throw std::runtime_error("Unable to start native player timer.");
@@ -1263,7 +1267,8 @@ private:
         const std::string &sourceUrl,
         const std::vector<std::string> &headerLines,
         bool playWhenReady,
-        long long initialPositionMs
+        long long initialPositionMs,
+        int decoderPriority
     ) {
         MpvApi &api = mpvApi();
         {
@@ -1281,9 +1286,16 @@ private:
             setMpvOptionStringLocked("keep-open", "yes");
             setMpvOptionStringLocked("vo", "gpu-next");
             setMpvOptionStringLocked("gpu-api", "d3d11");
-            setMpvOptionStringLocked("hwdec", "d3d11va");
+            setMpvOptionStringLocked("hwdec", "auto");
             setMpvOptionStringLocked("hwdec-codecs", "all");
-            setMpvOptionStringLocked("vd-lavc-software-fallback", "no");
+            if (decoderPriority == 0) {
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "no");
+            } else if (decoderPriority == 2) {
+                setMpvOptionStringLocked("hwdec", "no");
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "yes");
+            } else {
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "yes");
+            }
             setMpvOptionStringLocked("vd-lavc-threads", "4");
             setMpvOptionStringLocked("target-colorspace-hint", "yes");
             setMpvOptionStringLocked("tone-mapping", "auto");
@@ -1855,6 +1867,7 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     jboolean playWhenReady,
     jlong initialPositionMs,
     jstring controlsPageUrl,
+    jint decoderPriority,
     jobject eventSink
 ) {
     HWND hostHwnd = (HWND)(intptr_t)hostViewPtr;
@@ -1888,6 +1901,7 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
             initialPositionMs,
             controlsPageUrlText,
             javaVm,
+            decoderPriority,
             eventSinkRef,
             eventMethod
         );

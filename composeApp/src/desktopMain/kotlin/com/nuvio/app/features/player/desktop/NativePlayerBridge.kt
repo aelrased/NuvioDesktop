@@ -33,6 +33,7 @@ internal object NativePlayerBridge {
         playWhenReady: Boolean,
         initialPositionMs: Long,
         controlsPageUrl: String,
+        decoderPriority: Int,
         eventSink: NativePlayerEventSink,
     ): Long
 
