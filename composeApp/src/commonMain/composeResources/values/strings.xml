@@ -1615,8 +1615,13 @@
     <string name="player_ios_preset_custom_label">Custom</string>
     <string name="player_ios_preset_custom_desc">Use your advanced values below.</string>
     <string name="player_ios_hardware_decoder_off">Off</string>
+    <!-- Playback settings Windows NVIDIA RTX Video -->
+    <string name="settings_playback_nvidia_rtx_video_section">NVIDIA RTX Video</string>
+    <string name="settings_playback_nvidia_rtx_super_resolution">RTX Video Super Resolution</string>
+    <string name="settings_playback_nvidia_rtx_super_resolution_desc">Upscale low-resolution video using NVIDIA RTX AI Super Resolution.</string>
     <!-- Playback settings iOS video output -->
     <string name="settings_playback_ios_video_output">iOS video output</string>
+
     <string name="settings_playback_ios_hardware_decoder">Hardware decoder</string>
     <string name="settings_playback_ios_extended_dynamic_range">Extended dynamic range</string>
     <string name="settings_playback_ios_extended_dynamic_range_desc">Default Metal output mode for new playback sessions.</string>
