@@ -830,6 +830,17 @@ public:
         mpvApi().setProperty(mpv, "volume", MPV_FORMAT_DOUBLE, &next);
     }
 
+    void setVolume(double level) {
+        std::lock_guard<std::mutex> lock(mpvMutex);
+        if (!mpv) return;
+        double next = std::max(0.0, std::min(100.0, level * 100.0));
+        mpvApi().setProperty(mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+    }
+
+    double volume() {
+        return std::max(0.0, std::min(100.0, doubleProperty("volume", 100.0))) / 100.0;
+    }
+
     void setResizeMode(int mode) {
         switch (mode) {
             case 1:
@@ -1996,6 +2007,12 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_adjustVolume(JNIEn
     if (player) player->adjustVolume(delta);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setVolume(JNIEnv *, jobject, jlong handle, jfloat level) {
+    auto player = playerFromHandle(handle);
+    if (player) player->setVolume(level);
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_durationMs(JNIEnv *, jobject, jlong handle) {
     auto player = playerFromHandle(handle);
@@ -2036,6 +2053,12 @@ extern "C" JNIEXPORT jfloat JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_speed(JNIEnv *, jobject, jlong handle) {
     auto player = playerFromHandle(handle);
     return player ? (jfloat)player->speed() : 1.0f;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_volume(JNIEnv *, jobject, jlong handle) {
+    auto player = playerFromHandle(handle);
+    return player ? (jfloat)player->volume() : 1.0f;
 }
 
 extern "C" JNIEXPORT void JNICALL

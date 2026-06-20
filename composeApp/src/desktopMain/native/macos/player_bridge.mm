@@ -99,6 +99,8 @@
 - (void)seekByMilliseconds:(long long)offsetMs;
 - (void)setSpeed:(double)speed;
 - (double)speed;
+- (void)setVolume:(double)level;
+- (double)volume;
 - (void)setResizeMode:(int)mode;
 - (long long)durationMs;
 - (long long)positionMs;
@@ -1823,6 +1825,16 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
 }
 
+- (void)setVolume:(double)level {
+    if (!_mpv) return;
+    double next = fmax(0.0, fmin(100.0, level * 100.0));
+    mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+}
+
+- (double)volume {
+    return [self doubleProperty:"volume" fallback:100.0] / 100.0;
+}
+
 - (void)setResizeMode:(int)mode {
     if (!_mpv) return;
     NSString *panscan = @"0.0";
@@ -2576,6 +2588,20 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_adjustVolume(
     });
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setVolume(
+    JNIEnv * /* env */,
+    jobject /* bridge */,
+    jlong handle,
+    jfloat level
+) {
+    if (handle == 0) return;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player setVolume:level];
+    });
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_durationMs(
     JNIEnv * /* env */,
@@ -2651,6 +2677,17 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_speed(
     if (handle == 0) return 1.0f;
     MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
     return (jfloat)[player speed];
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_volume(
+    JNIEnv * /* env */,
+    jobject /* bridge */,
+    jlong handle
+) {
+    if (handle == 0) return 1.0f;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    return (jfloat)[player volume];
 }
 
 extern "C" JNIEXPORT void JNICALL

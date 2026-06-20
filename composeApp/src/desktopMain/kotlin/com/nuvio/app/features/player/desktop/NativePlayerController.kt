@@ -201,7 +201,11 @@ internal class NativePlayerController(
     private fun adjustFallbackVolume(delta: Float) {
         val current = handle
         if (current != 0L) {
-            NativePlayerBridge.adjustVolume(current, delta)
+            val currentLevel = controlsState.volumeLevel ?: NativePlayerBridge.volume(current).coerceIn(0f, 1f)
+            val nextLevel = (currentLevel + (delta / 100f)).coerceIn(0f, 1f)
+            NativePlayerBridge.setVolume(current, nextLevel)
+            controlsState = controlsState.copy(volumeLevel = nextLevel)
+            updateControls(controlsState)
         }
     }
 
@@ -505,6 +509,8 @@ private fun PlayerControlsState.toControlsJson(): String =
         appendJsonField("resizeModeLabel", resizeModeLabel)
         append(',')
         appendJsonField("playbackSpeedLabel", playbackSpeedLabel)
+        append(',')
+        appendJsonField("volumeLevel", volumeLevel)
         append(',')
         appendJsonField("subtitlesLabel", subtitlesLabel)
         append(',')
