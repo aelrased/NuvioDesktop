@@ -750,6 +750,7 @@ button:disabled {
 }
 
 .header-button,
+.opening-button,
 .side-control,
 .play-control,
 .skip-prompt,
@@ -1098,31 +1099,37 @@ button:disabled {
   pointer-events: auto;
 }
 
-.opening-back {
+.opening-actions {
   position: absolute;
-  top: calc(20px + env(safe-area-inset-top));
-  right: calc(var(--hp) + 20px);
+  top: calc(var(--slider-bottom) + env(safe-area-inset-top));
+  right: var(--hp);
   z-index: 3;
-  width: 44px;
-  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.opening-button {
+  width: var(--header-button);
+  height: var(--header-button);
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(0, 0, 0, .3);
+  background: rgba(0, 0, 0, .35);
 }
 
-.opening-back:hover {
-  background: rgba(255, 255, 255, .14);
+.opening-button:hover {
+  background: var(--theme-selected-surface);
 }
 
-.opening-back:active,
-.opening-back.is-pressed {
+.opening-button:active,
+.opening-button.is-pressed {
   transform: scale(.94);
 }
 
-.opening-back svg {
-  width: 24px;
-  height: 24px;
+.opening-button svg {
+  width: var(--header-icon);
+  height: var(--header-icon);
 }
 
 .opening-artwork {
@@ -2268,6 +2275,7 @@ button.action:focus-visible {
   .modal-layer,
   .track-panel,
   .header-button,
+  .opening-button,
   .side-control,
   .play-control,
   .locked-button,

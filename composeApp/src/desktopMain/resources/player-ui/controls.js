@@ -20,6 +20,8 @@ const toggle = document.getElementById("toggle");
 const toggleIcon = document.getElementById("toggleIcon");
 const toggleLabel = document.getElementById("toggleLabel");
 const lockIcon = document.getElementById("lockIcon");
+const fullscreenButton = document.getElementById("fullscreenButton");
+const fullscreenIcon = document.getElementById("fullscreenIcon");
 const title = document.getElementById("title");
 const episode = document.getElementById("episode");
 const streamTitle = document.getElementById("streamTitle");
@@ -37,6 +39,8 @@ const backButton = document.getElementById("backButton");
 const openingOverlay = document.getElementById("openingOverlay");
 const openingArtwork = document.getElementById("openingArtwork");
 const openingBackButton = document.getElementById("openingBackButton");
+const openingFullscreenButton = document.getElementById("openingFullscreenButton");
+const openingFullscreenIcon = document.getElementById("openingFullscreenIcon");
 const openingLogoSlot = document.getElementById("openingLogoSlot");
 const openingLogoBase = document.getElementById("openingLogoBase");
 const openingLogoFillClip = document.getElementById("openingLogoFillClip");
@@ -159,6 +163,7 @@ let state = {
   pauseOverlayDescription: "",
   resizeModeLabel: "Fit",
   playbackSpeedLabel: "1x",
+  isFullscreen: false,
   volumeLevel: null,
   subtitlesLabel: "Subs",
   audioLabel: "Audio",
@@ -388,6 +393,20 @@ const send = (type, value = 0) => {
   }
   const webViewBridge = window.chrome && window.chrome.webview;
   if (webViewBridge) webViewBridge.postMessage({ type, value });
+};
+
+const syncFullscreenButtons = () => {
+  const isFullscreen = Boolean(state.isFullscreen);
+  const icon = isFullscreen ? "#icon-fullscreen-exit" : "#icon-fullscreen";
+  const label = isFullscreen ? "Exit fullscreen" : "Enter fullscreen";
+  if (fullscreenIcon) fullscreenIcon.setAttribute("href", icon);
+  if (openingFullscreenIcon) openingFullscreenIcon.setAttribute("href", icon);
+  if (fullscreenButton) fullscreenButton.setAttribute("aria-label", label);
+  if (openingFullscreenButton) openingFullscreenButton.setAttribute("aria-label", label);
+};
+
+const togglePlayerFullscreen = () => {
+  send("toggleFullscreen", 0);
 };
 
 const hidePlayerToast = token => {
@@ -1548,6 +1567,7 @@ const renderOpeningOverlay = suppress => {
   openingOverlay.classList.toggle("has-progress", hasProgress);
   openingOverlay.setAttribute("aria-hidden", showOpening ? "false" : "true");
   openingBackButton.setAttribute("aria-label", state.closeLabel || "Close player");
+  syncFullscreenButtons();
 
   openingLogoSlot.hidden = !logoUrl;
   openingLogoFillClip.style.width = `${(progress || 0) * 100}%`;
@@ -1847,6 +1867,7 @@ const renderChrome = () => {
   }
   lockButton.setAttribute("aria-label", state.isLocked ? state.unlockLabel : state.lockLabel);
   lockIcon.setAttribute("href", state.isLocked ? "#icon-lock-open" : "#icon-lock");
+  syncFullscreenButtons();
   backButton.setAttribute("aria-label", state.closeLabel || "Close player");
   submitIntroButton.setAttribute("aria-label", state.submitIntroLabel || "Submit Intro");
   videoSettingsButton.setAttribute("aria-label", state.videoSettingsLabel || "Video settings");
@@ -2186,6 +2207,10 @@ document.querySelectorAll("[data-command]").forEach(button => {
       openPlayerModal("submitIntro");
       return;
     }
+    if (command === "toggleFullscreen") {
+      togglePlayerFullscreen();
+      return;
+    }
     showCommandToast(command);
     send(command, 0);
   });
@@ -2506,7 +2531,7 @@ root.addEventListener("dblclick", event => {
   if (event.target.closest("button,input")) return;
   event.preventDefault();
   window.clearTimeout(tapTimer);
-  send("toggleFullscreen", 0);
+  togglePlayerFullscreen();
 });
 
 document.addEventListener("keydown", event => {
@@ -2531,7 +2556,7 @@ document.addEventListener("keydown", event => {
   if (event.code === "F11" || isMacFullscreenShortcut) {
     event.preventDefault();
     focusShortcutRoot();
-    send("toggleFullscreen", 0);
+    togglePlayerFullscreen();
     return;
   }
   if (activeModal || isTextEntryTarget(event.target)) {

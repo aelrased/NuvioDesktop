@@ -38,7 +38,7 @@ internal class NativePlayerController(
     private var handle: Long = 0L
     private var pendingSource: PendingSource? = null
     private var controlsState = PlayerControlsState()
-    private var lastSentControlsStructureKey: PlayerControlsState? = null
+    private var lastSentControlsStructureKey: NativeControlsStructureKey? = null
     private var onAction: (PlayerControlsAction) -> Boolean = { false }
     private var onEvent: (String, Double) -> Boolean = { _, _ -> false }
     private var onScrubChange: (Long) -> Boolean = { false }
@@ -118,11 +118,15 @@ internal class NativePlayerController(
         controlsState = state
         host.setControlsVisible(state.controlsVisible)
         val currentHandle = handle
-        val structureKey = state.nativeControlsStructureKey()
+        val isFullscreen = isDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
+        val structureKey = NativeControlsStructureKey(
+            state = state.nativeControlsStructureKey(),
+            isFullscreen = isFullscreen,
+        )
         val current = currentHandle.takeIf { it != 0L } ?: return
         if (structureKey == lastSentControlsStructureKey) return
         lastSentControlsStructureKey = structureKey
-        NativePlayerBridge.updateControls(current, state.toControlsJson())
+        NativePlayerBridge.updateControls(current, state.toControlsJson(isFullscreen))
     }
 
     fun setResizeMode(mode: PlayerResizeMode) {
@@ -153,7 +157,11 @@ internal class NativePlayerController(
                     seekTo(value.toLong())
                 }
             }
-            "toggleFullscreen" -> toggleDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
+            "toggleFullscreen" -> {
+                toggleDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
+                lastSentControlsStructureKey = null
+                updateControls(controlsState)
+            }
             else -> {
                 val eventHandled = onEvent(type, value)
                 if (eventHandled) return
@@ -485,7 +493,12 @@ private fun String.toPlayerControlsAction(): PlayerControlsAction? =
         else -> null
     }
 
-private fun PlayerControlsState.toControlsJson(): String =
+private data class NativeControlsStructureKey(
+    val state: PlayerControlsState,
+    val isFullscreen: Boolean,
+)
+
+private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
     buildString {
         append('{')
         appendJsonField("title", title)
@@ -509,6 +522,8 @@ private fun PlayerControlsState.toControlsJson(): String =
         appendJsonField("resizeModeLabel", resizeModeLabel)
         append(',')
         appendJsonField("playbackSpeedLabel", playbackSpeedLabel)
+        append(',')
+        appendJsonField("isFullscreen", isFullscreen)
         append(',')
         appendJsonField("volumeLevel", volumeLevel)
         append(',')
