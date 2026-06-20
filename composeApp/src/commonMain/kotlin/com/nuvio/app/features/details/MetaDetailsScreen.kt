@@ -831,9 +831,8 @@ fun MetaDetailsScreen(
                                 }
                                 configuredMetaSectionItems(
                                     settings = metaScreenSettingsUiState.copy(
-                                        items = metaScreenSettingsUiState.items.filter {
-                                            it.key != MetaScreenSectionKey.ACTIONS &&
-                                                it.key != MetaScreenSectionKey.OVERVIEW
+                                        items = metaScreenSettingsUiState.items.filterNot {
+                                            it.key in desktopHeroOwnedMetaSectionKeys
                                         },
                                     ),
                                     meta = meta,
