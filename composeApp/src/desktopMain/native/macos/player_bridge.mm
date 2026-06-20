@@ -1826,10 +1826,14 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 - (void)setResizeMode:(int)mode {
     if (!_mpv) return;
     NSString *panscan = @"0.0";
+    NSString *keepAspect = @"yes";
     switch (mode) {
         case 1:
         case 2:
             panscan = @"1.0";
+            break;
+        case 3:
+            keepAspect = @"no";
             break;
         default:
             break;
@@ -1837,6 +1841,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
     dispatch_queue_t queue = _mpvEventQueue;
     if (!queue) {
+        [self setStringProperty:"keepaspect" value:keepAspect];
         [self setStringProperty:"panscan" value:panscan];
         [self setStringProperty:"video-unscaled" value:@"no"];
         return;
@@ -1847,6 +1852,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         if (!mpv) {
             return;
         }
+        mpv_set_property_string(mpv, "keepaspect", keepAspect.UTF8String);
         mpv_set_property_string(mpv, "panscan", panscan.UTF8String);
         mpv_set_property_string(mpv, "video-unscaled", "no");
     });

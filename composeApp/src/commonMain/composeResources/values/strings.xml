@@ -365,6 +365,7 @@
     <string name="compose_player_reset_defaults">Reset Defaults</string>
     <string name="compose_player_resize_fill">Fill</string>
     <string name="compose_player_resize_fit">Fit</string>
+    <string name="compose_player_resize_stretch">Stretch</string>
     <string name="compose_player_resize_zoom">Zoom</string>
     <string name="compose_player_seek_back_10">Seek backward 10 seconds</string>
     <string name="compose_player_seek_delta_backward">-%1$ds</string>

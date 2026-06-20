@@ -133,6 +133,7 @@ internal class NativePlayerController(
                     PlayerResizeMode.Fit -> 0
                     PlayerResizeMode.Fill -> 1
                     PlayerResizeMode.Zoom -> 2
+                    PlayerResizeMode.Stretch -> 3
                 },
             )
         }

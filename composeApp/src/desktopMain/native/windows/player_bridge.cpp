@@ -834,10 +834,17 @@ public:
         switch (mode) {
             case 1:
             case 2:
+                setStringProperty("keepaspect", "yes");
                 setStringProperty("panscan", "1.0");
                 setStringProperty("video-unscaled", "no");
                 break;
+            case 3:
+                setStringProperty("keepaspect", "no");
+                setStringProperty("panscan", "0.0");
+                setStringProperty("video-unscaled", "no");
+                break;
             default:
+                setStringProperty("keepaspect", "yes");
                 setStringProperty("panscan", "0.0");
                 setStringProperty("video-unscaled", "no");
                 break;
