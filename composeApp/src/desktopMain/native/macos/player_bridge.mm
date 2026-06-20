@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
+#import <IOKit/hidsystem/ev_keymap.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -16,6 +17,30 @@
 #include <dlfcn.h>
 #include <string>
 #include <vector>
+
+#ifndef NX_SUBTYPE_AUX_CONTROL_BUTTONS
+#define NX_SUBTYPE_AUX_CONTROL_BUTTONS 8
+#endif
+
+#ifndef NX_KEYTYPE_PLAY
+#define NX_KEYTYPE_PLAY 16
+#endif
+
+#ifndef NX_KEYTYPE_NEXT
+#define NX_KEYTYPE_NEXT 17
+#endif
+
+#ifndef NX_KEYTYPE_PREVIOUS
+#define NX_KEYTYPE_PREVIOUS 18
+#endif
+
+#ifndef NX_KEYTYPE_FAST
+#define NX_KEYTYPE_FAST 19
+#endif
+
+#ifndef NX_KEYTYPE_REWIND
+#define NX_KEYTYPE_REWIND 20
+#endif
 
 @class PlayerMetalView;
 @class MpvWebPlayer;
@@ -98,6 +123,7 @@
 - (void)handleScriptMessage:(NSDictionary *)message;
 - (void)focusControlsWebViewIfNeeded;
 - (void)layoutNativeSubviews;
+- (void)dispatchMediaKeyPlayerEvent:(NSString *)type;
 - (void)layoutControlsWebViewToBounds:(NSRect)bounds immediate:(BOOL)immediate;
 - (void)hostViewBoundsDidChange:(NSNotification *)notification;
 - (void)hostViewFrameDidChange:(NSNotification *)notification;
@@ -113,6 +139,7 @@
 - (void)handleResizeSettleTimer:(NSTimer *)timer;
 - (void)configureHdrForCurrentScreenWithReason:(NSString *)reason force:(BOOL)force;
 - (void)applyHdrForPolledGamma:(NSString *)gamma primaries:(NSString *)primaries reason:(NSString *)reason force:(BOOL)force;
+- (NSEvent *)handleMediaKeyEvent:(NSEvent *)event;
 @end
 
 typedef CFDictionaryRef (*CoreDisplayCreateInfoDictionaryFn)(CGDirectDisplayID displayId);
@@ -997,6 +1024,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     NSTimer *_timer;
     NSTimer *_resizeSettleTimer;
     NSTimer *_fullscreenTransitionTimer;
+    id _mediaKeyMonitor;
     JavaVM *_javaVm;
     jobject _eventSink;
     jmethodID _eventMethod;
@@ -1106,6 +1134,15 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                                              selector:@selector(windowDidExitFullScreen:)
                                                  name:NSWindowDidExitFullScreenNotification
                                                object:nil];
+    __weak MpvWebPlayer *weakSelf = self;
+    _mediaKeyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskSystemDefined
+                                                            handler:^NSEvent *(NSEvent *event) {
+        MpvWebPlayer *strongSelf = weakSelf;
+        if (!strongSelf) {
+            return event;
+        }
+        return [strongSelf handleMediaKeyEvent:event];
+    }];
     [self layoutNativeSubviews];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self focusControlsWebViewIfNeeded];
@@ -1694,6 +1731,10 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     _resizeSettleTimer = nil;
     [_fullscreenTransitionTimer invalidate];
     _fullscreenTransitionTimer = nil;
+    if (_mediaKeyMonitor) {
+        [NSEvent removeMonitor:_mediaKeyMonitor];
+        _mediaKeyMonitor = nil;
+    }
     _controlsWebReady = NO;
     _pendingControlsJson = nil;
     if (_mpvEventQueue) {
@@ -2236,6 +2277,66 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         }
     } else if ([type isEqualToString:@"scrubFinish"] && value) {
         [self seekToMilliseconds:(long long)llround(value.doubleValue)];
+    }
+}
+
+- (NSEvent *)handleMediaKeyEvent:(NSEvent *)event {
+    if (event.type != NSEventTypeSystemDefined || event.subtype != NX_SUBTYPE_AUX_CONTROL_BUTTONS) {
+        return event;
+    }
+
+    NSInteger data = event.data1;
+    int keyCode = (int)((data & 0xFFFF0000) >> 16);
+    NSString *eventType = nil;
+    switch (keyCode) {
+        case NX_KEYTYPE_PLAY:
+            eventType = @"keyboardToggle";
+            break;
+        case NX_KEYTYPE_NEXT:
+        case NX_KEYTYPE_FAST:
+            eventType = @"keyboardSeekForward";
+            break;
+        case NX_KEYTYPE_PREVIOUS:
+        case NX_KEYTYPE_REWIND:
+            eventType = @"keyboardSeekBack";
+            break;
+        default:
+            break;
+    }
+    if (!eventType) {
+        return event;
+    }
+
+    NSWindow *hostWindow = _hostView.window;
+    if (!NSApp.isActive || (hostWindow && NSApp.keyWindow && NSApp.keyWindow != hostWindow)) {
+        return event;
+    }
+
+    int keyFlags = (int)(data & 0x0000FFFF);
+    int keyState = (keyFlags & 0x0000FF00) >> 8;
+    BOOL isKeyDown = keyState == 0x0A;
+    BOOL isRepeat = (keyFlags & 0x1) != 0;
+    if (isKeyDown && !isRepeat) {
+        [self dispatchMediaKeyPlayerEvent:eventType];
+    }
+    return nil;
+}
+
+- (void)dispatchMediaKeyPlayerEvent:(NSString *)type {
+    if (_eventSink && _eventMethod) {
+        [self sendPlayerEvent:type value:0.0];
+        return;
+    }
+
+    if ([type isEqualToString:@"keyboardToggle"]) {
+        [self setPaused:![self isPaused]];
+        [self syncControls];
+    } else if ([type isEqualToString:@"keyboardSeekForward"]) {
+        [self seekByMilliseconds:10 * 1000];
+        [self syncControls];
+    } else if ([type isEqualToString:@"keyboardSeekBack"]) {
+        [self seekByMilliseconds:-10 * 1000];
+        [self syncControls];
     }
 }
 
