@@ -79,6 +79,7 @@ import com.nuvio.app.features.plugins.PluginsUiState
 import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.streams.StreamAutoPlaySource
+import com.nuvio.app.isDesktop
 import com.nuvio.app.isIos
 import com.nuvio.app.isWindows
 import kotlinx.coroutines.launch
@@ -361,32 +362,34 @@ private fun PlaybackSettingsSection(
                         )
                     }
                 }
-                SettingsGroupDivider(isTablet = isTablet)
-                SettingsSwitchRow(
-                    title = stringResource(Res.string.settings_playback_touch_gestures),
-                    description = stringResource(Res.string.settings_playback_touch_gestures_description),
-                    checked = touchGesturesEnabled,
-                    enabled = !autoPlayPlayerSettings.externalPlayerEnabled,
-                    isTablet = isTablet,
-                    onCheckedChange = PlayerSettingsRepository::setTouchGesturesEnabled,
-                )
-                SettingsGroupDivider(isTablet = isTablet)
-                SettingsSwitchRow(
-                    title = stringResource(Res.string.settings_playback_hold_to_speed),
-                    description = stringResource(Res.string.settings_playback_hold_to_speed_description),
-                    checked = holdToSpeedEnabled,
-                    enabled = !autoPlayPlayerSettings.externalPlayerEnabled,
-                    isTablet = isTablet,
-                    onCheckedChange = PlayerSettingsRepository::setHoldToSpeedEnabled,
-                )
-                if (holdToSpeedEnabled && !autoPlayPlayerSettings.externalPlayerEnabled) {
+                if (!isDesktop) {
                     SettingsGroupDivider(isTablet = isTablet)
-                    SettingsNavigationRow(
-                        title = stringResource(Res.string.settings_playback_hold_speed),
-                        description = formatPlaybackSpeedLabel(holdToSpeedValue),
+                    SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_touch_gestures),
+                        description = stringResource(Res.string.settings_playback_touch_gestures_description),
+                        checked = touchGesturesEnabled,
+                        enabled = !autoPlayPlayerSettings.externalPlayerEnabled,
                         isTablet = isTablet,
-                        onClick = { showHoldToSpeedValueDialog = true },
+                        onCheckedChange = PlayerSettingsRepository::setTouchGesturesEnabled,
                     )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_hold_to_speed),
+                        description = stringResource(Res.string.settings_playback_hold_to_speed_description),
+                        checked = holdToSpeedEnabled,
+                        enabled = !autoPlayPlayerSettings.externalPlayerEnabled,
+                        isTablet = isTablet,
+                        onCheckedChange = PlayerSettingsRepository::setHoldToSpeedEnabled,
+                    )
+                    if (holdToSpeedEnabled && !autoPlayPlayerSettings.externalPlayerEnabled) {
+                        SettingsGroupDivider(isTablet = isTablet)
+                        SettingsNavigationRow(
+                            title = stringResource(Res.string.settings_playback_hold_speed),
+                            description = formatPlaybackSpeedLabel(holdToSpeedValue),
+                            isTablet = isTablet,
+                            onClick = { showHoldToSpeedValueDialog = true },
+                        )
+                    }
                 }
             }
         }
