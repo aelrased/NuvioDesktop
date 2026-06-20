@@ -55,6 +55,7 @@ internal class NativePlayerController(
         playWhenReady: Boolean,
         initialPositionMs: Long,
         decoderPriority: Int,
+        nvidiaRtxSuperResolutionEnabled: Boolean,
         onError: (String?) -> Unit,
     ) {
         val pending = PendingSource(
@@ -63,6 +64,7 @@ internal class NativePlayerController(
             playWhenReady = playWhenReady,
             initialPositionMs = initialPositionMs.coerceAtLeast(0L),
             decoderPriority = decoderPriority,
+            nvidiaRtxSuperResolutionEnabled = nvidiaRtxSuperResolutionEnabled,
             onError = onError,
         )
         pendingSource = pending
@@ -89,6 +91,7 @@ internal class NativePlayerController(
                     initialPositionMs = pending.initialPositionMs,
                     controlsPageUrl = NativePlayerBridge.controlsPageUrl,
                     decoderPriority = pending.decoderPriority,
+                    nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
                     eventSink = eventSink,
                 )
                 if (handle == 0L) error("Native player did not return a handle.")
@@ -273,6 +276,7 @@ internal class NativePlayerController(
             playWhenReady = pending.playWhenReady,
             initialPositionMs = pending.initialPositionMs,
             decoderPriority = pending.decoderPriority,
+            nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
             onError = pending.onError,
         )
     }
@@ -428,6 +432,7 @@ private data class PendingSource(
     val playWhenReady: Boolean,
     val initialPositionMs: Long,
     val decoderPriority: Int,
+    val nvidiaRtxSuperResolutionEnabled: Boolean,
     val onError: (String?) -> Unit,
 )
 
