@@ -1317,10 +1317,10 @@ private:
             setMpvOptionStringLocked("deband", "yes");
             setMpvOptionStringLocked("scale", "spline36");
             setMpvOptionStringLocked("cscale", "spline36");
-            setMpvOptionStringLocked("demuxer-max-bytes", "64MiB");
-            setMpvOptionStringLocked("demuxer-max-back-bytes", "16MiB");
-            setMpvOptionStringLocked("demuxer-seekable-cache", "no");
-            setMpvOptionStringLocked("cache-secs", "30");
+            setMpvOptionStringLocked("demuxer-max-bytes", "512MiB");
+            setMpvOptionStringLocked("demuxer-max-back-bytes", "256MiB");
+            setMpvOptionStringLocked("demuxer-seekable-cache", "yes");
+            setMpvOptionStringLocked("cache-secs", "120");
             setMpvOptionStringLocked("hr-seek", "no");
 
             int64_t wid = (int64_t)(intptr_t)containerHwnd;

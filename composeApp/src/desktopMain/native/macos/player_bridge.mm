@@ -1427,10 +1427,10 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     setMpvOptionString(_mpv, "deband", "yes");
     setMpvOptionString(_mpv, "scale", "spline36");
     setMpvOptionString(_mpv, "cscale", "spline36");
-    setMpvOptionString(_mpv, "demuxer-max-bytes", "64MiB");
-    setMpvOptionString(_mpv, "demuxer-max-back-bytes", "16MiB");
-    setMpvOptionString(_mpv, "demuxer-seekable-cache", "no");
-    setMpvOptionString(_mpv, "cache-secs", "30");
+    setMpvOptionString(_mpv, "demuxer-max-bytes", "512MiB");
+    setMpvOptionString(_mpv, "demuxer-max-back-bytes", "256MiB");
+    setMpvOptionString(_mpv, "demuxer-seekable-cache", "yes");
+    setMpvOptionString(_mpv, "cache-secs", "120");
     setMpvOptionString(_mpv, "hr-seek", "no");
 
     if (headerLines.count > 0) {
