@@ -48,6 +48,7 @@ internal fun PlayerScreenModalHosts(
     onAutoSyncReload: () -> Unit,
     onSubtitleModalDismissed: () -> Unit,
     showVolumeModal: Boolean,
+    currentVolume: Float,
     onVolumeChanged: (Float) -> Unit,
     onVolumeModalDismissed: () -> Unit,
     showVideoSettingsModal: Boolean,
@@ -153,6 +154,7 @@ internal fun PlayerScreenModalHosts(
 
     VolumeModal(
         visible = showVolumeModal,
+        initialVolume = currentVolume,
         onVolumeChanged = onVolumeChanged,
         onDismiss = onVolumeModalDismissed,
     )

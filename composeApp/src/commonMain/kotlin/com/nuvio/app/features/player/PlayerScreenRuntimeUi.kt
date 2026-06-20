@@ -1340,6 +1340,7 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         onAutoSyncReload = { loadSubtitleAutoSyncCues(force = true) },
         onSubtitleModalDismissed = { showSubtitleModal = false },
         showVolumeModal = showVolumeModal,
+        currentVolume = currentVolume,
         onVolumeChanged = { volume ->
             currentVolume = volume
             playerController?.setVolume(volume)

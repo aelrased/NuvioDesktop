@@ -130,10 +130,10 @@ static void *renderThreadFunc(void *data) {
     CreateTask *task = (CreateTask *)data;
 
     while (task->alive) {
-        /* poll mpv events */
+        /* Block for up to 16 ms on mpv events (~60 fps wakeup) */
         if (task->mpv) {
             while (1) {
-                mpv_event *event = mpv_wait_event(task->mpv, 0);
+                mpv_event *event = mpv_wait_event(task->mpv, 0.016);
                 if (event->event_id == MPV_EVENT_NONE) break;
                 switch (event->event_id) {
                     case MPV_EVENT_START_FILE:
@@ -161,10 +161,9 @@ static void *renderThreadFunc(void *data) {
             }
         }
 
-        /* check for new video frame */
+        /* check for new video frame (alive check after event poll) */
+        if (!task->alive) break;
         renderFrameToBuffer(task);
-
-        usleep(33000); /* ~30 fps poll */
     }
 
     return NULL;
@@ -433,7 +432,12 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     mpv_set_option_string(task->mpv, "msg-level", "all=no");
     mpv_set_option_string(task->mpv, "hwdec", "auto-copy");
 
+    /* Prevent decoded-frame memory accumulation (the 13 GB leak) */
+    mpv_set_option_string(task->mpv, "video-latency-hacks", "yes");
+    mpv_set_option_string(task->mpv, "vd-lavc-dr", "no");
+
     /* Color/rendering quality options (software rendering) */
+    mpv_set_option_string(task->mpv, "icc-profile-auto", "yes");
     mpv_set_option_string(task->mpv, "target-prim", "bt.709");
     mpv_set_option_string(task->mpv, "target-trc", "srgb");
     mpv_set_option_string(task->mpv, "tone-mapping", "bt.2390");
@@ -472,11 +476,13 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
         return 0;
     }
 
-    /* ---- create render context (software path) ---- */
+    /* ---- create render context (software path, flip queue = 1 to minimise lag) ---- */
     int advanced = 1;
+    int flipQueue = 1;
     mpv_render_param render_params[] = {
         {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW},
         {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
+        {MPV_RENDER_PARAM_MIN_FRAME_DURATION, &(double){1.0/60.0}},
         {0}
     };
     if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
@@ -582,7 +588,8 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrame(
 {
     (void)thiz;
     CreateTask *task = h(handle);
-    if (!task || !task->frameData) return JNI_FALSE;
+    /* Safety: check alive flag to avoid accessing freed memory */
+    if (!task || !task->alive || !task->frameData) return JNI_FALSE;
 
     pthread_mutex_lock(&task->frameMutex);
 
@@ -606,21 +613,22 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrame(
     double dstAspect = (double)dstW / dstH;
     int drawW, drawH, offX, offY;
     if (dstAspect > aspect) {
-        /* destination wider than source → match height, center horizontally */
         drawH = dstH;
         drawW = (int)(dstH * aspect + 0.5);
         offX = (dstW - drawW) / 2;
         offY = 0;
     } else {
-        /* destination taller than source → match width, center vertically */
         drawW = dstW;
         drawH = (int)(dstW / aspect + 0.5);
         offX = 0;
         offY = (dstH - drawH) / 2;
     }
 
-    DBG("renderFrame: srcW=%d srcH=%d dstW=%d dstH=%d drawW=%d drawH=%d off=(%d,%d)\n",
-        srcW, srcH, dstW, dstH, drawW, drawH, offX, offY);
+    /* Clamp to destination bounds to prevent buffer overrun */
+    if (drawW > dstW) drawW = dstW;
+    if (drawH > dstH) drawH = dstH;
+    if (offX < 0) offX = 0;
+    if (offY < 0) offY = 0;
 
     /* nearest-neighbour scale + rgb0 → ARGB */
     for (int y = 0; y < drawH; y++) {

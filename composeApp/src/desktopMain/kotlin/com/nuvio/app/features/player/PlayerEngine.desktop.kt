@@ -181,7 +181,7 @@ private fun LinuxComposeSurface(
 
     LaunchedEffect(controller) {
         while (true) {
-            delay(33)
+            delay(16)
             if (host.nativeHandle != 0L && surfaceSize.width > 0 && surfaceSize.height > 0) {
                 host.renderFrame(
                     width = surfaceSize.width,

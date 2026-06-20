@@ -47,10 +47,11 @@ import org.jetbrains.compose.resources.stringResource
 @Composable
 fun VolumeModal(
     visible: Boolean,
+    initialVolume: Float = 50f,
     onVolumeChanged: (Float) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var volume by remember { mutableStateOf(50f) }
+    var volume by remember(visible) { mutableStateOf(initialVolume) }
 
     AnimatedVisibility(
         visible = visible,
