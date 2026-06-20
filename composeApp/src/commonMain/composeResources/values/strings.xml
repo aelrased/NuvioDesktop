@@ -1887,6 +1887,7 @@
     <string name="cw_airs_date">Airs %1$s</string>
     <string name="cw_airs_today">Airs today</string>
     <string name="cw_airs_tomorrow">Airs tomorrow</string>
+    <string name="cw_airs_in_days_format">Airs in %1$d days</string>
     <plurals name="cw_airs_in_days">
         <item quantity="one">Airs in %1$d day</item>
         <item quantity="other">Airs in %1$d days</item>
@@ -1894,6 +1895,7 @@
     <string name="cw_airs_date_short">%1$s</string>
     <string name="cw_airs_today_short">Today</string>
     <string name="cw_airs_tomorrow_short">Tomorrow</string>
+    <string name="cw_airs_in_days_short_format">In %1$d days</string>
     <plurals name="cw_airs_in_days_short">
         <item quantity="one">In %1$d day</item>
         <item quantity="other">In %1$d days</item>

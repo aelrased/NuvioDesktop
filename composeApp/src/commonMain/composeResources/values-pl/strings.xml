@@ -1410,6 +1410,7 @@
     <string name="cw_airs_date">Emisja %1$s</string>
     <string name="cw_airs_today">Emisja dzisiaj</string>
     <string name="cw_airs_tomorrow">Emisja jutro</string>
+    <string name="cw_airs_in_days_format">Emisja za %1$d dni</string>
     <plurals name="cw_airs_in_days">
         <item quantity="one">Emisja za %1$d dzień</item>
         <item quantity="few">Emisja za %1$d dni</item>
@@ -1419,6 +1420,7 @@
     <string name="cw_airs_date_short">%1$s</string>
     <string name="cw_airs_today_short">Dzisiaj</string>
     <string name="cw_airs_tomorrow_short">Jutro</string>
+    <string name="cw_airs_in_days_short_format">Za %1$d dni</string>
     <plurals name="cw_airs_in_days_short">
         <item quantity="one">Za %1$d dzień</item>
         <item quantity="few">Za %1$d dni</item>
