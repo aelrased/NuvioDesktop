@@ -940,6 +940,7 @@ val desktopNativePlayerTasks = setOf(
 val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
     "packageDeb", "packageReleaseDeb",
     "packageAppImage", "packageReleaseAppImage",
+    "buildAppImage",
 )
 if (isWindowsHost) {
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
@@ -1150,7 +1151,7 @@ compose.desktop {
                 menuGroup = "Nuvio"
             }
             linux {
-                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon.png"))
+                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio_256.png"))
             }
         }
 
@@ -1158,6 +1159,51 @@ compose.desktop {
             isEnabled.set(false)
         }
     }
+}
+
+val buildAppImage = tasks.register<Exec>("buildAppImage") {
+    notCompatibleWithConfigurationCache("Packages the unpacked app directory into an AppImage using appimagetool.")
+    enabled = isLinuxHost
+    dependsOn("packageReleaseAppImage")
+    val appDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio").get().asFile
+    val appImageOutput = layout.buildDirectory.file("compose/binaries/main-release/appimage/Nuvio-${desktopReleaseVersionName}-x86_64.AppImage")
+    outputs.file(appImageOutput)
+    doFirst {
+        if (!appDir.exists()) {
+            error("App directory not found: ${appDir.absolutePath}. Run packageReleaseAppImage first.")
+        }
+        val appimagetool = listOf("which", "appimagetool").runCommand()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: error("appimagetool not found in PATH. Install it: sudo apt install appimagetool or from https://github.com/AppImage/AppImageKit/releases")
+        val desktopFile = appDir.resolve("Nuvio.desktop")
+        desktopFile.writeText("""
+            [Desktop Entry]
+            Name=Nuvio
+            Exec=Nuvio
+            Icon=Nuvio
+            Type=Application
+            Categories=AudioVideo;Video;Player;
+            Comment=Nuvio Media Player
+            Terminal=false
+        """.trimIndent())
+        appDir.resolve("AppRun").apply {
+            writeText("#!/bin/bash\ndir=\"$(dirname \"$(readlink -f \"\$0\")\")\"\nexec \"\$dir/bin/Nuvio\" \"\$@\"\n")
+            setExecutable(true)
+        }
+        val iconFile = project.file("src/desktopMain/resources/icons/nuvio_256.png")
+        if (iconFile.exists()) {
+            iconFile.copyTo(appDir.resolve("Nuvio.png"), overwrite = true)
+        }
+        appImageOutput.get().asFile.parentFile.mkdirs()
+    }
+    commandLine(
+        "appimagetool",
+        "--appimage-extract-and-run",
+        appDir.absolutePath,
+        appImageOutput.get().asFile.absolutePath,
+    )
+    environment("ARCH", "x86_64")
 }
 
 fun renameMacosDmgOutput(release: Boolean) {
