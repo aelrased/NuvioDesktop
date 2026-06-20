@@ -112,6 +112,9 @@ internal class NativePlayerController(
         this.onEvent = onEvent
         this.onScrubChange = onScrubChange
         this.onScrubFinished = onScrubFinished
+        host.onCursorActivity = {
+            this.onEvent("cursorActivity", 0.0)
+        }
     }
 
     fun updateControls(state: PlayerControlsState) {
