@@ -311,6 +311,15 @@ fun newestDirectory(root: File): File? =
         ?.listFiles(File::isDirectory)
         ?.maxByOrNull { semanticVersionSortKey(it.name) }
 
+fun List<String>.runCommand(): String? {
+    return try {
+        val proc = ProcessBuilder(this)
+            .redirectErrorStream(true)
+            .start()
+        proc.inputStream.bufferedReader().readText().trim().takeIf { it.isNotEmpty() }
+    } catch (_: Exception) { null }
+}
+
 fun jpackageCompatibleVersion(version: String): String {
     val versionCore = version.substringBefore('-').substringBefore('+').trim()
     val parts = versionCore.split('.').filter { it.isNotBlank() }
@@ -480,6 +489,7 @@ val generateRuntimeConfigs = tasks.register<GenerateRuntimeConfigsTask>("generat
 
 val isMacHost = System.getProperty("os.name").contains("mac", ignoreCase = true)
 val isWindowsHost = System.getProperty("os.name").contains("win", ignoreCase = true)
+val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
 val mpvKitDir = providers.gradleProperty("nuvio.mpvkit.dir")
     .orElse(rootProject.layout.projectDirectory.dir("MPVKit").asFile.absolutePath)
 val macosPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/macos/player_bridge.mm")
@@ -776,6 +786,44 @@ val buildWindowsPlayerBridge = tasks.register<Exec>("buildWindowsPlayerBridge") 
     commandLine(windowsPlayerBridgeCommand)
 }
 
+val linuxPlayerRuntimeSource = layout.projectDirectory.dir("src/desktopMain/native/linux/live")
+val linuxPlayerRuntimeOutput = layout.buildDirectory.dir("native/linux-runtime")
+val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
+val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
+if (isLinuxHost) {
+    linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
+}
+val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
+val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
+    notCompatibleWithConfigurationCache("Builds a host-local player bridge for Linux.")
+    enabled = isLinuxHost
+    inputs.file(linuxPlayerBridgeSource)
+    outputs.file(linuxPlayerBridgeOutput)
+    doFirst {
+        val javaHome = linuxPlayerBridgeJavaHome
+        val javaIncludes = "-I${javaHome}/include -I${javaHome}/include/linux"
+        val mpvPkg = "mpv"
+        val cflags = try {
+            listOf("pkg-config", "--cflags", mpvPkg).runCommand()?.trim() ?: ""
+        } catch (_: Exception) { "" }
+        val libs = try {
+            listOf("pkg-config", "--libs", mpvPkg).runCommand()?.trim() ?: ""
+        } catch (_: Exception) { "" }
+        val sourceFile = linuxPlayerBridgeSource.asFile
+        val outputFile = linuxPlayerBridgeOutput.get().asFile
+        commandLine(
+            "gcc", "-shared", "-fPIC",
+            "-Wl,-rpath,'\$ORIGIN'",
+            "-o", outputFile.absolutePath,
+            sourceFile.absolutePath,
+            *javaIncludes.split(" ").filter { it.isNotBlank() }.toTypedArray(),
+            *cflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
+            *libs.split(" ").filter { it.isNotBlank() }.toTypedArray(),
+            "-lm",
+        )
+    }
+}
+
 val prepareWindowsPlayerRuntime = tasks.register<Sync>("prepareWindowsPlayerRuntime") {
     enabled = isWindowsHost
     into(windowsPlayerRuntimeOutput)
@@ -823,6 +871,23 @@ abstract class GenerateNativeRuntimeIndexTask : DefaultTask() {
     }
 }
 
+val prepareLinuxPlayerRuntime = tasks.register<Sync>("prepareLinuxPlayerRuntime") {
+    enabled = isLinuxHost
+    into(linuxPlayerRuntimeOutput)
+    if (linuxPlayerRuntimeSource.asFile.isDirectory) {
+        from(linuxPlayerRuntimeSource) {
+            include("*.so*")
+        }
+    }
+}
+
+val generateLinuxPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexTask>("generateLinuxPlayerRuntimeIndex") {
+    enabled = isLinuxHost
+    dependsOn(prepareLinuxPlayerRuntime)
+    runtimeDir.set(linuxPlayerRuntimeOutput)
+    indexFile.set(linuxPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
+}
+
 tasks.withType<Jar>().configureEach {
     if (isMacHost && name == "desktopJar") {
         dependsOn(buildMacosPlayerBridge)
@@ -839,33 +904,51 @@ tasks.withType<Jar>().configureEach {
             into("native/windows")
         }
     }
+    if (isLinuxHost && name == "desktopJar") {
+        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex)
+        from(linuxPlayerBridgeOutput) {
+            into("native/linux")
+        }
+        from(linuxPlayerRuntimeOutput) {
+            into("native/linux")
+        }
+    }
 }
 
+val desktopNativePlayerTasks = setOf(
+    "run",
+    "runRelease",
+    "desktopRun",
+    "runDistributable",
+    "runReleaseDistributable",
+    "desktopRunHot",
+    "hotRunDesktop",
+    "hotRunDesktopAsync",
+    "hotDevDesktop",
+    "hotDevDesktopAsync",
+    "createDistributable",
+    "createReleaseDistributable",
+    "createRuntimeImage",
+    "package",
+    "packageDistributionForCurrentOS",
+    "packageMsi",
+    "packageUberJarForCurrentOS",
+    "packageReleaseDistributionForCurrentOS",
+    "packageReleaseMsi",
+    "packageReleaseUberJarForCurrentOS",
+)
+val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
+    "packageDeb", "packageReleaseDeb",
+    "packageAppImage", "packageReleaseAppImage",
+)
 if (isWindowsHost) {
-    val desktopNativePlayerTasks = setOf(
-        "run",
-        "runRelease",
-        "desktopRun",
-        "runDistributable",
-        "runReleaseDistributable",
-        "desktopRunHot",
-        "hotRunDesktop",
-        "hotRunDesktopAsync",
-        "hotDevDesktop",
-        "hotDevDesktopAsync",
-        "createDistributable",
-        "createReleaseDistributable",
-        "createRuntimeImage",
-        "package",
-        "packageDistributionForCurrentOS",
-        "packageMsi",
-        "packageUberJarForCurrentOS",
-        "packageReleaseDistributionForCurrentOS",
-        "packageReleaseMsi",
-        "packageReleaseUberJarForCurrentOS",
-    )
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
         dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
+    }
+}
+if (isLinuxHost) {
+    tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
+        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex)
     }
 }
 
@@ -1028,7 +1111,7 @@ compose.desktop {
         )
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.AppImage)
             packageName = "Nuvio"
             packageVersion = desktopReleasePackageVersion
             vendor = "Nuvio Media"
