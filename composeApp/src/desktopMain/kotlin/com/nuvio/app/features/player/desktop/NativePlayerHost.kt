@@ -11,6 +11,7 @@ internal class NativePlayerHost : PlayerHost {
     override var nativeHandle: Long = 0L
 
     override var onMouseClick: (() -> Unit)? = null
+    override var onCursorActivity: (() -> Unit)? = null
 
     private var pixelBuffer: IntArray? = null
     private var pixelBytes: ByteArray? = null

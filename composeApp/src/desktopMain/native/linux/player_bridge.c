@@ -363,9 +363,12 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     jlong hostViewPtr, jint hostWidth, jint hostHeight,
     jstring sourceUrl,
     jobjectArray headerLines, jboolean playWhenReady, jlong initialPositionMs,
-    jstring controlsPageUrl, jobject eventSink)
+    jstring controlsPageUrl,
+    jint decoderPriority, jboolean nvidiaRtxSuperResolutionEnabled,
+    jobject eventSink)
 {
     (void)thiz; (void)hostViewPtr; (void)hostWidth; (void)hostHeight;
+    (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
 
     DBG("create() called (mpv sw-render, no overlay)\n");
 
@@ -478,11 +481,9 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
 
     /* ---- create render context (software path, flip queue = 1 to minimise lag) ---- */
     int advanced = 1;
-    int flipQueue = 1;
     mpv_render_param render_params[] = {
         {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW},
         {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
-        {MPV_RENDER_PARAM_MIN_FRAME_DURATION, &(double){1.0/60.0}},
         {0}
     };
     if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {

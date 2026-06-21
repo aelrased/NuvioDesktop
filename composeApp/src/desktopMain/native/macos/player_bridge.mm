@@ -2412,13 +2412,17 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     JNIEnv *env,
     jobject /* bridge */,
     jlong hostViewPtr,
+    jint hostWidth, jint hostHeight,
     jstring sourceUrl,
     jobjectArray headerLines,
     jboolean playWhenReady,
     jlong initialPositionMs,
     jstring controlsPageUrl,
+    jint decoderPriority, jboolean nvidiaRtxSuperResolutionEnabled,
     jobject eventSink
 ) {
+    (void)hostWidth; (void)hostHeight;
+    (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
     NSView *hostView = (__bridge NSView *)(void *)(intptr_t)hostViewPtr;
     if (!hostView) {
         throwJavaError(env, @"Unable to resolve the AWT host NSView for native playback.");

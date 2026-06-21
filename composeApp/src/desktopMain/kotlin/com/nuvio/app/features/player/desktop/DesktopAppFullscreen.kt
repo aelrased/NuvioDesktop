@@ -78,7 +78,7 @@ internal class DesktopAppFullscreenController {
 
     fun isFullscreen(window: Window, windowState: WindowState): Boolean =
         if (DesktopHostOs.current == DesktopHostOs.WINDOWS) {
-            windowsFullscreenState?.window === window
+            windowsRestoreState?.let { true } == true
         } else {
             windowState.placement == WindowPlacement.Fullscreen
         }

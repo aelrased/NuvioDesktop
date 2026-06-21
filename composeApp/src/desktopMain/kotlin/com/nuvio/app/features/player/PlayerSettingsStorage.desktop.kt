@@ -81,6 +81,7 @@ internal actual object PlayerSettingsStorage {
     private const val iosGammaKey = "ios_gamma"
     private const val desktopHwdecModeKey = "desktop_hwdec_mode"
     private const val customMpvPropertiesKey = "custom_mpv_properties"
+    private const val nvidiaRtxSuperResolutionEnabledKey = "nvidia_rtx_super_resolution_enabled"
     private val syncKeys = listOf(
         showLoadingOverlayKey,
         resizeModeKey,

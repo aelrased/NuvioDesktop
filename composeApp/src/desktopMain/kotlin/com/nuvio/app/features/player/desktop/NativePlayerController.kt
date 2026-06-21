@@ -71,6 +71,8 @@ internal class NativePlayerController(
         sourceHeaders: Map<String, String>,
         playWhenReady: Boolean,
         initialPositionMs: Long,
+        decoderPriority: Int = 0,
+        nvidiaRtxSuperResolutionEnabled: Boolean = false,
         onError: (String?) -> Unit,
     ) {
         val pending = PendingSource(
@@ -78,6 +80,8 @@ internal class NativePlayerController(
             headerLines = sourceHeaders.toHeaderLines(),
             playWhenReady = playWhenReady,
             initialPositionMs = initialPositionMs.coerceAtLeast(0L),
+            decoderPriority = decoderPriority,
+            nvidiaRtxSuperResolutionEnabled = nvidiaRtxSuperResolutionEnabled,
             onError = onError,
         )
         pendingSource = pending
@@ -135,6 +139,8 @@ internal class NativePlayerController(
                 playWhenReady = pending.playWhenReady,
                 initialPositionMs = pending.initialPositionMs,
                 controlsPageUrl = NativePlayerBridge.controlsPageUrl,
+                decoderPriority = pending.decoderPriority,
+                nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
                 eventSink = eventSink,
             )
             System.err.println("[NUVIO_ATTACH] create() returned handle=$handle")
@@ -163,6 +169,8 @@ internal class NativePlayerController(
                 playWhenReady = pending.playWhenReady,
                 initialPositionMs = pending.initialPositionMs,
                 controlsPageUrl = "",
+                decoderPriority = pending.decoderPriority,
+                nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
                 eventSink = eventSink,
             )
             System.err.println("[NUVIO_ATTACH] create() returned handle=$handle")
@@ -194,7 +202,7 @@ internal class NativePlayerController(
         controlsState = state
         host.setControlsVisible(state.controlsVisible)
         val currentHandle = handle
-        val isFullscreen = isDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
+        val isFullscreen = (host as? java.awt.Component)?.let { isDesktopAppFullscreen(SwingUtilities.getWindowAncestor(it)) } ?: false
         val structureKey = NativeControlsStructureKey(
             state = state.nativeControlsStructureKey(),
             isFullscreen = isFullscreen,
@@ -383,6 +391,8 @@ internal class NativePlayerController(
             sourceHeaders = pending.headerLines.toHeaderMap(),
             playWhenReady = pending.playWhenReady,
             initialPositionMs = pending.initialPositionMs,
+            decoderPriority = pending.decoderPriority,
+            nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
             onError = pending.onError,
         )
     }
@@ -570,6 +580,8 @@ private data class PendingSource(
     val headerLines: List<String>,
     val playWhenReady: Boolean,
     val initialPositionMs: Long,
+    val decoderPriority: Int = 0,
+    val nvidiaRtxSuperResolutionEnabled: Boolean = false,
     val onError: (String?) -> Unit,
 )
 

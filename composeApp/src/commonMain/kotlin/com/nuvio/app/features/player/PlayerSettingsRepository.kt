@@ -87,6 +87,7 @@ data class PlayerSettingsUiState(
     val iosGamma: Int = 0,
     val desktopHwdecMode: DesktopHwdecMode = DesktopHwdecMode.Auto,
     val customMpvProperties: String = "",
+    val nvidiaRtxSuperResolutionEnabled: Boolean = false,
 )
 
 object PlayerSettingsRepository {
@@ -149,6 +150,7 @@ object PlayerSettingsRepository {
     private var iosGamma = 0
     private var desktopHwdecMode = DesktopHwdecMode.Auto
     private var customMpvProperties = ""
+    private var nvidiaRtxSuperResolutionEnabled = false
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -216,6 +218,7 @@ object PlayerSettingsRepository {
         iosGamma = 0
         desktopHwdecMode = DesktopHwdecMode.Auto
         customMpvProperties = ""
+        nvidiaRtxSuperResolutionEnabled = false
         publish()
     }
 
@@ -355,6 +358,7 @@ object PlayerSettingsRepository {
             ?.let { runCatching { DesktopHwdecMode.valueOf(it) }.getOrNull() }
             ?: DesktopHwdecMode.Auto
         customMpvProperties = PlayerSettingsStorage.loadCustomMpvProperties() ?: ""
+        nvidiaRtxSuperResolutionEnabled = PlayerSettingsStorage.loadNvidiaRtxSuperResolutionEnabled() ?: false
         publish()
     }
 
@@ -940,6 +944,7 @@ object PlayerSettingsRepository {
             iosGamma = iosGamma,
             desktopHwdecMode = desktopHwdecMode,
             customMpvProperties = customMpvProperties,
+            nvidiaRtxSuperResolutionEnabled = nvidiaRtxSuperResolutionEnabled,
         )
     }
 

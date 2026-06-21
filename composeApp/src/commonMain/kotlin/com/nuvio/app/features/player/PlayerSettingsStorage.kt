@@ -132,6 +132,8 @@ internal expect object PlayerSettingsStorage {
     fun saveDesktopHwdecMode(mode: String)
     fun loadCustomMpvProperties(): String?
     fun saveCustomMpvProperties(props: String)
+    fun loadNvidiaRtxSuperResolutionEnabled(): Boolean?
+    fun saveNvidiaRtxSuperResolutionEnabled(enabled: Boolean)
     fun exportToSyncPayload(): JsonObject
     fun replaceFromSyncPayload(payload: JsonObject)
 }
