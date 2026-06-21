@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.ui.NuvioDesktopImageScaling
 import com.nuvio.app.core.ui.NuvioTokens
+import com.nuvio.app.core.ui.FullscreenActionButton
+import com.nuvio.app.core.ui.isFullscreenActionSupported
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.formatRuntimeForDisplay
 import nuvio.composeapp.generated.resources.Res
@@ -231,44 +234,61 @@ fun DesktopDetailHero(
                 )
             }
             Spacer(modifier = Modifier.height(space.s28))
-            DetailActionButtons(
-                modifier = Modifier.widthIn(max = 520.dp),
-                playLabel = playButtonLabel,
-                secondaryActions = listOf(
-                    DetailSecondaryAction(
-                        label = if (isWatched) {
-                            stringResource(Res.string.hero_mark_unwatched)
-                        } else {
-                            stringResource(Res.string.hero_mark_watched)
-                        },
-                        icon = if (isWatched) {
-                            Icons.Default.CheckCircle
-                        } else {
-                            Icons.Default.CheckCircleOutline
-                        },
-                        isActive = isWatched,
-                        onClick = onWatchedClick,
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 588.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DetailActionButtons(
+                    modifier = Modifier.weight(1f),
+                    playLabel = playButtonLabel,
+                    secondaryActions = listOf(
+                        DetailSecondaryAction(
+                            label = if (isWatched) {
+                                stringResource(Res.string.hero_mark_unwatched)
+                            } else {
+                                stringResource(Res.string.hero_mark_watched)
+                            },
+                            icon = if (isWatched) {
+                                Icons.Default.CheckCircle
+                            } else {
+                                Icons.Default.CheckCircleOutline
+                            },
+                            isActive = isWatched,
+                            onClick = onWatchedClick,
+                        ),
+                        DetailSecondaryAction(
+                            label = if (isSaved) {
+                                stringResource(Res.string.hero_remove_from_library)
+                            } else {
+                                stringResource(Res.string.hero_add_to_library)
+                            },
+                            icon = if (isSaved) {
+                                Icons.Default.Check
+                            } else {
+                                Icons.Default.Add
+                            },
+                            isActive = isSaved,
+                            onClick = onSaveClick,
+                            onLongClick = onSaveLongClick,
+                        ),
                     ),
-                    DetailSecondaryAction(
-                        label = if (isSaved) {
-                            stringResource(Res.string.hero_remove_from_library)
-                        } else {
-                            stringResource(Res.string.hero_add_to_library)
-                        },
-                        icon = if (isSaved) {
-                            Icons.Default.Check
-                        } else {
-                            Icons.Default.Add
-                        },
-                        isActive = isSaved,
-                        onClick = onSaveClick,
-                        onLongClick = onSaveLongClick,
-                    ),
-                ),
-                isTablet = true,
-                onPlayClick = onPlayClick,
-                onPlayLongClick = onPlayLongClick,
-            )
+                    isTablet = true,
+                    onPlayClick = onPlayClick,
+                    onPlayLongClick = onPlayLongClick,
+                )
+                if (isFullscreenActionSupported) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    FullscreenActionButton(
+                        buttonSize = 56.dp,
+                        iconSize = 26.dp,
+                        containerColor = colorScheme.surfaceVariant.copy(alpha = 0.82f),
+                        contentColor = colorScheme.onSurface,
+                    )
+                }
+            }
         }
     }
 }
