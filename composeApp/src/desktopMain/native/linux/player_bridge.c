@@ -532,6 +532,9 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_dispose(
     (void)env; (void)thiz;
     if (!handle) return;
     CreateTask *task = (CreateTask *)(intptr_t)handle;
+
+    /* Wake up the render thread immediately so it sees alive=0 without 16ms delay */
+    if (task->mpv) mpv_wakeup(task->mpv);
     task->alive = 0;
 
     /* Wait for render thread to exit */
