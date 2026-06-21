@@ -59,6 +59,7 @@ private fun setLinuxTaskbarIcon(window: java.awt.Window) {
 
 fun main() {
     configureDesktopChrome()
+    installLinuxDesktopIntegration()
     preloadNativePlayerBridgeAsync()
 
     application {

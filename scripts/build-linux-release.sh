@@ -18,11 +18,16 @@ Options:
   --skip-mpv      Skip system mpv checks (use bundled libmpv).
   -h, --help      Show this help.
 
-Requirements:
-  - Debian/Ubuntu (or derivative)
-  - libmpv-dev (or mpv built from source)
-  - pkg-config, gcc, make
-  - For AppImage: appimagetool (optional, uses bundled linuxdeploy if missing)
+Build requirements (for compiling player_bridge.so):
+  - gcc, make, pkg-config, libmpv-dev (headers only)
+
+Runtime requirements (bundled automatically in DEB/AppImage):
+  - libmpv and its dependencies are declared as DEB dependencies
+  - AppImage bundles libs via linuxdeploy (if available)
+
+Optional for AppImage:
+  - linuxdeploy (auto-downloads if missing)
+  - appimagetool (for final AppImage creation)
 USAGE
 }
 
@@ -63,7 +68,7 @@ echo "Repo root: $repo_root"
 # Check / install system dependencies
 # ------------------------------------------------------------------
 echo ""
-echo "=== Step 1: Check system dependencies ==="
+echo "=== Step 1: Check build dependencies ==="
 echo ""
 
 if [[ "$skip_mpv" == false ]]; then
@@ -73,10 +78,10 @@ if [[ "$skip_mpv" == false ]]; then
   fi
 
   if ! pkg-config --exists mpv 2>/dev/null; then
-    echo "libmpv-dev not found. Installing..."
+    echo "libmpv-dev not found. Installing (needed for player_bridge.so compilation only)..."
     sudo apt-get update -qq
     sudo apt-get install -y -qq libmpv-dev || {
-      echo "WARNING: libmpv-dev installation failed. Attempting fallback build..."
+      echo "WARNING: libmpv-dev installation failed."
       echo "  The build will try to use bundled headers in mediamp-mpv/libmpv/include/"
     }
   else
@@ -100,6 +105,22 @@ if command -v java &>/dev/null; then
 else
   echo "ERROR: Java not found. Install JDK 17+."
   exit 1
+fi
+
+# Check optional tools for AppImage
+if [[ "$appimage_only" == true || "$deb_only" == false ]]; then
+  if command -v linuxdeploy &>/dev/null; then
+    echo "OK: linuxdeploy found (will bundle native libs in AppImage)"
+  else
+    echo "INFO: linuxdeploy not found. AppImage will be built without auto-bundling of system libs."
+    echo "  Install for full bundling: https://github.com/linuxdeploy/linuxdeploy/releases"
+  fi
+  if command -v appimagetool &>/dev/null; then
+    echo "OK: appimagetool found"
+  else
+    echo "WARNING: appimagetool not found. AppImage creation will fail."
+    echo "  Install: sudo apt install appimagetool or from https://github.com/AppImage/AppImageKit/releases"
+  fi
 fi
 
 # Ensure bundled native runtime dirs exist
@@ -141,13 +162,13 @@ fi
 
 if [[ "$deb_only" == true ]]; then
   echo "Building DEB only..."
-  gradle_tasks+=(":composeApp:packageReleaseDeb")
+  gradle_tasks+=(":composeApp:patchLinuxDebDependencies")
 elif [[ "$appimage_only" == true ]]; then
   echo "Building AppImage only..."
-  gradle_tasks+=(":composeApp:packageReleaseAppImage")
+  gradle_tasks+=(":composeApp:buildAppImage")
 else
   echo "Building DEB + AppImage..."
-  gradle_tasks+=(":composeApp:packageReleaseDistributionForCurrentOS")
+  gradle_tasks+=(":composeApp:patchLinuxDebDependencies" ":composeApp:buildAppImage")
 fi
 
 echo "Running: ./gradlew ${gradle_tasks[*]} ${gradle_common[*]} ${extra_gradle_args[*]}"

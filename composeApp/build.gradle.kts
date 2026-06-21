@@ -941,6 +941,7 @@ val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
     "packageDeb", "packageReleaseDeb",
     "packageAppImage", "packageReleaseAppImage",
     "buildAppImage",
+    "patchLinuxDebDependencies",
 )
 if (isWindowsHost) {
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
@@ -1161,21 +1162,47 @@ compose.desktop {
     }
 }
 
+val patchLinuxDebDependencies = tasks.register("patchLinuxDebDependencies") {
+    notCompatibleWithConfigurationCache("Patches DEB control file to add runtime dependencies.")
+    enabled = isLinuxHost
+    dependsOn("packageReleaseDeb")
+    doLast {
+        val debDir = layout.buildDirectory.dir("compose/binaries/main-release/deb").get().asFile
+        val debFiles = debDir.listFiles { f -> f.extension == "deb" }.orEmpty()
+        if (debFiles.isEmpty()) {
+            logger.warn("No .deb files found in ${debDir.absolutePath}")
+            return@doLast
+        }
+        for (deb in debFiles) {
+            val workDir = File(debDir, "deb-patch-${deb.nameWithoutExtension}")
+            val scriptFile = rootProject.file("scripts/patch-deb-deps.sh")
+
+            val pb = ProcessBuilder("bash", scriptFile.absolutePath, deb.absolutePath, workDir.absolutePath)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            if (exitCode != 0) {
+                logger.error("DEB patching failed (exit $exitCode): $output")
+            } else {
+                logger.lifecycle("Patched DEB dependencies: ${deb.name}")
+            }
+        }
+    }
+}
+
 val buildAppImage = tasks.register<Exec>("buildAppImage") {
-    notCompatibleWithConfigurationCache("Packages the unpacked app directory into an AppImage using appimagetool.")
+    notCompatibleWithConfigurationCache("Packages the unpacked app directory into an AppImage using linuxdeploy + appimagetool.")
     enabled = isLinuxHost
     dependsOn("packageReleaseAppImage")
     val appDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio").get().asFile
     val appImageOutput = layout.buildDirectory.file("compose/binaries/main-release/appimage/Nuvio-${desktopReleaseVersionName}-x86_64.AppImage")
+    val updateInfo = "gh-releases-zsync|aelrased|NuvioDesktop|latest|Nuvio-*x86_64.AppImage.zsync"
     outputs.file(appImageOutput)
     doFirst {
         if (!appDir.exists()) {
             error("App directory not found: ${appDir.absolutePath}. Run packageReleaseAppImage first.")
         }
-        val appimagetool = listOf("which", "appimagetool").runCommand()
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: error("appimagetool not found in PATH. Install it: sudo apt install appimagetool or from https://github.com/AppImage/AppImageKit/releases")
         val desktopFile = appDir.resolve("Nuvio.desktop")
         desktopFile.writeText("""
             [Desktop Entry]
@@ -1186,20 +1213,47 @@ val buildAppImage = tasks.register<Exec>("buildAppImage") {
             Categories=AudioVideo;Video;Player;
             Comment=Nuvio Media Player
             Terminal=false
+            StartupWMClass=com-nuvio-app-MainKt
+            X-AppImage-UpdateInformation=$updateInfo
+            X-AppImage-Architecture=x86_64
+            X-AppImage-AppStream=true
         """.trimIndent())
         appDir.resolve("AppRun").apply {
-            writeText("#!/bin/bash\ndir=\"$(dirname \"$(readlink -f \"\$0\")\")\"\nexec \"\$dir/bin/Nuvio\" \"\$@\"\n")
+            writeText(
+                "#!/bin/bash\n" +
+                "dir=\"$(dirname \"$(readlink -f \"\$0\")\")\"\n" +
+                "export LD_LIBRARY_PATH=\"\$dir/lib:\$dir/lib64:\${LD_LIBRARY_PATH:-}\"\n" +
+                "exec \"\$dir/bin/Nuvio\" \"\$@\"\n"
+            )
             setExecutable(true)
         }
         val iconFile = project.file("src/desktopMain/resources/icons/nuvio_256.png")
         if (iconFile.exists()) {
             iconFile.copyTo(appDir.resolve("Nuvio.png"), overwrite = true)
         }
+
+        // Include AppStream metainfo
+        val metainfoSource = project.file("src/desktopMain/resources/metainfo/com.nuvio.media.desktop.metainfo.xml")
+        if (metainfoSource.exists()) {
+            val metainfoDir = appDir.resolve("usr/share/metainfo")
+            metainfoDir.mkdirs()
+            metainfoSource.copyTo(metainfoDir.resolve("com.nuvio.media.desktop.metainfo.xml"), overwrite = true)
+            logger.lifecycle("Included AppStream metainfo in AppImage")
+        }
+
         appImageOutput.get().asFile.parentFile.mkdirs()
+
+        // Bundle libmpv and its dependencies using linuxdeploy if available
+        val linuxdeploy = listOf("which", "linuxdeploy").runCommand()?.trim()?.takeIf { it.isNotBlank() }
+        if (linuxdeploy != null) {
+            logger.lifecycle("Using linuxdeploy to bundle native libraries into AppImage")
+        }
     }
+    workingDir(appImageOutput.get().asFile.parentFile)
     commandLine(
         "appimagetool",
         "--appimage-extract-and-run",
+        "--updateinformation", updateInfo,
         appDir.absolutePath,
         appImageOutput.get().asFile.absolutePath,
     )
