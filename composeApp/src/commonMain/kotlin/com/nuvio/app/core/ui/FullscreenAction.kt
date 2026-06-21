@@ -34,6 +34,14 @@ internal expect fun isFullscreenActionActive(): Boolean
 
 internal expect fun toggleFullscreenAction()
 
+internal fun fullscreenActionHorizontalInsetForWidth(maxWidthDp: Float): Dp =
+    when {
+        maxWidthDp >= 1440f -> 32.dp
+        maxWidthDp >= 1024f -> 28.dp
+        maxWidthDp >= 768f -> 24.dp
+        else -> 16.dp
+    }
+
 @Composable
 internal fun FullscreenActionButton(
     modifier: Modifier = Modifier,
