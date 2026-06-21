@@ -475,6 +475,21 @@ private fun DesktopHomeHeroFrame(
             }
         }
 
+        if (isFullscreenActionSupported) {
+            FullscreenActionButton(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = space.s32,
+                        end = contentHorizontalPadding,
+                    ),
+                buttonSize = 48.dp,
+                iconSize = 24.dp,
+                containerColor = colorScheme.surfaceVariant.copy(alpha = 0.82f),
+                contentColor = colorScheme.onSurface,
+            )
+        }
+
         HeroPageIndicatorRow(
             itemCount = items.size,
             pagerState = pagerState,
@@ -722,40 +737,32 @@ private fun DesktopHeroContentBlock(
             )
         }
 
-        if (onItemClick != null || isFullscreenActionSupported) {
+        if (onItemClick != null) {
             Spacer(modifier = Modifier.height(NuvioTokens.Space.s24))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onItemClick != null) {
-                    Surface(
-                        modifier = Modifier
-                            .height(48.dp)
-                            .clickable { onItemClick(item) },
-                        color = colorScheme.onBackground,
-                        contentColor = colorScheme.background,
-                        shape = RoundedCornerShape(40.dp),
+                Surface(
+                    modifier = Modifier
+                        .height(48.dp)
+                        .clickable { onItemClick(item) },
+                    color = colorScheme.onBackground,
+                    contentColor = colorScheme.background,
+                    shape = RoundedCornerShape(40.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = stringResource(Res.string.home_view_details),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                            )
-                        }
+                        Text(
+                            text = stringResource(Res.string.home_view_details),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                        )
                     }
                 }
-                FullscreenActionButton(
-                    buttonSize = 48.dp,
-                    iconSize = 23.dp,
-                    containerColor = colorScheme.surfaceVariant.copy(alpha = 0.82f),
-                    contentColor = colorScheme.onSurface,
-                )
             }
         }
     }
