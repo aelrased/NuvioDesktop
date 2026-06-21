@@ -2033,7 +2033,7 @@ const setChromeVisibleFromKeyboard = (visible, { focusAction = false } = {}) => 
 };
 
 const handleTvStyleControlKey = event => {
-  if (event.metaKey || event.ctrlKey || event.altKey || activeModal || isTextEntryTarget(event.target)) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return false;
   if (state.isLocked) {
     const controlKey = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "NumpadEnter", "Space"].includes(event.code);
     if (!controlKey) return false;
@@ -2054,19 +2054,23 @@ const handleTvStyleControlKey = event => {
     return true;
   }
 
-  if (state.controlsVisible && event.code === "ArrowLeft") {
+  if (event.code === "ArrowLeft") {
     event.preventDefault();
-    keepChromeVisibleFromKeyboard();
-    moveActionFocus(-1);
+    noteChromeActivity();
+    showCommandToast("keyboardSeekBack");
+    send("keyboardSeekBack", 0);
     return true;
   }
 
-  if (state.controlsVisible && event.code === "ArrowRight") {
+  if (event.code === "ArrowRight") {
     event.preventDefault();
-    keepChromeVisibleFromKeyboard();
-    moveActionFocus(1);
+    noteChromeActivity();
+    showCommandToast("keyboardSeekForward");
+    send("keyboardSeekForward", 0);
     return true;
   }
+
+  if (activeModal) return false;
 
   if (event.code === "Enter" || event.code === "NumpadEnter") {
     event.preventDefault();
@@ -2559,10 +2563,13 @@ document.addEventListener("keydown", event => {
     togglePlayerFullscreen();
     return;
   }
-  if (activeModal || isTextEntryTarget(event.target)) {
+  if (isTextEntryTarget(event.target)) {
     return;
   }
   if (handleTvStyleControlKey(event)) {
+    return;
+  }
+  if (activeModal) {
     return;
   }
   const command = shortcutCommandForEvent(event);
