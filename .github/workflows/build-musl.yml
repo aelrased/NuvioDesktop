@@ -9,6 +9,9 @@ on:
         type: boolean
         default: false
   push:
+    branches:
+      - "Dev"
+      - "main"
     tags:
       - "v*"
 
@@ -100,12 +103,7 @@ jobs:
           cp composeApp/build/native/linux-runtime/* "$APPDIR/usr/lib/nuvio/" 2>/dev/null || true
 
           # Create launcher script
-          cat > "$APPDIR/usr/bin/nuvio" << 'EOF'
-#!/bin/sh
-APP_DIR="$(dirname "$0")"
-LIB_DIR="$APP_DIR/../lib/nuvio"
-exec java -Djava.library.path="$LIB_DIR" -jar "$LIB_DIR/nuvio.jar" "$@"
-EOF
+          printf '%s\n' '#!/bin/sh' 'APP_DIR="$(dirname "$0")"' 'LIB_DIR="$APP_DIR/../lib/nuvio"' 'exec java -Djava.library.path="$LIB_DIR" -jar "$LIB_DIR/nuvio.jar" "$@"' > "$APPDIR/usr/bin/nuvio"
           chmod +x "$APPDIR/usr/bin/nuvio"
 
           # Copy desktop file and icon
