@@ -109,6 +109,7 @@ import com.nuvio.app.core.ui.configurePlatformImageLoader
 import com.nuvio.app.core.ui.NuvioToastHost
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioFloatingPrompt
+import com.nuvio.app.core.ui.ProfileMeshBackground
 import com.nuvio.app.core.ui.TraktListPickerDialog
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.core.ui.NuvioTokens
@@ -179,6 +180,7 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.profiles.ProfileSelectionScreen
 import com.nuvio.app.features.profiles.ProfileSwitcherTab
 import com.nuvio.app.features.profiles.SidebarProfileSwitcherStack
+import com.nuvio.app.features.profiles.parseHexColor
 import com.nuvio.app.features.profiles.profileAvatarImageUrl
 import com.nuvio.app.features.search.SearchScreen
 import com.nuvio.app.features.settings.SettingsScreen
@@ -795,26 +797,42 @@ private fun MainAppContent(
             }
         }
         val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
-    val playerSettingsUiState by PlayerSettingsRepository.uiState.collectAsStateWithLifecycle()
-    val externalPlayerSupported = AppFeaturePolicy.externalPlayerSupported
-    val p2pSettingsUiState by P2pSettingsRepository.uiState.collectAsStateWithLifecycle()
-    val watchedUiState by WatchedRepository.uiState.collectAsStateWithLifecycle()
-    val downloadsUiState by DownloadsRepository.uiState.collectAsStateWithLifecycle()
-    val networkStatusUiState by remember {
-        NetworkStatusRepository.uiState
-    }.collectAsStateWithLifecycle()
-    val downloadedProviderLabel = stringResource(Res.string.provider_downloaded)
-    val externalPlayerNotConfiguredText = stringResource(Res.string.external_player_not_configured)
-    val externalPlayerUnavailableText = stringResource(Res.string.external_player_unavailable)
-    val externalPlayerFailedText = stringResource(Res.string.external_player_failed)
-    val cloudLibraryPlayFailedText = stringResource(Res.string.cloud_library_play_failed)
-    val cloudLibraryPlayDisabledText = stringResource(Res.string.cloud_library_play_disabled)
-    val cloudLibraryPlayNotConnectedText = stringResource(Res.string.cloud_library_play_not_connected)
-    val nativeTabHomeTitle = stringResource(Res.string.compose_nav_home)
-    val nativeTabSearchTitle = stringResource(Res.string.compose_nav_search)
-    val nativeTabLibraryTitle = stringResource(Res.string.compose_nav_library)
-    val nativeTabProfileTitle = stringResource(Res.string.compose_nav_profile)
-    val isTraktLibrarySource = libraryUiState.sourceMode == LibrarySourceMode.TRAKT
+        val launchOverlayProfileColor = remember(profileState.activeProfile, profileState.profiles) {
+            val sourceProfile = profileState.activeProfile ?: profileState.profiles.firstOrNull()
+            sourceProfile?.avatarColorHex?.let(::parseHexColor) ?: Color(0xFF1E88E5)
+        }
+        val externalPlayerSupported = AppFeaturePolicy.externalPlayerSupported
+        val playerSettingsUiState by remember {
+            PlayerSettingsRepository.ensureLoaded()
+            PlayerSettingsRepository.uiState
+        }.collectAsStateWithLifecycle()
+        val p2pSettingsUiState by remember {
+            P2pSettingsRepository.ensureLoaded()
+            P2pSettingsRepository.uiState
+        }.collectAsStateWithLifecycle()
+        val watchedUiState by remember {
+            WatchedRepository.ensureLoaded()
+            WatchedRepository.uiState
+        }.collectAsStateWithLifecycle()
+        val downloadsUiState by remember {
+            DownloadsRepository.ensureLoaded()
+            DownloadsRepository.uiState
+        }.collectAsStateWithLifecycle()
+        val networkStatusUiState by remember {
+            NetworkStatusRepository.uiState
+        }.collectAsStateWithLifecycle()
+        val downloadedProviderLabel = stringResource(Res.string.provider_downloaded)
+        val externalPlayerNotConfiguredText = stringResource(Res.string.external_player_not_configured)
+        val externalPlayerUnavailableText = stringResource(Res.string.external_player_unavailable)
+        val externalPlayerFailedText = stringResource(Res.string.external_player_failed)
+        val cloudLibraryPlayFailedText = stringResource(Res.string.cloud_library_play_failed)
+        val cloudLibraryPlayDisabledText = stringResource(Res.string.cloud_library_play_disabled)
+        val cloudLibraryPlayNotConnectedText = stringResource(Res.string.cloud_library_play_not_connected)
+        val nativeTabHomeTitle = stringResource(Res.string.compose_nav_home)
+        val nativeTabSearchTitle = stringResource(Res.string.compose_nav_search)
+        val nativeTabLibraryTitle = stringResource(Res.string.compose_nav_library)
+        val nativeTabProfileTitle = stringResource(Res.string.compose_nav_profile)
+        val isTraktLibrarySource = libraryUiState.sourceMode == LibrarySourceMode.TRAKT
     var initialHomeReady by rememberSaveable { mutableStateOf(false) }
     var offlineLaunchRouteHandled by rememberSaveable { mutableStateOf(false) }
     var networkToastBaselineReady by rememberSaveable { mutableStateOf(false) }
@@ -2997,7 +3015,10 @@ private fun MainAppContent(
                 enter = fadeIn(),
                 exit = fadeOut(androidx.compose.animation.core.tween(400)),
             ) {
-                AppLaunchOverlay(modifier = Modifier.fillMaxSize())
+                AppLaunchOverlay(
+                    profileColor = launchOverlayProfileColor,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
 
             NuvioFloatingPrompt(
@@ -3569,15 +3590,19 @@ private fun TabletTopPillItem(
 
 @Composable
 private fun AppLaunchOverlay(
+    profileColor: Color,
     modifier: Modifier = Modifier,
 ) {
     val tokens = MaterialTheme.nuvio
     Box(
         modifier = modifier
-            .background(tokens.colors.background)
             .zIndex(NuvioTokens.Z.dialog),
         contentAlignment = Alignment.Center,
     ) {
+        ProfileMeshBackground(
+            profileColor = profileColor,
+            modifier = Modifier.fillMaxSize(),
+        )
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
