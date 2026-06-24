@@ -818,6 +818,7 @@ val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
             *javaIncludes.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             *extraCflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             "-I${mpvInclude}",
+            "-include", "stddef.h",
             "-lm", "-lpthread",
         )
     }

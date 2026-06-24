@@ -27,12 +27,12 @@ jobs:
       - name: Install mpv headers
         run: |
           sudo mkdir -p /tmp/mpv-headers/mpv
-          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/client.h" -o /tmp/mpv-headers/mpv/client.h
-          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render.h" -o /tmp/mpv-headers/mpv/render.h
-          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render_gl.h" -o /tmp/mpv-headers/mpv/render_gl.h
-          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/stream_cb.h" -o /tmp/mpv-headers/mpv/stream_cb.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/include/mpv/client.h" -o /tmp/mpv-headers/mpv/client.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/include/mpv/render.h" -o /tmp/mpv-headers/mpv/render.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/include/mpv/render_gl.h" -o /tmp/mpv-headers/mpv/render_gl.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/include/mpv/stream_cb.h" -o /tmp/mpv-headers/mpv/stream_cb.h
           echo "MPV_INCLUDE=/tmp/mpv-headers" >> "$GITHUB_ENV"
-          echo "mpv headers installed:" && ls /tmp/mpv-headers/mpv/
+          echo "mpv headers installed:" && ls -la /tmp/mpv-headers/mpv/ && head -3 /tmp/mpv-headers/mpv/client.h
 
       - name: Install system dependencies
         run: |
