@@ -317,7 +317,9 @@ fun List<String>.runCommand(): String? {
         val proc = ProcessBuilder(this)
             .redirectErrorStream(true)
             .start()
-        proc.inputStream.bufferedReader().readText().trim().takeIf { it.isNotEmpty() }
+        val output = proc.inputStream.bufferedReader().readText().trim()
+        val exitCode = proc.waitFor()
+        if (exitCode != 0) null else output.takeIf { it.isNotEmpty() }
     } catch (_: Exception) { null }
 }
 

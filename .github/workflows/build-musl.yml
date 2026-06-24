@@ -26,14 +26,13 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          sudo apt-get update -y
+          sudo apt-get update
           sudo apt-get install -y \
             openjdk-21-jdk-headless \
             musl-tools \
             gcc \
             make \
             pkg-config \
-            libmpv-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
             libgles2-mesa-dev \
@@ -42,6 +41,18 @@ jobs:
             zlib1g-dev \
             git \
             curl
+
+      - name: Install mpv headers
+        run: |
+          sudo apt-get install -y libmpv-dev || {
+            echo "libmpv-dev not available, downloading headers..."
+            sudo mkdir -p /usr/include/mpv
+            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/client.h" -o /usr/include/mpv/client.h
+            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render.h" -o /usr/include/mpv/render.h
+            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render_gl.h" -o /usr/include/mpv/render_gl.h
+            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/stream_cb.h" -o /usr/include/mpv/stream_cb.h
+          }
+          echo "mpv headers installed:" && ls /usr/include/mpv/
 
       - name: Set JAVA_HOME
         run: echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
