@@ -130,7 +130,7 @@ jobs:
         if: inputs.appimage_only != true
         run: |
           echo "=== Creating musl AppImage ==="
-          appimagetool /tmp/nuvio-musl.AppDir "Nuvio-${{ steps.version.outputs.version }}-musl-x86_64.AppImage" || true
+          appimagetool --appimage-extract-and-run /tmp/nuvio-musl.AppDir "Nuvio-${{ steps.version.outputs.version }}-musl-x86_64.AppImage" || true
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
