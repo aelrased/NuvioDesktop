@@ -807,13 +807,7 @@ val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
         val javaIncludes = "-I${javaHome}/include -I${javaHome}/include/linux"
         val linuxCc = providers.gradleProperty("linuxCc").getOrElse("gcc")
         val extraCflags = providers.gradleProperty("linuxCflags").getOrElse("")
-        val mpvPkg = "mpv"
-        val cflags = try {
-            listOf("pkg-config", "--cflags", mpvPkg).runCommand()?.trim() ?: ""
-        } catch (_: Exception) { "" }
-        val libs = try {
-            listOf("pkg-config", "--libs", mpvPkg).runCommand()?.trim() ?: ""
-        } catch (_: Exception) { "" }
+        val mpvInclude = providers.gradleProperty("mpvInclude").getOrElse("/usr/include")
         val sourceFile = linuxPlayerBridgeSource.asFile
         val outputFile = linuxPlayerBridgeOutput.get().asFile
         commandLine(
@@ -823,9 +817,8 @@ val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
             sourceFile.absolutePath,
             *javaIncludes.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             *extraCflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
-            *cflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
-            *libs.split(" ").filter { it.isNotBlank() }.toTypedArray(),
-            "-lm",
+            "-I${mpvInclude}",
+            "-lm", "-lpthread",
         )
     }
 }

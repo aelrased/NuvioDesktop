@@ -24,6 +24,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Install mpv headers
+        run: |
+          sudo mkdir -p /tmp/mpv-headers/mpv
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/client.h" -o /tmp/mpv-headers/mpv/client.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render.h" -o /tmp/mpv-headers/mpv/render.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render_gl.h" -o /tmp/mpv-headers/mpv/render_gl.h
+          sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/stream_cb.h" -o /tmp/mpv-headers/mpv/stream_cb.h
+          echo "MPV_INCLUDE=/tmp/mpv-headers" >> "$GITHUB_ENV"
+          echo "mpv headers installed:" && ls /tmp/mpv-headers/mpv/
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -32,27 +42,8 @@ jobs:
             musl-tools \
             gcc \
             make \
-            pkg-config \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libgles2-mesa-dev \
-            libgbm-dev \
-            libx11-dev \
-            zlib1g-dev \
             git \
             curl
-
-      - name: Install mpv headers
-        run: |
-          sudo apt-get install -y libmpv-dev || {
-            echo "libmpv-dev not available, downloading headers..."
-            sudo mkdir -p /usr/include/mpv
-            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/client.h" -o /usr/include/mpv/client.h
-            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render.h" -o /usr/include/mpv/render.h
-            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/render_gl.h" -o /usr/include/mpv/render_gl.h
-            sudo curl -sL "https://raw.githubusercontent.com/mpv-player/mpv/master/libmpv/stream_cb.h" -o /usr/include/mpv/stream_cb.h
-          }
-          echo "mpv headers installed:" && ls /usr/include/mpv/
 
       - name: Set JAVA_HOME
         run: echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
@@ -96,7 +87,8 @@ jobs:
             :composeApp:desktopJar \
             --no-configuration-cache \
             -PlinuxCc=musl-gcc \
-            -PlinuxCflags='-static-libgcc'
+            -PlinuxCflags='-static-libgcc' \
+            -PmpvInclude=/tmp/mpv-headers
 
       - name: Create AppDir
         run: |
