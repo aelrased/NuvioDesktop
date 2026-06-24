@@ -90,6 +90,14 @@ jobs:
             -PlinuxCflags='-static-libgcc' \
             -PmpvInclude=/tmp/mpv-headers
 
+      - name: Debug build outputs
+        run: |
+          echo "=== Build outputs ==="
+          find composeApp/build -name "*.jar" -type f 2>/dev/null || echo "no jars"
+          find composeApp/build -name "*.so" -type f 2>/dev/null || echo "no so"
+          echo "=== Build tree ==="
+          find composeApp/build -maxdepth 4 -type d 2>/dev/null || echo "no build dir"
+
       - name: Create AppDir
         run: |
           echo "=== Creating musl AppDir ==="
