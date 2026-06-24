@@ -57,6 +57,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git for Fedora container
+        run: git config --global http.version HTTP/1.1
+
       - name: Setup Gradle with JDK 21
         uses: gradle/actions/setup-gradle@v4
         with:
