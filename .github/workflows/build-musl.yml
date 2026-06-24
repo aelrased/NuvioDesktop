@@ -97,24 +97,34 @@ jobs:
           mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/nuvio" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
           # Copy the JAR
-          cp composeApp/build/libs/desktop.jar "$APPDIR/usr/lib/nuvio/nuvio.jar"
+          JAR_FILE=$(find composeApp/build -name "desktop*.jar" -type f 2>/dev/null | head -1)
+          if [[ -n "$JAR_FILE" ]]; then
+            cp "$JAR_FILE" "$APPDIR/usr/lib/nuvio/nuvio.jar"
+            echo "JAR copied: $JAR_FILE"
+          else
+            echo "WARNING: desktop JAR not found"
+          fi
 
           # Copy the musl-compiled native bridge
-          cp composeApp/build/native/linux/libplayer_bridge.so "$APPDIR/usr/lib/nuvio/"
+          cp composeApp/build/native/linux/libplayer_bridge.so "$APPDIR/usr/lib/nuvio/" 2>/dev/null || echo "WARNING: libplayer_bridge.so not found"
 
           # Copy the runtime files (libmpv.so, libmpv.so.2) from the build output
-          cp composeApp/build/native/linux-runtime/* "$APPDIR/usr/lib/nuvio/" 2>/dev/null || true
+          cp composeApp/build/native/linux-runtime/* "$APPDIR/usr/lib/nuvio/" 2>/dev/null || echo "WARNING: no runtime files found"
 
           # Create launcher script
           printf '%s\n' '#!/bin/sh' 'APP_DIR="$(dirname "$0")"' 'LIB_DIR="$APP_DIR/../lib/nuvio"' 'exec java -Djava.library.path="$LIB_DIR" -jar "$LIB_DIR/nuvio.jar" "$@"' > "$APPDIR/usr/bin/nuvio"
           chmod +x "$APPDIR/usr/bin/nuvio"
 
           # Copy desktop file and icon
-          cp composeApp/src/desktopMain/resources/*.desktop "$APPDIR/usr/share/applications/" 2>/dev/null || true
-          cp composeApp/src/desktopMain/resources/*.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/" 2>/dev/null || true
+          cp composeApp/build/compose/binaries/main-release/app/Nuvio/Nuvio.desktop "$APPDIR/usr/share/applications/" 2>/dev/null || \
+          cp composeApp/src/desktopMain/resources/*.desktop "$APPDIR/usr/share/applications/" 2>/dev/null || \
+          echo "WARNING: .desktop file not found"
+          find composeApp/src/desktopMain/resources -name "nuvio*256*.png" -exec cp {} "$APPDIR/usr/share/icons/hicolor/256x256/apps/nuvio-app-icon.png" \; 2>/dev/null || \
+          cp composeApp/src/desktopMain/resources/icons/nuvio-app-icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/" 2>/dev/null || \
+          echo "WARNING: icon not found"
 
           echo "=== AppDir contents ==="
-          ls -la "$APPDIR/usr/lib/nuvio/"
+          find "$APPDIR" -type f | sort
 
       - name: Create AppImage
         if: inputs.appimage_only != true
