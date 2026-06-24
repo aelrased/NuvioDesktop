@@ -19,36 +19,34 @@ jobs:
   build-musl:
     name: Build musl (Alpine)
     runs-on: ubuntu-latest
-    container:
-      image: alpine:latest
-      options: --privileged
 
     steps:
       - name: Install system dependencies
         run: |
-          apk add --no-cache \
-            openjdk21-jdk \
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            openjdk-21-jdk-headless \
+            musl-tools \
             gcc \
-            musl-dev \
             make \
-            pkgconf \
-            mpv-dev \
-            mpv-libs-static \
-            egl-dev \
-            mesa-gl-dev \
-            gbm-dev \
+            pkg-config \
+            libmpv-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libgbm-dev \
             libx11-dev \
-            zlib-dev \
+            zlib1g-dev \
             git \
             curl
 
       - name: Set JAVA_HOME
-        run: echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk" >> "$GITHUB_ENV"
+        run: echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
 
       - name: Install appimagetool
         run: |
-          curl -sL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -o /usr/local/bin/appimagetool
-          chmod +x /usr/local/bin/appimagetool
+          sudo curl -sL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -o /usr/local/bin/appimagetool
+          sudo chmod +x /usr/local/bin/appimagetool
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -75,7 +73,7 @@ jobs:
 
       - name: Build with Gradle (musl-gcc)
         env:
-          JAVA_HOME: /usr/lib/jvm/java-21-openjdk
+          JAVA_HOME: /usr/lib/jvm/java-21-openjdk-amd64
         run: |
           ./gradlew \
             :composeApp:buildLinuxPlayerBridge \
