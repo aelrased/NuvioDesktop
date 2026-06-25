@@ -116,6 +116,7 @@ import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.LocalNuvioBottomNavigationOverlayPadding
 import com.nuvio.app.core.ui.NativeNavigationTab
 import com.nuvio.app.core.ui.NativeTabBridge
+import com.nuvio.app.core.ui.desktopUiScaleForWindow
 import com.nuvio.app.core.ui.isLiquidGlassNativeTabBarSupported
 import com.nuvio.app.core.ui.localizedContinueWatchingSubtitle
 import com.nuvio.app.core.ui.nuvio
@@ -479,50 +480,56 @@ fun App() {
         ThemeSettingsRepository.selectedTheme
     }.collectAsStateWithLifecycle()
     val amoledEnabled by remember { ThemeSettingsRepository.amoledEnabled }.collectAsStateWithLifecycle()
-    NuvioTheme(appTheme = selectedTheme, amoled = amoledEnabled) {
-        LaunchedEffect(Unit) {
-            refreshSyncBackendSelection()
-            AuthRepository.initialize()
-        }
-
-        LaunchedEffect(Unit) {
-            AppForegroundMonitor.events().collect {
-                refreshSyncBackendSelection()
-            }
-        }
-
-        LaunchedEffect(Unit) {
-            NetworkStatusRepository.ensureStarted()
-            ProfileRepository.loadCachedProfiles()
-            AvatarRepository.fetchAvatars()
-        }
-
-        val authState by AuthRepository.state.collectAsStateWithLifecycle()
-        val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
-        val profileAvatars by AvatarRepository.avatars.collectAsStateWithLifecycle()
-        val networkStatusUiState by remember {
-            NetworkStatusRepository.uiState
-        }.collectAsStateWithLifecycle()
-
-        LaunchedEffect(
-            profileState.activeProfile?.profileIndex,
-            profileState.activeProfile?.name,
-            profileState.activeProfile?.avatarColorHex,
-            profileState.activeProfile?.avatarId,
-            profileState.activeProfile?.avatarUrl,
-            profileAvatars,
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val desktopUiScale = desktopUiScaleForWindow(maxWidth.value, maxHeight.value)
+        NuvioTheme(
+            appTheme = selectedTheme,
+            amoled = amoledEnabled,
+            desktopUiScale = desktopUiScale,
         ) {
-            val activeProfile = profileState.activeProfile
-            val avatarItem = activeProfile?.avatarId?.let { avatarId ->
-                profileAvatars.find { it.id == avatarId }
+            LaunchedEffect(Unit) {
+                refreshSyncBackendSelection()
+                AuthRepository.initialize()
             }
-            NativeTabBridge.publishProfileTabIcon(
-                name = activeProfile?.name,
-                avatarColorHex = activeProfile?.avatarColorHex,
-                avatarImageUrl = activeProfile?.let { profileAvatarImageUrl(it, avatarItem) },
-                avatarBackgroundColorHex = avatarItem?.bgColor,
-            )
-        }
+
+            LaunchedEffect(Unit) {
+                AppForegroundMonitor.events().collect {
+                    refreshSyncBackendSelection()
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                NetworkStatusRepository.ensureStarted()
+                ProfileRepository.loadCachedProfiles()
+                AvatarRepository.fetchAvatars()
+            }
+
+            val authState by AuthRepository.state.collectAsStateWithLifecycle()
+            val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
+            val profileAvatars by AvatarRepository.avatars.collectAsStateWithLifecycle()
+            val networkStatusUiState by remember {
+                NetworkStatusRepository.uiState
+            }.collectAsStateWithLifecycle()
+
+            LaunchedEffect(
+                profileState.activeProfile?.profileIndex,
+                profileState.activeProfile?.name,
+                profileState.activeProfile?.avatarColorHex,
+                profileState.activeProfile?.avatarId,
+                profileState.activeProfile?.avatarUrl,
+                profileAvatars,
+            ) {
+                val activeProfile = profileState.activeProfile
+                val avatarItem = activeProfile?.avatarId?.let { avatarId ->
+                    profileAvatars.find { it.id == avatarId }
+                }
+                NativeTabBridge.publishProfileTabIcon(
+                    name = activeProfile?.name,
+                    avatarColorHex = activeProfile?.avatarColorHex,
+                    avatarImageUrl = activeProfile?.let { profileAvatarImageUrl(it, avatarItem) },
+                    avatarBackgroundColorHex = avatarItem?.bgColor,
+                )
+            }
 
         var gateScreen by rememberSaveable { mutableStateOf(AppGateScreen.Loading.name) }
         var editingProfile by remember { mutableStateOf<NuvioProfile?>(null) }
@@ -743,6 +750,7 @@ fun App() {
             }
         }
     }
+}
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
