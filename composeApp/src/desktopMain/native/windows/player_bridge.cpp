@@ -783,6 +783,12 @@ public:
         });
     }
 
+    void requestFocus() {
+        postUiTask([self = shared_from_this()]() {
+            self->focusNativeControls();
+        });
+    }
+
     void setPaused(bool paused) {
         std::lock_guard<std::mutex> lock(mpvMutex);
         if (!mpv) return;
@@ -1406,6 +1412,22 @@ private:
         }
     }
 
+    void focusNativeControls() {
+        if (containerHwnd && IsWindow(containerHwnd)) {
+            SetFocus(containerHwnd);
+        }
+        if (controller) {
+            controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+        }
+        if (webView && controlsWebReady.load()) {
+            webView->ExecuteScript(
+                L"(function(){var root=document.getElementById('playerRoot');"
+                L"if(root){root.focus({preventScroll:true});}})()",
+                nullptr
+            );
+        }
+    }
+
     void flushPendingControlsJsonIfReady() {
         if (!webView || !controlsWebReady.load()) {
             return;
@@ -1979,6 +2001,12 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_updateControls(JNI
     auto player = playerFromHandle(handle);
     std::string controlsJsonText = jstringToUtf8(env, controlsJson);
     if (player) player->updateControlsJson(controlsJsonText);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(JNIEnv *, jobject, jlong handle) {
+    auto player = playerFromHandle(handle);
+    if (player) player->requestFocus();
 }
 
 extern "C" JNIEXPORT void JNICALL
