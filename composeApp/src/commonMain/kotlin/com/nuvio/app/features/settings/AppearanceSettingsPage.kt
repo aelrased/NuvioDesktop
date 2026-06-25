@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.rounded.Style
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -181,7 +180,6 @@ internal fun LazyListScope.appearanceSettingsContent(
                     SettingsNavigationRow(
                         title = stringResource(Res.string.settings_appearance_desktop_navigation),
                         description = stringResource(desktopNavigationLayout.labelRes),
-                        icon = Icons.Rounded.Style,
                         isTablet = isTablet,
                         onClick = { showDesktopNavigationSheet = true },
                     )
