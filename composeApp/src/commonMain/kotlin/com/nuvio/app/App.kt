@@ -3590,7 +3590,7 @@ private fun TabletTopPillItem(
 
 @Composable
 private fun AppLaunchOverlay(
-    profileColor: Color,
+    profileColor: Color = Color(0xFF1E88E5),
     modifier: Modifier = Modifier,
 ) {
     val tokens = MaterialTheme.nuvio
