@@ -34,6 +34,9 @@ internal class NativePlayerController(
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
         val log = Logger.withTag("NativePlayerControls")
+
+        @Volatile
+        var rememberedVolumeLevel: Float = 1f
     }
 
     @Volatile
@@ -115,6 +118,7 @@ internal class NativePlayerController(
                     "attach created handle=$handle source=${resolvedSource.toPlaybackLogKey()} " +
                         "initialPositionMs=${pending.initialPositionMs}"
                 }
+                applyRememberedVolume()
                 updateControls(controlsState)
                 applyPendingSubtitleSettings()
             }.onFailure { error ->
@@ -271,10 +275,20 @@ internal class NativePlayerController(
         val current = handle
         if (current != 0L) {
             val nextLevel = level.coerceIn(0f, 1f)
+            rememberedVolumeLevel = nextLevel
             NativePlayerBridge.setVolume(current, nextLevel)
             controlsState = controlsState.copy(volumeLevel = nextLevel)
             updateControls(controlsState)
         }
+    }
+
+    private fun applyRememberedVolume() {
+        val current = handle
+        if (current == 0L) return
+        val level = rememberedVolumeLevel.coerceIn(0f, 1f)
+        NativePlayerBridge.setVolume(current, level)
+        controlsState = controlsState.copy(volumeLevel = level)
+        log.d { "applied remembered volume level=$level handle=$current" }
     }
 
     private fun fallbackSeekBy(offsetMs: Long) {
