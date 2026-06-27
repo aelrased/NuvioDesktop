@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -174,6 +175,7 @@ import com.nuvio.app.features.player.sanitizePlaybackResponseHeaders
 import com.nuvio.app.features.profiles.ActiveProfileMiniAvatar
 import com.nuvio.app.features.profiles.AvatarCatalogItem
 import com.nuvio.app.features.profiles.AvatarRepository
+import com.nuvio.app.features.profiles.MAX_PROFILES
 import com.nuvio.app.features.profiles.NuvioProfile
 import com.nuvio.app.features.profiles.NativeProfileSwitcherPopup
 import com.nuvio.app.features.profiles.ProfileEditScreen
@@ -373,6 +375,10 @@ private val DesktopSidebarExpandedContentWidth = 168.dp
 private val DesktopSidebarItemHeight = 58.dp
 private val DesktopSidebarIconSlotSize = 42.dp
 private val DesktopSidebarIconSize = NuvioTokens.Icon.lg
+private val DesktopSidebarProfileStackRowHeight = 40.dp
+private val DesktopSidebarProfileStackRowGap = 4.dp
+private val DesktopSidebarProfileStackTopGap = 6.dp
+private val DesktopSidebarProfileStackNavGap = 12.dp
 
 private fun AppScreenTab.toNativeNavigationTab(): NativeNavigationTab = when (this) {
     AppScreenTab.Home -> NativeNavigationTab.Home
@@ -3210,6 +3216,7 @@ private fun DesktopHoverSidebar(
     val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
     val avatars by AvatarRepository.avatars.collectAsStateWithLifecycle()
     val activeProfile = profileState.activeProfile
+    val profiles = profileState.profiles
     val activeProfileName = activeProfile?.name ?: stringResource(Res.string.compose_nav_profile)
     val hoverSource = remember { MutableInteractionSource() }
     val hovered by hoverSource.collectIsHoveredAsState()
@@ -3235,9 +3242,33 @@ private fun DesktopHoverSidebar(
         color = tokens.colors.background,
         contentColor = tokens.colors.textPrimary,
     ) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier.fillMaxSize(),
         ) {
+            val profileStackRows = profiles.size + if (profiles.size < MAX_PROFILES) 1 else 0
+            val profileStackHeight = if (profileStackRows > 0) {
+                DesktopSidebarProfileStackRowHeight * profileStackRows +
+                    DesktopSidebarProfileStackRowGap * (profileStackRows - 1)
+            } else {
+                0.dp
+            }
+            val profileStackTop = profileTopPadding + DesktopSidebarItemHeight + DesktopSidebarProfileStackTopGap
+            val minNavTop = if (profileStackVisible) {
+                profileStackTop + profileStackHeight + DesktopSidebarProfileStackNavGap
+            } else {
+                0.dp
+            }
+            val navColumnHeight = DesktopSidebarItemHeight * AppScreenTab.entries.size
+            val centeredNavTop = ((maxHeight - navColumnHeight) / 2).coerceAtLeast(0.dp)
+            val availableNavOffset = (maxHeight - navColumnHeight - centeredNavTop).coerceAtLeast(0.dp)
+            val navColumnOffset = (minNavTop - centeredNavTop)
+                .coerceIn(0.dp, availableNavOffset)
+            val animatedNavColumnOffset by animateDpAsState(
+                targetValue = navColumnOffset,
+                animationSpec = tween(durationMillis = 180),
+                label = "desktop_sidebar_nav_offset",
+            )
+
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -3267,14 +3298,16 @@ private fun DesktopHoverSidebar(
                     onDismissRequest = { profileStackVisible = false },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = profileTopPadding + DesktopSidebarItemHeight + 6.dp)
-                        .width(DesktopSidebarExpandedContentWidth),
+                        .padding(top = profileStackTop)
+                        .width(DesktopSidebarExpandedContentWidth)
+                        .zIndex(NuvioTokens.Z.sheet),
                 )
             }
 
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
+                    .offset(y = animatedNavColumnOffset)
                     .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
