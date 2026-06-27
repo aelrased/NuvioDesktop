@@ -45,16 +45,6 @@ data class MetaScreenSectionItem(
     val tabGroup: Int? = null,
 )
 
-data class MetaScreenSettingsUiState(
-    val items: List<MetaScreenSectionItem> = emptyList(),
-    val backgroundMode: MetaScreenBackgroundMode = MetaScreenBackgroundMode.Normal,
-    val cinematicBackground: Boolean = false,
-    val heroTrailerPlayback: Boolean = false,
-    val tabLayout: Boolean = false,
-    val episodeCardStyle: MetaEpisodeCardStyle = MetaEpisodeCardStyle.Horizontal,
-    val blurUnwatchedEpisodes: Boolean = false,
-)
-
 enum class MetaScreenBackgroundMode {
     Normal,
     Cinematic,
@@ -78,10 +68,22 @@ enum class MetaScreenBackgroundMode {
             DominantColor -> "dominant_color"
         }
 
+        val Default: MetaScreenBackgroundMode = DominantColor
+
         fun fromLegacyCinematic(enabled: Boolean): MetaScreenBackgroundMode =
-            if (enabled) Cinematic else Normal
+            if (enabled) Cinematic else Default
     }
 }
+
+data class MetaScreenSettingsUiState(
+    val items: List<MetaScreenSectionItem> = emptyList(),
+    val backgroundMode: MetaScreenBackgroundMode = MetaScreenBackgroundMode.Default,
+    val cinematicBackground: Boolean = MetaScreenBackgroundMode.Default.usesBackdropBackground,
+    val heroTrailerPlayback: Boolean = false,
+    val tabLayout: Boolean = false,
+    val episodeCardStyle: MetaEpisodeCardStyle = MetaEpisodeCardStyle.Horizontal,
+    val blurUnwatchedEpisodes: Boolean = false,
+)
 
 enum class MetaEpisodeCardStyle {
     Horizontal,
@@ -195,7 +197,7 @@ object MetaScreenSettingsRepository {
 
     private var hasLoaded = false
     private var preferences: MutableMap<MetaScreenSectionKey, StoredMetaScreenSectionPreference> = mutableMapOf()
-    private var backgroundMode: MetaScreenBackgroundMode = MetaScreenBackgroundMode.Normal
+    private var backgroundMode: MetaScreenBackgroundMode = MetaScreenBackgroundMode.Default
     private var heroTrailerPlayback: Boolean = false
     private var tabLayout: Boolean = false
     private var episodeCardStyle: MetaEpisodeCardStyle = MetaEpisodeCardStyle.Horizontal
@@ -234,7 +236,7 @@ object MetaScreenSettingsRepository {
     fun onProfileChanged() {
         hasLoaded = false
         preferences.clear()
-        backgroundMode = MetaScreenBackgroundMode.Normal
+        backgroundMode = MetaScreenBackgroundMode.Default
         heroTrailerPlayback = false
         tabLayout = false
         episodeCardStyle = MetaEpisodeCardStyle.Horizontal
@@ -298,7 +300,7 @@ object MetaScreenSettingsRepository {
     fun clearLocalState() {
         hasLoaded = false
         preferences.clear()
-        backgroundMode = MetaScreenBackgroundMode.Normal
+        backgroundMode = MetaScreenBackgroundMode.Default
         heroTrailerPlayback = false
         tabLayout = false
         episodeCardStyle = MetaEpisodeCardStyle.Horizontal
@@ -343,7 +345,7 @@ object MetaScreenSettingsRepository {
     fun resetToDefaults() {
         ensureLoaded()
         preferences.clear()
-        backgroundMode = MetaScreenBackgroundMode.Normal
+        backgroundMode = MetaScreenBackgroundMode.Default
         heroTrailerPlayback = false
         tabLayout = false
         episodeCardStyle = MetaEpisodeCardStyle.Horizontal
