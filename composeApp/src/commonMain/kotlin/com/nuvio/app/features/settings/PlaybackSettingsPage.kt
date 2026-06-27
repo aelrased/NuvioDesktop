@@ -377,6 +377,16 @@ private fun PlaybackSettingsSection(
                             onCheckedChange = PlayerSettingsRepository::setExternalPlayerForwardSubtitles,
                         )
                     }
+                    if (autoPlayPlayerSettings.externalPlayerEnabled) {
+                        SettingsGroupDivider(isTablet = isTablet)
+                        SettingsSwitchRow(
+                            title = stringResource(Res.string.settings_playback_external_player_send_skip_segments),
+                            description = stringResource(Res.string.settings_playback_external_player_send_skip_segments_description),
+                            checked = autoPlayPlayerSettings.externalPlayerSendSkipSegments,
+                            isTablet = isTablet,
+                            onCheckedChange = PlayerSettingsRepository::setExternalPlayerSendSkipSegments,
+                        )
+                    }
                 }
                 if (!isDesktop) {
                     SettingsGroupDivider(isTablet = isTablet)
