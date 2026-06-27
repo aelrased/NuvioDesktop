@@ -854,9 +854,7 @@ fun MetaDetailsScreen(
                                         heroTrailerMuted = heroTrailerMuted,
                                         heroGradientColor = dominantBackdropColor.takeIf { dominantColorEnabled },
                                         onBackdropLoaded = { painter ->
-                                            if (dominantColorEnabled) {
-                                                dominantBackdropPainter = painter
-                                            }
+                                            dominantBackdropPainter = painter
                                         },
                                         onHeroTrailerReady = {
                                             if (!heroTrailerFinished) {
@@ -973,9 +971,7 @@ fun MetaDetailsScreen(
                                         heroTrailerMuted = heroTrailerMuted,
                                         heroGradientColor = dominantBackdropColor.takeIf { dominantColorEnabled },
                                         onBackdropLoaded = { painter ->
-                                            if (dominantColorEnabled) {
-                                                dominantBackdropPainter = painter
-                                            }
+                                            dominantBackdropPainter = painter
                                         },
                                         onHeroTrailerMuteToggle = {
                                             HeroTrailerAudioState.toggleMuted()
@@ -1132,6 +1128,7 @@ fun MetaDetailsScreen(
                             meta = meta,
                             isSaved = isSaved,
                             progress = headerProgress,
+                            backgroundColor = dominantBackdropColor.takeIf { dominantColorEnabled },
                             onBack = onBackFromDetails,
                             onToggleSaved = toggleSaved,
                             modifier = Modifier.zIndex(2f),
