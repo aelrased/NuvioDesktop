@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
 import com.nuvio.app.core.ui.NuvioDesktopImageScaling
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.features.details.MetaDetails
@@ -64,6 +65,8 @@ fun DetailHero(
     heroTrailerReady: Boolean = false,
     heroTrailerPlayWhenReady: Boolean = false,
     heroTrailerMuted: Boolean = true,
+    heroGradientColor: Color? = null,
+    onBackdropLoaded: (Painter) -> Unit = {},
     onHeroTrailerMuteToggle: () -> Unit = {},
     onHeroTrailerReady: () -> Unit = {},
     onHeroTrailerEnded: () -> Unit = {},
@@ -83,6 +86,7 @@ fun DetailHero(
         val heroChromeTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
             8.dp +
             ((40.dp - muteIconSize) / 2)
+        val bottomGradientColor = heroGradientColor ?: MaterialTheme.colorScheme.background
         var logoLoadError by remember(meta.id, meta.logo) {
             mutableStateOf(false)
         }
@@ -118,6 +122,7 @@ fun DetailHero(
                         alignment = Alignment.Center,
                         contentScale = ContentScale.Crop,
                         desktopImageScaling = NuvioDesktopImageScaling.Disabled,
+                        onSuccess = { state -> onBackdropLoaded(state.painter) },
                     )
                 } else {
                     Box(
@@ -194,12 +199,12 @@ fun DetailHero(
                             Brush.verticalGradient(
                                 colorStops = arrayOf(
                                     0.00f to Color.Transparent,
-                                    0.16f to MaterialTheme.colorScheme.background.copy(alpha = 0.04f),
-                                    0.32f to MaterialTheme.colorScheme.background.copy(alpha = 0.14f),
-                                    0.50f to MaterialTheme.colorScheme.background.copy(alpha = 0.34f),
-                                    0.68f to MaterialTheme.colorScheme.background.copy(alpha = 0.62f),
-                                    0.84f to MaterialTheme.colorScheme.background.copy(alpha = 0.84f),
-                                    1.00f to MaterialTheme.colorScheme.background,
+                                    0.16f to bottomGradientColor.copy(alpha = 0.04f),
+                                    0.32f to bottomGradientColor.copy(alpha = 0.14f),
+                                    0.50f to bottomGradientColor.copy(alpha = 0.34f),
+                                    0.68f to bottomGradientColor.copy(alpha = 0.62f),
+                                    0.84f to bottomGradientColor.copy(alpha = 0.84f),
+                                    1.00f to bottomGradientColor,
                                 ),
                             ),
                         ),

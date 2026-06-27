@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +68,8 @@ fun DesktopDetailHero(
     heroTrailerReady: Boolean,
     heroTrailerPlayWhenReady: Boolean,
     heroTrailerMuted: Boolean,
+    heroGradientColor: Color? = null,
+    onBackdropLoaded: (Painter) -> Unit = {},
     onHeroTrailerReady: () -> Unit,
     onHeroTrailerEnded: () -> Unit,
     onHeroTrailerError: () -> Unit,
@@ -77,6 +80,8 @@ fun DesktopDetailHero(
     onSaveLongClick: (() -> Unit)?,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val bottomGradientColor = heroGradientColor ?: colorScheme.background
+    val sideGradientColor = heroGradientColor ?: colorScheme.background
     val space = NuvioTokens.Space
     val opacity = NuvioTokens.Opacity
     val trailerAlpha by animateFloatAsState(
@@ -112,6 +117,7 @@ fun DesktopDetailHero(
                 alignment = Alignment.Center,
                 contentScale = ContentScale.Crop,
                 desktopImageScaling = NuvioDesktopImageScaling.Disabled,
+                onSuccess = { state -> onBackdropLoaded(state.painter) },
             )
         } else {
             DesktopStripePlaceholder(modifier = Modifier.fillMaxSize())
@@ -144,10 +150,11 @@ fun DesktopDetailHero(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
                             0.00f to Color.Transparent,
-                            0.18f to colorScheme.background.copy(alpha = opacity.subtle),
-                            0.46f to colorScheme.background.copy(alpha = opacity.overlayLight),
-                            0.78f to colorScheme.background.copy(alpha = opacity.overlayHeavy),
-                            1.00f to colorScheme.background,
+                            0.14f to bottomGradientColor.copy(alpha = opacity.subtle),
+                            0.38f to bottomGradientColor.copy(alpha = opacity.overlayLight),
+                            0.66f to bottomGradientColor.copy(alpha = opacity.overlayHeavy),
+                            0.88f to bottomGradientColor.copy(alpha = 0.98f),
+                            1.00f to bottomGradientColor,
                         ),
                     ),
                 ),
@@ -158,9 +165,9 @@ fun DesktopDetailHero(
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.00f to colorScheme.background.copy(alpha = opacity.overlayHeavy),
-                            0.32f to colorScheme.background.copy(alpha = opacity.medium),
-                            0.62f to colorScheme.background.copy(alpha = opacity.subtle),
+                            0.00f to sideGradientColor.copy(alpha = opacity.overlayHeavy),
+                            0.32f to sideGradientColor.copy(alpha = opacity.medium),
+                            0.62f to sideGradientColor.copy(alpha = opacity.subtle),
                             1.00f to Color.Transparent,
                         ),
                     ),
