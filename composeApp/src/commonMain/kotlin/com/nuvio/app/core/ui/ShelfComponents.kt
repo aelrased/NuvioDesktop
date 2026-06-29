@@ -235,6 +235,7 @@ fun NuvioPosterCard(
     Column(
         modifier = Modifier
             .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
+            .nuvioFocusBorder(cardShape)
             .then(modifier)
             .width(cardWidth),
         verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s6),
