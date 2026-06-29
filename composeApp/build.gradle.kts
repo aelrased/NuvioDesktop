@@ -1408,7 +1408,7 @@ if (isLinuxHost) {
 
             val outputDir = rootProject.layout.projectDirectory.dir("release-assets/linux").asFile
             outputDir.mkdirs()
-            val appImageFile = outputDir.resolve("Nuvio-x86_64.AppImage")
+            val appImageFile = outputDir.resolve("Nuvio-${desktopReleaseVersionName}-x86_64.AppImage")
 
             // Find appimagetool
             val appimagetool = findAppImageTool()

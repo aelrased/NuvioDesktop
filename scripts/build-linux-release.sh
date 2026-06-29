@@ -139,7 +139,7 @@ fi
 
 if [[ "$build_appimage" == true ]]; then
   if [[ "$appimage_ok" == true ]]; then
-    ai_file="release-assets/linux/Nuvio-${arch}.AppImage"
+    ai_file="release-assets/linux/Nuvio-${version_name}-${arch}.AppImage"
     echo "  AppImage:  OK"
     [[ -f "$ai_file" ]] && echo "             $(ls -lh "$ai_file" | awk '{print $5}')  ${ai_file}"
   else

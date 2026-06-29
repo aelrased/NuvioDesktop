@@ -76,7 +76,7 @@ version_name=$(grep '^VERSION_NAME=' "$version_file" | cut -d= -f2)
 echo "Building Nuvio AppImage v${version_name}"
 
 if [[ -z "$output_file" ]]; then
-  output_file="Nuvio-x86_64.AppImage"
+  output_file="Nuvio-${version_name}-x86_64.AppImage"
 fi
 
 # ── Ensure appimagetool is available ─────────────────────────────────
