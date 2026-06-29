@@ -1359,4 +1359,96 @@ if (isLinuxHost) {
     tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
         dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex)
     }
+
+    val buildAppImage by tasks.registering {
+        description = "Build Linux AppImage from the jpackage app-image"
+        dependsOn("createReleaseDistributable")
+        doLast {
+            val distDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio").get().asFile
+            if (!distDir.isDirectory) {
+                logger.warn("AppImage: distribution dir not found at ${distDir.absolutePath}")
+                return@doLast
+            }
+
+            // Generate AppRun — the AppImage runtime needs this as its entrypoint
+            val appRun = distDir.resolve("AppRun")
+            appRun.writeText(
+                "#!/bin/sh\n" +
+                "HERE=\"\$(dirname \"\$(readlink -f \"\${0}\")\")\"\n" +
+                "cd \"\${HERE}\" || exit 1\n" +
+                "export LD_LIBRARY_PATH=\"\${HERE}/lib:\${LD_LIBRARY_PATH:-}\"\n" +
+                "exec \"\${HERE}/bin/Nuvio\" \"\$@\"\n"
+            )
+            appRun.setExecutable(true)
+
+            // Generate .desktop file — required by appimagetool
+            val desktopFile = distDir.resolve("Nuvio.desktop")
+            desktopFile.writeText(
+                "[Desktop Entry]\n" +
+                "Name=Nuvio\n" +
+                "Comment=Stream movies and TV shows\n" +
+                "Exec=AppRun\n" +
+                "Icon=Nuvio\n" +
+                "Type=Application\n" +
+                "Categories=AudioVideo;Video;Player;\n" +
+                "StartupWMClass=com.nuvio.app.MainKt\n" +
+                "Terminal=false\n"
+            )
+
+            // Ensure .DirIcon exists
+            val iconFile = distDir.resolve("lib/Nuvio.png")
+            if (iconFile.exists()) {
+                // Copy to AppDir root so appimagetool finds it
+                iconFile.copyTo(distDir.resolve("Nuvio.png"), overwrite = true)
+                val dirIcon = distDir.resolve(".DirIcon")
+                if (!dirIcon.exists()) {
+                    iconFile.copyTo(dirIcon)
+                }
+            }
+
+            val outputDir = rootProject.layout.projectDirectory.dir("release-assets/linux").asFile
+            outputDir.mkdirs()
+            val appImageFile = outputDir.resolve("Nuvio-x86_64.AppImage")
+
+            // Find appimagetool
+            val appimagetool = findAppImageTool()
+            if (appimagetool == null) {
+                logger.warn("appimagetool not found. Install it or place it in PATH.")
+                logger.warn("  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage")
+                logger.warn("  chmod +x appimagetool-x86_64.AppImage")
+                logger.warn("  sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool")
+                throw GradleException("appimagetool is required to build AppImage")
+            }
+
+            val process = ProcessBuilder(
+                    appimagetool.absolutePath,
+                    distDir.absolutePath,
+                    appImageFile.absolutePath
+                )
+                .inheritIO()
+                .start()
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                error("appimagetool failed with exit code $exitCode")
+            }
+            logger.lifecycle("AppImage created: ${appImageFile.absolutePath}")
+        }
+    }
+}
+
+fun findAppImageTool(): File? {
+    // Check PATH
+    System.getenv("PATH")?.split(File.pathSeparator)?.forEach { dir ->
+        val file = File(dir, "appimagetool")
+        if (file.canExecute()) return file
+    }
+    // Check common locations
+    listOf(
+        File(System.getProperty("user.home"), ".local/bin/appimagetool"),
+        File("/usr/local/bin/appimagetool"),
+        File("/usr/bin/appimagetool"),
+    ).forEach { file ->
+        if (file.canExecute()) return file
+    }
+    return null
 }
