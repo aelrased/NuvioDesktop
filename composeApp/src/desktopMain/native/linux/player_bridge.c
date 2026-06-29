@@ -1293,7 +1293,7 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_addSubtitleUrl(JNIEnv *env, jobject thiz, jlong hdl, jstring url) {
     (void)thiz; CreateTask *task = getTask(hdl); if (!task || !task->mpv || !url) return;
     const char *u = (*env)->GetStringUTFChars(env, url, NULL);
-    if (u) { const char *cmd[] = {"sub-add", u, "auto", NULL}; mpv_command_async(task->mpv, 0, cmd); (*env)->ReleaseStringUTFChars(env, url, u); }
+    if (u) { const char *cmd[] = {"sub-add", u, "select", NULL}; mpv_command_async(task->mpv, 0, cmd); (*env)->ReleaseStringUTFChars(env, url, u); }
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_clearExternalSubtitles(JNIEnv *env, jobject thiz, jlong hdl) {
