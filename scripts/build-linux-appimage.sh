@@ -133,7 +133,7 @@ echo
 # ── Locate AppImage and copy to output ───────────────────────────────
 echo
 echo "==> Locating AppImage output..."
-appimage_src=$(ls -1 release-assets/linux/Nuvio-x86_64.AppImage 2>/dev/null | head -1)
+appimage_src=$(ls -1 release-assets/linux/Nuvio-*.AppImage 2>/dev/null | head -1)
 
 if [[ -z "$appimage_src" ]]; then
   echo "ERROR: AppImage not found in release-assets/linux/" >&2
@@ -141,9 +141,14 @@ if [[ -z "$appimage_src" ]]; then
   exit 1
 fi
 
+# Copy to user-requested output path if different
+if [[ "$appimage_src" != "$(realpath "$output_file" 2>/dev/null)" ]]; then
+  cp "$appimage_src" "$output_file"
+fi
+
 echo
 echo "==> AppImage ready:"
-ls -lh "$appimage_src"
+ls -lh "$output_file"
 
 echo
 echo "==> Run:"
