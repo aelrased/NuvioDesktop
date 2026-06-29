@@ -106,11 +106,13 @@ import com.nuvio.app.core.ui.NuvioContinueWatchingActionSheet
 import com.nuvio.app.core.ui.NuvioPosterActionSheet
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.PlatformBackHandler
+import com.nuvio.app.core.ui.PlatformKeyboardNavigation
 import com.nuvio.app.core.ui.platformExitApp
 import com.nuvio.app.core.ui.configurePlatformImageLoader
 import com.nuvio.app.core.ui.NuvioToastHost
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioFloatingPrompt
+import com.nuvio.app.core.ui.nuvioFocusBorder
 import com.nuvio.app.core.ui.ProfileMeshBackground
 import com.nuvio.app.core.ui.TraktListPickerDialog
 import com.nuvio.app.core.ui.NuvioTheme
@@ -664,6 +666,8 @@ fun App() {
                 )
             }
         }
+
+        PlatformKeyboardNavigation()
 
         AnimatedContent(
             targetState = gateScreen,
@@ -3465,6 +3469,7 @@ private fun DesktopSidebarItem(
             .fillMaxWidth()
             .height(DesktopSidebarItemHeight)
             .padding(horizontal = 10.dp, vertical = 4.dp)
+            .nuvioFocusBorder(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
         color = Color.Transparent,
         shape = RoundedCornerShape(16.dp),
@@ -3640,7 +3645,9 @@ private fun TabletTopPillItem(
         color = if (selected) tokens.colors.overlaySelected else tokens.colors.surface,
         shape = tokens.shapes.chip,
         tonalElevation = if (selected) tokens.elevation.raised else tokens.elevation.flat,
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier
+            .nuvioFocusBorder(tokens.shapes.chip)
+            .clickable(onClick = onClick),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = tokens.components.chipHorizontalPadding, vertical = NuvioTokens.Space.s10),

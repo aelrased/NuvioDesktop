@@ -64,6 +64,7 @@ import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.ui.ProfileMeshBackground
+import com.nuvio.app.core.ui.nuvioFocusBorder
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
@@ -372,6 +373,7 @@ private fun ProfileAvatarCard(
                 translationY = animOffset.value
             }
             .clip(RoundedCornerShape(20.dp))
+            .nuvioFocusBorder(RoundedCornerShape(20.dp))
             .then(
                 if (isDesktop) {
                     Modifier.hoverable(interactionSource)
@@ -527,6 +529,7 @@ private fun AddProfileCard(
                 translationY = animOffset.value
             }
             .clip(RoundedCornerShape(20.dp))
+            .nuvioFocusBorder(RoundedCornerShape(20.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
