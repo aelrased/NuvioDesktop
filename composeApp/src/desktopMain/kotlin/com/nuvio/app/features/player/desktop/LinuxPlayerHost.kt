@@ -23,6 +23,7 @@ internal class LinuxPlayerHost : PlayerHost {
     override var nativeHandle: Long = 0L
 
     override var onMouseClick: (() -> Unit)? = null
+    override var onDoubleClick: (() -> Unit)? = null
     override var onCursorActivity: (() -> Unit)? = null
 
     private var lastWidth = 0

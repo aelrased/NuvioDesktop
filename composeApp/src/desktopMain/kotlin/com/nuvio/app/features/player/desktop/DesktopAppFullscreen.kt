@@ -2,15 +2,20 @@ package com.nuvio.app.features.player.desktop
 
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowState
+import java.awt.AWTEvent
 import java.awt.GraphicsEnvironment
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
 import java.awt.Window
+import java.awt.event.AWTEventListener
 import java.awt.event.KeyEvent
+import java.awt.event.MouseEvent
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.nuvio.app.core.ui.DesktopBackHandlers
 
 private object DesktopAppFullscreen {
     private var toggleHandler: ((Window?) -> Unit)? = null
@@ -156,6 +161,14 @@ internal class DesktopAppFullscreenController {
 
 internal fun installDesktopAppFullscreenShortcuts(window: Window): () -> Unit {
     val dispatcher = KeyEventDispatcher { event ->
+        if (event.id == KeyEvent.KEY_PRESSED && event.keyCode == KeyEvent.VK_ESCAPE) {
+            if (isDesktopAppFullscreen(window)) {
+                toggleDesktopAppFullscreen(window)
+            } else {
+                DesktopBackHandlers.handleBack()
+            }
+            return@KeyEventDispatcher true
+        }
         if (!event.isDesktopAppFullscreenShortcut()) return@KeyEventDispatcher false
         toggleDesktopAppFullscreen(window)
         true
@@ -176,4 +189,23 @@ private fun KeyEvent.isDesktopAppFullscreenShortcut(): Boolean {
             modifiers and KeyEvent.CTRL_DOWN_MASK != 0 &&
             modifiers and KeyEvent.ALT_DOWN_MASK == 0
     return hasMacFullscreenModifiers
+}
+
+internal fun installDesktopMouseButtonShortcuts(window: Window): () -> Unit {
+    val listener = AWTEventListener { awtEvent ->
+        if (awtEvent.id != MouseEvent.MOUSE_PRESSED) return@AWTEventListener
+        val mouseEvent = awtEvent as? MouseEvent ?: return@AWTEventListener
+        val isSideButton = if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+            mouseEvent.button in 6..9
+        } else {
+            mouseEvent.button in 4..5
+        }
+        if (!isSideButton) return@AWTEventListener
+        if (!window.isFocused) return@AWTEventListener
+        DesktopBackHandlers.handleBack()
+    }
+    Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.MOUSE_EVENT_MASK)
+    return {
+        Toolkit.getDefaultToolkit().removeAWTEventListener(listener)
+    }
 }

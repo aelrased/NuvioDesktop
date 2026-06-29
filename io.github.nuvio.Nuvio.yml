@@ -1,0 +1,105 @@
+id: io.github.nuvio.Nuvio
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.openjdk21
+
+command: nuvio
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --socket=wayland
+  - --device=dri
+  - --filesystem=home
+  - --socket=pulseaudio
+
+build-options:
+  build-args:
+    - --share=network
+
+modules:
+  - name: libdav1d
+    buildsystem: meson
+    config-opts:
+      - -Dbuildtype=release
+      - -Denable_tools=false
+      - -Denable_tests=false
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/dav1d.git
+        tag: 1.4.3
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dbuildtype=release
+      - -Dtests=false
+      - -Ddemos=false
+    sources:
+      - type: git
+        url: https://github.com/haasn/libplacebo.git
+        tag: v6.338.2
+
+  - name: libass
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.3
+
+  - name: libuchardet
+    buildsystem: cmake
+    config-opts:
+      - -DBUILD_BINARY=OFF
+      - -DBUILD_TESTING=OFF
+    sources:
+      - type: git
+        url: https://github.com/BYVoid/uchardet.git
+        tag: v0.0.8
+
+  - name: ffmpeg
+    buildsystem: simple
+    build-commands:
+      - ./configure --prefix=/app --libdir=/app/lib --enable-shared --disable-static
+        --disable-doc --disable-programs --disable-encoders --disable-muxers
+        --enable-decoder=h264,hevc,vp9,av1,aac,mp3,flac,opus,vorbis
+        --enable-demuxer=matroska,avi,mp4,mov,flv,mkv
+        --enable-parser=h264,hevc,vp9,av1
+      - make -j$FLATPAK_BUILDER_N_JOBS
+      - make install
+    sources:
+      - type: git
+        url: https://github.com/FFmpeg/FFmpeg.git
+        tag: n7.1
+    cleanup:
+      - /share/ffmpeg
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dbuildtype=release
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dlua=disabled
+      - -Djavascript=disabled
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.39.0
+
+  - name: nuvio
+    buildsystem: simple
+    build-commands:
+      - bash build-aux/flatpak/build-nuvio.sh
+    sources:
+      - type: dir
+        path: .
+    cleanup:
+      - /lib/nuvio/lib/runtime/demo
+      - /lib/nuvio/lib/runtime/man
+      - /lib/nuvio/lib/runtime/include

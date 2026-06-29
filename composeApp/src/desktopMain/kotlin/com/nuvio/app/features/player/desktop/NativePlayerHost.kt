@@ -23,6 +23,7 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
     private var firstPaintNotified = false
     private var firstFullSizePaintNotified = false
     override var onMouseClick: (() -> Unit)? = null
+    override var onDoubleClick: (() -> Unit)? = null
     override var onCursorActivity: (() -> Unit)? = null
     private var controlsVisible = true
     private var cursorVisible = true

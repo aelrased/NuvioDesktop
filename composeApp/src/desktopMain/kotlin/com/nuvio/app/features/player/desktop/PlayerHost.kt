@@ -9,6 +9,7 @@ internal interface PlayerHost {
     var nativeHandle: Long
 
     var onMouseClick: (() -> Unit)?
+    var onDoubleClick: (() -> Unit)?
     var onCursorActivity: (() -> Unit)?
 
     fun setControlsVisible(visible: Boolean)

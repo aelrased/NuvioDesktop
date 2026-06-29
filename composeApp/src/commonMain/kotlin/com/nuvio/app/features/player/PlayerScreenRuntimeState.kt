@@ -201,6 +201,11 @@ internal class PlayerScreenRuntime(
     var autoFetchedAddonSubtitlesForKey by mutableStateOf<String?>(null)
     var trackPreferenceRestoreApplied by mutableStateOf(false)
     var subtitleDelayMs by mutableStateOf(0)
+
+    var currentVolume by mutableStateOf(50f)
+    var isVolumeMuted by mutableStateOf(false)
+    var previousVolume by mutableStateOf(50f)
+    var isDesktopAppFullscreen by mutableStateOf(false)
     var subtitleAutoSyncState by mutableStateOf(SubtitleAutoSyncUiState())
 
     var lastSyncedSettingsResizeMode: PlayerResizeMode? = null

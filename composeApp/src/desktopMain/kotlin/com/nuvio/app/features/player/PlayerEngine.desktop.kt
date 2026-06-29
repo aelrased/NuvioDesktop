@@ -257,13 +257,15 @@ private fun LinuxPlayerSurface(
                 }
             },
     ) {
+        // Read at composable level to force recomposition when a new frame is rendered
+        val tick = frameTick
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged { surfaceSize = it },
         ) {
-            frameTick // read to trigger recomposition
-            if (!disposed) {
+            if (tick >= 0 && !disposed) {
                 val skiaImage = host.latestImage
                 if (skiaImage != null && !skiaImage.isClosed) {
                     val canvas = drawContext.canvas.nativeCanvas
@@ -272,8 +274,6 @@ private fun LinuxPlayerSurface(
                     val dstW = size.width
                     val dstH = size.height
 
-                    // Draw full FBO — mpv handles letterbox/zoom/stretch internally
-                    // via panscan property. Subtitles are always correctly positioned.
                     val srcRect = org.jetbrains.skia.Rect.makeWH(imgW, imgH)
                     val dstRect = org.jetbrains.skia.Rect.makeWH(dstW, dstH)
                     canvas.drawImageRect(

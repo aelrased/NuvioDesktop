@@ -882,8 +882,6 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         /* Defer EGL init to render thread — NVIDIA GBM/EGL doesn't support
          * context creation on one thread + MakeCurrent on another. */
         task->gpuMode = 2;
-        mpv_set_option_string(task->mpv, "vo", "libmpv");
-        mpv_set_option_string(task->mpv, "gpu-api", "opengl");
         DBG("create: offscreen GL mode, EGL deferred to render thread\n");
     }
 
@@ -974,6 +972,10 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         free(task);
         return 0;
     }
+
+    /* Force libmpv VO after config loading — user's mpv.conf may override vo */
+    mpv_set_option_string(task->mpv, "vo", "libmpv");
+    mpv_set_option_string(task->mpv, "gpu-api", "opengl");
 
     /* -- Create render context -- */
     if (task->gpuMode == 2) {
@@ -1437,13 +1439,14 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
     jbyteArray dstBytes, jint dstW, jint dstH) {
     (void)thiz;
     CreateTask *task = getTask(handle);
-    if (!task || !task->alive) return JNI_FALSE;
+    if (!task || !task->alive) { DBG("renderFrameBytes: task invalid\n"); return JNI_FALSE; }
 
     task->targetW = dstW;
     task->targetH = dstH;
 
     pthread_mutex_lock(&task->frameMutex);
     if (!task->frameData || !task->alive) {
+        DBG("renderFrameBytes: no frame data (gpuMode=%d)\n", task ? task->gpuMode : -1);
         pthread_mutex_unlock(&task->frameMutex);
         return JNI_FALSE;
     }
@@ -1454,6 +1457,8 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
     char *src = task->frameData;
 
     if (!task->frameReady || srcW <= 0 || srcH <= 0) {
+        DBG("renderFrameBytes: frame not ready (ready=%d srcW=%d srcH=%d)\n",
+            task->frameReady, srcW, srcH);
         pthread_mutex_unlock(&task->frameMutex);
         return JNI_FALSE;
     }
@@ -1464,10 +1469,14 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
 
     jsize dstLen = (*env)->GetArrayLength(env, dstBytes);
     if (dstLen < (jsize)(dstW * dstH * 4)) {
+        DBG("renderFrameBytes: dst buffer too small %d < %d\n", (int)dstLen, dstW * dstH * 4);
         (*env)->ReleaseByteArrayElements(env, dstBytes, dst, JNI_ABORT);
         pthread_mutex_unlock(&task->frameMutex);
         return JNI_FALSE;
     }
+
+    DBG("renderFrameBytes: rendering frame src=%dx%d dst=%dx%d\n",
+        srcW, srcH, dstW, dstH);
 
     if (srcW == dstW && srcH == dstH) {
         /* RGBA -> BGRA (Skia N32 on little-endian) */

@@ -10,11 +10,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.ui.nuvio
+import com.nuvio.app.core.ui.toggleFullscreenAction
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
@@ -30,6 +34,7 @@ import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
 import com.nuvio.app.features.watching.application.WatchingState
 import com.nuvio.app.isDesktop
 import com.nuvio.app.isIos
+import com.nuvio.app.features.player.setDesktopBackHandler
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -330,6 +335,16 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     )
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
 
+    if (isDesktop) {
+        DisposableEffect(Unit) {
+            setDesktopBackHandler {
+                flushWatchProgress()
+                args.onBack()
+            }
+            onDispose { setDesktopBackHandler(null) }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -465,6 +480,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             resizeMode = resizeMode,
             isLocked = playerControlsLocked,
             showPlaybackControls = controlsVisible,
+            isFullscreen = isDesktopAppFullscreen,
             onLockToggle = {
                 if (playerControlsLocked) unlockPlayerControls() else lockPlayerControls()
             },
@@ -533,6 +549,14 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             } else {
                 null
             },
+            onFullscreenClick = if (isDesktop) {
+                {
+                    isDesktopAppFullscreen = !isDesktopAppFullscreen
+                    toggleFullscreenAction()
+                }
+            } else {
+                null
+            },
             parentalWarnings = parentalWarnings,
             showParentalGuide = showParentalGuide,
             onParentalGuideAnimationComplete = { showParentalGuide = false },
@@ -547,6 +571,24 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
                 scheduleProgressSyncAfterSeek()
             },
             horizontalSafePadding = horizontalSafePadding,
+            currentVolume = currentVolume,
+            isVolumeMuted = isVolumeMuted,
+            onVolumeSliderChange = { volume ->
+                currentVolume = volume
+                isVolumeMuted = false
+                playerController?.setVolume(volume)
+            },
+            onClickVolumeIcon = {
+                if (isVolumeMuted) {
+                    currentVolume = previousVolume
+                    playerController?.setVolume(previousVolume)
+                    isVolumeMuted = false
+                } else {
+                    previousVolume = currentVolume
+                    playerController?.setVolume(0f)
+                    isVolumeMuted = true
+                }
+            },
             modifier = Modifier.fillMaxSize(),
         )
     }
