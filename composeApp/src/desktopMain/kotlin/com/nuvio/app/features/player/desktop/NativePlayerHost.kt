@@ -140,6 +140,16 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
         onDisplayableChanged?.invoke(true)
         repaint()
         onPeerReady?.invoke()
+        javax.swing.SwingUtilities.invokeLater {
+            if (!firstPaintNotified) {
+                firstPaintNotified = true
+                onFirstPaint?.invoke()
+            }
+            if (!firstFullSizePaintNotified && width > 1 && height > 1) {
+                firstFullSizePaintNotified = true
+                onFirstFullSizePaint?.invoke()
+            }
+        }
     }
 
     override fun removeNotify() {

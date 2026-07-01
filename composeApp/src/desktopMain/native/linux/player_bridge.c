@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #define GL_GLEXT_PROTOTYPES
@@ -34,6 +35,21 @@ __attribute__((constructor))
 static void on_load(void) {
     fprintf(stderr, "[player_bridge] CONSTRUCTOR: .so loaded (built %s %s)\n",
             __DATE__, __TIME__);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Find a file path relative to this .so's directory                 */
+/* ------------------------------------------------------------------ */
+static void so_dir_path(const char *filename, char *out, size_t outlen) {
+    Dl_info info;
+    if (dladdr((void *)on_load, &info) && info.dli_fname) {
+        const char *so_path = info.dli_fname;
+        size_t dir_len = strlen(so_path);
+        while (dir_len > 0 && so_path[dir_len - 1] != '/') dir_len--;
+        snprintf(out, outlen, "%.*s%s", (int)dir_len, so_path, filename);
+    } else {
+        snprintf(out, outlen, "./%s", filename);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -69,7 +85,7 @@ typedef struct {
     char **headers;
     int nheaders;
     volatile int alive;
-    int gpuMode; /* 0 = SW rendering, 2 = GL offscreen (EGL or GLX FBO) */
+    int gpuMode; /* 0 = SW rendering, 1 = X11 direct (wid), 2 = GL offscreen (EGL or GLX FBO) */
     int useGLX;  /* 0 = EGL path, 1 = GLX path */
 
     /* SW mode (gpuMode 0) */
@@ -799,9 +815,12 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     jobject eventSink) {
     (void)thiz;
     (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
-    (void)hostViewPtr; /* gpuMode=1 (wid) removed — Linux always uses offscreen */
 
-    DBG("create() called (offscreen GL/SW mode)\n");
+    if (hostViewPtr > 0) {
+        DBG("create() called with X11 direct mode (wid=%lld)\n", (long long)hostViewPtr);
+    } else {
+        DBG("create() called (offscreen GL/SW mode)\n");
+    }
 
     CreateTask *task = calloc(1, sizeof(CreateTask));
     if (!task) { DBG("create: calloc failed\n"); return 0; }
@@ -850,6 +869,100 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         pthread_mutex_destroy(&task->frameMutex);
         free(task);
         return 0;
+    }
+
+    /* X11 direct mode: mpv renders directly into the host X11 window */
+    if (hostViewPtr > 0) {
+        task->gpuMode = 1;
+
+        mpv_set_option_string(task->mpv, "cache", "yes");
+        mpv_set_option_string(task->mpv, "cache-secs", "3");
+        mpv_set_option_string(task->mpv, "demuxer-max-bytes", "50M");
+        mpv_set_option_string(task->mpv, "demuxer-max-back-bytes", "25M");
+        mpv_set_option_string(task->mpv, "audio-file-auto", "no");
+        mpv_set_option_string(task->mpv, "sub-auto", "no");
+        mpv_set_option_string(task->mpv, "config", "yes");
+        mpv_set_option_string(task->mpv, "terminal", "no");
+        mpv_set_option_string(task->mpv, "msg-level", "all=no,nuvio_osc=info");
+        mpv_set_option_string(task->mpv, "hwdec", "auto");
+        mpv_set_option_string(task->mpv, "vd-lavc-dr", "yes");
+        mpv_set_option_string(task->mpv, "video-latency-hacks", "yes");
+        mpv_set_option_string(task->mpv, "keep-open", "no");
+
+        mpv_set_option_string(task->mpv, "vo", "gpu");
+        mpv_set_option_string(task->mpv, "gpu-api", "opengl");
+        mpv_set_option_string(task->mpv, "gpu-context", "x11egl");
+        mpv_set_option_string(task->mpv, "cursor-autohide", "no");
+        mpv_set_option_string(task->mpv, "input-cursor", "yes");
+        mpv_set_option_string(task->mpv, "input-default-bindings", "yes");
+        mpv_set_option_string(task->mpv, "input-vo-keyboard", "no");
+        mpv_set_option_string(task->mpv, "window-dragging", "no");
+        mpv_set_option_string(task->mpv, "osc", "no");
+        mpv_set_option_string(task->mpv, "osd-level", "1");
+        mpv_set_option_string(task->mpv, "osd-duration", "3000");
+        mpv_set_option_string(task->mpv, "osd-bar", "yes");
+        mpv_set_option_string(task->mpv, "osd-bar-w", "80");
+        mpv_set_option_string(task->mpv, "osd-bar-h", "1.2");
+
+        {
+            int64_t wid = (int64_t)hostViewPtr;
+            mpv_set_option(task->mpv, "wid", MPV_FORMAT_INT64, &wid);
+        }
+
+        if (task->nheaders > 0 && task->headers) {
+            size_t len = 0;
+            for (int i = 0; i < task->nheaders; i++)
+                if (task->headers[i]) len += strlen(task->headers[i]) * 2 + 2;
+            if (len > 0) {
+                char *hdr = malloc(len + 1);
+                hdr[0] = '\0';
+                for (int i = 0; i < task->nheaders; i++) {
+                    if (!task->headers[i]) continue;
+                    if (hdr[0] != '\0') strcat(hdr, ",");
+                    const char *src = task->headers[i];
+                    char *dst = hdr + strlen(hdr);
+                    while (*src) {
+                        if (*src == '\\' || *src == ',') *dst++ = '\\';
+                        *dst++ = *src++;
+                    }
+                    *dst = '\0';
+                }
+                mpv_set_option_string(task->mpv, "http-header-fields", hdr);
+                free(hdr);
+            }
+        }
+
+        /* Load custom Lua OSC script from same directory as this .so */
+        {
+            char script_path[1024];
+            so_dir_path("nuvio-osc.lua", script_path, sizeof(script_path));
+            DBG("create: loading script '%s'\n", script_path);
+            /* Check if the file exists */
+            FILE *test = fopen(script_path, "r");
+            if (test) {
+                DBG("create: script file EXISTS at '%s'\n", script_path);
+                fclose(test);
+            } else {
+                DBG("create: script file NOT FOUND at '%s' (errno=%d)\n", script_path, errno);
+            }
+            int r = mpv_set_option_string(task->mpv, "scripts", script_path);
+            DBG("create: mpv_set_option_string(scripts) returned %d\n", r);
+        }
+
+        if (mpv_initialize(task->mpv) < 0) {
+            DBG("create: mpv_initialize failed (X11 wid mode)\n");
+            mpv_terminate_destroy(task->mpv);
+            callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 6.0);
+            free(task->sourceUrl);
+            if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
+            if (task->eventSink) (*env)->DeleteGlobalRef(env, task->eventSink);
+            pthread_mutex_destroy(&task->frameMutex);
+            free(task);
+            return 0;
+        }
+
+        DBG("create: X11 direct mode ready (wid=%lld)\n", (long long)hostViewPtr);
+        goto skip_init;
     }
 
     /* GL offscreen */
@@ -925,8 +1038,10 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     mpv_set_option_string(task->mpv, "audio-file-auto", "no");
     mpv_set_option_string(task->mpv, "sub-auto", "no");
     mpv_set_option_string(task->mpv, "config", "yes");
+    mpv_set_option_string(task->mpv, "vo", "libmpv");
+    mpv_set_option_string(task->mpv, "gpu-api", "opengl");
     mpv_set_option_string(task->mpv, "terminal", "no");
-    mpv_set_option_string(task->mpv, "msg-level", "all=no");
+    mpv_set_option_string(task->mpv, "msg-level", "all=no,lua=info,status=info");
 
     mpv_set_option_string(task->mpv, "hwdec", "auto-copy");
 
@@ -973,9 +1088,8 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         return 0;
     }
 
-    /* Force libmpv VO after config loading — user's mpv.conf may override vo */
-    mpv_set_option_string(task->mpv, "vo", "libmpv");
-    mpv_set_option_string(task->mpv, "gpu-api", "opengl");
+    /* hwdec override: user's mpv.conf may set hwdec=nvdec which doesn't work on Intel */
+    mpv_set_property_string(task->mpv, "hwdec", "auto-copy");
 
     /* -- Create render context -- */
     if (task->gpuMode == 2) {
@@ -1011,8 +1125,11 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
 
     DBG("create: mpv initialized (gpuMode=%d)\n", task->gpuMode);
 
-    /* Start render thread — for gpuMode==2 it creates the GL render context */
-    pthread_create(&task->renderThread, NULL, renderThreadFunc, task);
+    /* Start render thread — only for offscreen modes (gpuMode 0 or 2).
+     * gpuMode==1 (X11 direct/wid) has mpv render into the window itself. */
+    if (task->gpuMode != 1) {
+        pthread_create(&task->renderThread, NULL, renderThreadFunc, task);
+    }
 
     /* Wait for render thread to finish creating context (gpuMode==2) */
     if (task->gpuMode == 2) {
@@ -1375,6 +1492,7 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
     (void)thiz;
     CreateTask *task = getTask(handle);
     if (!task || !task->alive) return JNI_FALSE;
+    if (task->gpuMode == 1) return JNI_FALSE; /* X11 direct: mpv renders into window */
 
     task->targetW = dstW;
     task->targetH = dstH;
@@ -1440,6 +1558,7 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
     (void)thiz;
     CreateTask *task = getTask(handle);
     if (!task || !task->alive) { DBG("renderFrameBytes: task invalid\n"); return JNI_FALSE; }
+    if (task->gpuMode == 1) return JNI_FALSE; /* X11 direct: mpv renders into window */
 
     task->targetW = dstW;
     task->targetH = dstH;

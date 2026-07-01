@@ -41,6 +41,7 @@ internal class NativePlayerController(
 
     @Volatile
     private var handle: Long = 0L
+    // mpv handles its own OSC — no overlay needed
     private var pendingSource: PendingSource? = null
     private var controlsState = PlayerControlsState()
     private var pendingSubtitleDelayMs: Int? = null
@@ -134,6 +135,7 @@ internal class NativePlayerController(
                 applyRememberedVolume()
                 updateControls(controlsState)
                 applyPendingSubtitleSettings()
+                /* mpv handles its own OSC controls natively — no overlay needed */
             }.onFailure { error ->
                 log.w(error) { "attach failed source=${pending.sourceUrl.toPlaybackLogKey()}" }
                 pending.onError(error.message)

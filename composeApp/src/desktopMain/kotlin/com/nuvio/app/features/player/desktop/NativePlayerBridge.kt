@@ -101,6 +101,11 @@ internal object NativePlayerBridge {
     external fun videoHeight(handle: Long): Int
     external fun setProperty(handle: Long, name: String, value: String)
 
+    // Linux X11 overlay controls
+    external fun createOverlay(parentWindowPtr: Long, x: Int, y: Int, w: Int, h: Int): Long
+    external fun updateOverlayState(overlayPtr: Long, stateJson: String)
+    external fun destroyOverlay()
+
     val controlsPageUrl: String by lazy { controlsPageAssets.url }
     private val controlsPageAssets: ControlsPageAssets by lazy { exportControlsPageAssets() }
 
@@ -131,7 +136,7 @@ internal object NativePlayerBridge {
 
     private fun loadNativeLibrary() {
         val platform = DesktopHostOs.current
-        require(platform == DesktopHostOs.MACOS || platform == DesktopHostOs.WINDOWS || platform == DesktopHostOs.LINUX) {
+        require(platform.isLinux || platform == DesktopHostOs.MACOS || platform == DesktopHostOs.WINDOWS) {
             "Native desktop playback is not implemented for $platform yet."
         }
 
@@ -152,6 +157,7 @@ internal object NativePlayerBridge {
         val file = Files.createTempFile(dir.toPath(), "player-bridge-", suffix).toFile()
         file.deleteOnExit()
         extractBundledRuntimeResources(platformDir, dir)
+        extractBundledLuaScripts(platformDir, dir)
         input.use { source ->
             file.outputStream().use { target -> source.copyTo(target) }
         }
@@ -173,6 +179,19 @@ internal object NativePlayerBridge {
     private fun extractBundledRuntimeResources(platformDir: String, dir: File) {
         val runtimeNames = bundledRuntimeResourceNames(platformDir)
         runtimeNames.forEach { name ->
+            val resource = "/native/$platformDir/$name"
+            val input = NativePlayerBridge::class.java.getResourceAsStream(resource) ?: return@forEach
+            val target = dir.resolve(name)
+            input.use { source ->
+                target.outputStream().use { output -> source.copyTo(output) }
+            }
+            target.deleteOnExit()
+        }
+    }
+
+    private fun extractBundledLuaScripts(platformDir: String, dir: File) {
+        val luaScripts = listOf("nuvio-osc.lua")
+        luaScripts.forEach { name ->
             val resource = "/native/$platformDir/$name"
             val input = NativePlayerBridge::class.java.getResourceAsStream(resource) ?: return@forEach
             val target = dir.resolve(name)
@@ -225,19 +244,19 @@ internal object NativePlayerBridge {
     }
 
     private fun nativeDirectoryName(platform: DesktopHostOs): String =
-        when (platform) {
-            DesktopHostOs.MACOS -> "macos"
-            DesktopHostOs.WINDOWS -> "windows"
-            DesktopHostOs.LINUX -> "linux"
-            DesktopHostOs.UNKNOWN -> "unknown"
+        when {
+            platform == DesktopHostOs.MACOS -> "macos"
+            platform == DesktopHostOs.WINDOWS -> "windows"
+            platform.isLinux -> "linux"
+            else -> "unknown"
         }
 
     private fun nativeLibraryName(platform: DesktopHostOs): String =
-        when (platform) {
-            DesktopHostOs.MACOS -> "libplayer_bridge.dylib"
-            DesktopHostOs.WINDOWS -> "player_bridge.dll"
-            DesktopHostOs.LINUX -> "libplayer_bridge.so"
-            DesktopHostOs.UNKNOWN -> "player_bridge"
+        when {
+            platform == DesktopHostOs.MACOS -> "libplayer_bridge.dylib"
+            platform == DesktopHostOs.WINDOWS -> "player_bridge.dll"
+            platform.isLinux -> "libplayer_bridge.so"
+            else -> "player_bridge"
         }
 
     private fun exportControlsPageAssets(): ControlsPageAssets {
@@ -326,7 +345,7 @@ internal object NativePlayerBridge {
 }
 
 internal fun preloadNativePlayerBridgeAsync() {
-    if (DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS || DesktopHostOs.current == DesktopHostOs.LINUX) {
+    if (DesktopHostOs.current.isLinux || DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS) {
         runCatching {
             NativePlayerBridge.preloadAsync()
         }

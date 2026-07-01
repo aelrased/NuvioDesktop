@@ -1037,7 +1037,7 @@ kotlin {
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)
-            implementation(compose.materialIconsExtended)
+            implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(libs.compose.ui)
             implementation(libs.compose.components.resources)
             implementation(libs.compose.uiToolingPreview)
@@ -1070,6 +1070,7 @@ compose.desktop {
             "--add-opens=java.desktop/sun.lwawt=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.lwawt.macosx=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED",
             smokePlayerUrl?.takeIf { it.isNotBlank() }?.let { "-Dnuvio.desktop.smokePlayerUrl=$it" },
         )
 
@@ -1265,15 +1266,41 @@ fun List<String>.runCommand(): String? =
 
 val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
 val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
+val linuxPlayerLuaSource = layout.projectDirectory.file("src/desktopMain/native/linux/nuvio-osc.lua")
 val linuxPlayerRuntimeSource = layout.projectDirectory.dir("src/desktopMain/native/linux/live")
 val linuxPlayerRuntimeOutput = layout.buildDirectory.dir("native/linux-runtime")
+val linuxRustPlayerDir = layout.projectDirectory.dir("src/desktopMain/native/linux/rust-player")
 
 if (isLinuxHost) {
     linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
 }
 
+val prepareLinuxPlayerLua = tasks.register<Copy>("prepareLinuxPlayerLua") {
+    enabled = isLinuxHost
+    from(linuxPlayerLuaSource)
+    into(linuxPlayerBridgeOutput.map { it.asFile.parentFile })
+}
+
 val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
 
+/* Rust player bridge build (replaces C bridge) */
+val buildRustPlayerBridge = tasks.register<Exec>("buildRustPlayerBridge") {
+    enabled = isLinuxHost
+    inputs.dir(linuxRustPlayerDir)
+    outputs.file(linuxPlayerBridgeOutput)
+    commandLine(
+        "cargo", "build", "--release",
+        "--manifest-path", linuxRustPlayerDir.file("Cargo.toml").asFile.absolutePath,
+    )
+    doLast {
+        val rustTarget = linuxRustPlayerDir.file("target/release/libplayer_bridge.so").asFile
+        if (rustTarget.exists()) {
+            rustTarget.copyTo(linuxPlayerBridgeOutput.get().asFile, overwrite = true)
+        }
+    }
+}
+
+/* C player bridge build (fallback) */
 val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
     enabled = isLinuxHost
     inputs.file(linuxPlayerBridgeSource)
@@ -1295,14 +1322,69 @@ val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
             "-Wl,-rpath,'\$ORIGIN'",
             "-o", outputFile.absolutePath,
             sourceFile.absolutePath,
+            layout.projectDirectory.file("src/desktopMain/native/linux/player_overlay.c").asFile.absolutePath,
             *javaIncludes.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             *cflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             *libs.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             "-lEGL", "-lGL", "-lgbm",
-            "-lX11",
+            "-lX11", "-lXext", "-lXrender",
             "-ldl",
             "-lm",
         )
+    }
+}
+
+/* Try Rust first, fall back to C if Rust build fails */
+val prepareLinuxPlayerBridge = tasks.register<DefaultTask>("prepareLinuxPlayerBridge") {
+    enabled = isLinuxHost
+    doFirst {
+        val rustBuilt = try {
+            ProcessBuilder(
+                "cargo", "build", "--release",
+                "--manifest-path", linuxRustPlayerDir.file("Cargo.toml").asFile.absolutePath,
+            )
+                .inheritIO()
+                .start()
+                .waitFor()
+            val exitCode = 0 // if we get here without exception, assume success
+            val rustTarget = linuxRustPlayerDir.file("target/release/libplayer_bridge.so").asFile
+            rustTarget.exists()
+        } catch (_: Exception) {
+            false
+        }
+
+        if (rustBuilt) {
+            val rustTarget = linuxRustPlayerDir.file("target/release/libplayer_bridge.so").asFile
+            rustTarget.copyTo(linuxPlayerBridgeOutput.get().asFile, overwrite = true)
+            println("Linux player bridge: built from Rust")
+        } else {
+            println("Linux player bridge: Rust build failed, falling back to C")
+            // Fall back to C build
+            val javaHome = linuxPlayerBridgeJavaHome
+            val javaIncludes = "-I${javaHome}/include -I${javaHome}/include/linux"
+            val mpvPkg = "mpv"
+            val cflags = try {
+                listOf("pkg-config", "--cflags", mpvPkg).runCommand()?.trim() ?: ""
+            } catch (_: Exception) { "" }
+            val libs = try {
+                listOf("pkg-config", "--libs", mpvPkg).runCommand()?.trim() ?: ""
+            } catch (_: Exception) { "" }
+            val fullArgs = mutableListOf(
+                "gcc", "-shared", "-fPIC",
+                "-Wl,-rpath,'\$ORIGIN'",
+                "-o", linuxPlayerBridgeOutput.get().asFile.absolutePath,
+                linuxPlayerBridgeSource.asFile.absolutePath,
+                layout.projectDirectory.file("src/desktopMain/native/linux/player_overlay.c").asFile.absolutePath,
+            )
+            fullArgs.addAll(javaIncludes.split(" ").filter { it.isNotBlank() })
+            fullArgs.addAll(cflags.split(" ").filter { it.isNotBlank() })
+            fullArgs.addAll(libs.split(" ").filter { it.isNotBlank() })
+            fullArgs.addAll(listOf("-lEGL", "-lGL", "-lgbm", "-lX11", "-lXext", "-lXrender", "-ldl", "-lm"))
+            ProcessBuilder(fullArgs)
+                .inheritIO()
+                .start()
+                .waitFor()
+        }
     }
 }
 
@@ -1323,11 +1405,14 @@ val generateLinuxPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexT
 
 tasks.withType<Jar>().configureEach {
     if (isLinuxHost && name == "desktopJar") {
-        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex)
+        dependsOn(prepareLinuxPlayerBridge, prepareLinuxPlayerRuntime, prepareLinuxPlayerLua, generateLinuxPlayerRuntimeIndex)
         from(linuxPlayerBridgeOutput) {
             into("native/linux")
         }
         from(linuxPlayerRuntimeOutput) {
+            into("native/linux")
+        }
+        from(layout.projectDirectory.file("src/desktopMain/native/linux/nuvio-osc.lua")) {
             into("native/linux")
         }
     }
@@ -1357,7 +1442,7 @@ if (isLinuxHost) {
         "packageReleaseUberJarForCurrentOS",
     )
     tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
-        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex)
+        dependsOn(prepareLinuxPlayerBridge, prepareLinuxPlayerRuntime, prepareLinuxPlayerLua, generateLinuxPlayerRuntimeIndex)
     }
 
     val buildAppImage by tasks.registering {

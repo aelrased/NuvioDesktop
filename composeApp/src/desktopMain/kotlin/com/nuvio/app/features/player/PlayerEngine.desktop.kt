@@ -64,9 +64,8 @@ actual fun PlatformPlayerSurface(
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
 ) {
-    if (DesktopHostOs.current == DesktopHostOs.LINUX) {
-        // Linux: use offscreen rendering with Compose Canvas overlay.
-        // This ensures player controls render correctly on top of the video.
+    if (DesktopHostOs.current == DesktopHostOs.LINUX_WAYLAND) {
+        // Linux Wayland: use offscreen rendering with Compose Canvas overlay.
         // EGL FBO via GBM (gpuMode=2) with GLES, or SW fallback (gpuMode=0).
         // GPU decode via hwdec=auto-copy (VAAPI on Intel/AMD, nvdec on NVIDIA).
         LinuxPlayerSurface(
@@ -85,8 +84,8 @@ actual fun PlatformPlayerSurface(
             onSnapshot = onSnapshot,
             onError = onError,
         )
-    } else if (DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS) {
-        // macOS, Windows, and Linux X11: GPU-direct rendering via native view pointer
+    } else if (DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS || DesktopHostOs.current == DesktopHostOs.LINUX_X11) {
+        // macOS, Windows, and Linux X11/XWayland: GPU-direct rendering via native view pointer
         NativePlayerSurface(
             sourceUrl = sourceUrl,
             sourceHeaders = sourceHeaders,

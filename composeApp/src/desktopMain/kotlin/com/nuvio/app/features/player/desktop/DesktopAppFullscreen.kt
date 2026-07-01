@@ -195,7 +195,7 @@ internal fun installDesktopMouseButtonShortcuts(window: Window): () -> Unit {
     val listener = AWTEventListener { awtEvent ->
         if (awtEvent.id != MouseEvent.MOUSE_PRESSED) return@AWTEventListener
         val mouseEvent = awtEvent as? MouseEvent ?: return@AWTEventListener
-        val isSideButton = if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+        val isSideButton = if (DesktopHostOs.current.isLinux) {
             mouseEvent.button in 6..9
         } else {
             mouseEvent.button in 4..5
