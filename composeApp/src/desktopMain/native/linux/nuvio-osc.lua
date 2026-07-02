@@ -34,19 +34,20 @@ local function fmt_time(s)
 end
 
 local function update_size()
-    State.w = mp.get_property_number('osd-width', 1920)
-    State.h = mp.get_property_number('osd-height', 1080)
+    local w = mp.get_property_number('osd-width', 0)
+    local h = mp.get_property_number('osd-height', 0)
+    if w > 0 and h > 0 then
+        State.w = w
+        State.h = h
+    end
 end
 
-local f = io.open("/tmp/nuvio-osc-loaded.txt", "w")
-if f then f:write("loaded\n") f:close() end
-mp.msg.info("nuvio-osc: script loaded, version 3")
+mp.msg.info("nuvio-osc: script loaded, version 5")
 
 local function draw()
     update_size()
     local w, h = State.w, State.h
     mp.msg.verbose("nuvio-osc: draw w=" .. w .. " h=" .. h .. " visible=" .. tostring(State.visible))
-    if w <= 0 or h <= 0 then return end
 
     local progress = 0
     if State.dur > 0 then
@@ -85,7 +86,7 @@ local function draw()
         if State.title ~= '' then
             s:new_event()
             s:append('{\\pos(25,' .. TOP_PAD .. ')\\bord1\\shad1\\1c&HFFFFFF&\\3c&H000000&\\fs18\\fnSansSerif\\b1}')
-            s:esc(State.title)
+            s:append(State.title)
         end
 
         -- Seekbar background
@@ -112,7 +113,7 @@ local function draw()
         local time_str = fmt_time(State.pos) .. ' / ' .. fmt_time(State.dur)
         s:new_event()
         s:append('{\\pos(' .. bar_x .. ',' .. (bar_y + BAR_H + 18) .. ')\\bord1\\shad1\\1c&HFFFFFF&\\3c&H000000&\\fs14\\fnSansSerif}')
-        s:esc(time_str)
+        s:append(time_str)
 
         -- Play/Pause icon (center)
         local icon_y = math.floor(h / 2 - 20)

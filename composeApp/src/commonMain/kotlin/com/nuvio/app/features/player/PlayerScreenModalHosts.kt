@@ -10,6 +10,17 @@ import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamsUiState
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 
+/**
+ * Platform-specific hook for rendering the subtitle modal in a separate window
+ * (e.g., DialogWindow on Linux X11/XWayland where AWT Canvas obscures Compose overlays).
+ * Set by desktopMain; null on other platforms.
+ */
+internal var subtitleModalFactory: (@Composable (
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) -> Unit)? = null
+
 @Composable
 internal fun PlayerScreenModalHosts(
     pendingP2pSwitch: PendingPlayerP2pSwitch?,
@@ -122,30 +133,60 @@ internal fun PlayerScreenModalHosts(
         onDismiss = onAudioModalDismissed,
     )
 
-    SubtitleModal(
-        visible = showSubtitleModal,
-        activeTab = activeSubtitleTab,
-        subtitleTracks = subtitleTracks,
-        selectedSubtitleIndex = selectedSubtitleIndex,
-        addonSubtitles = addonSubtitles,
-        selectedAddonSubtitleId = selectedAddonSubtitleId,
-        isLoadingAddonSubtitles = isLoadingAddonSubtitles,
-        subtitleStyle = subtitleStyle,
-        subtitleDelayMs = subtitleDelayMs,
-        selectedAddonSubtitle = selectedAddonSubtitle,
-        subtitleAutoSyncState = subtitleAutoSyncState,
-        onTabSelected = onSubtitleTabSelected,
-        onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
-        onAddonSubtitleSelected = onAddonSubtitleSelected,
-        onFetchAddonSubtitles = onFetchAddonSubtitles,
-        onStyleChanged = onSubtitleStyleChanged,
-        onSubtitleDelayChanged = onSubtitleDelayChanged,
-        onSubtitleDelayReset = onSubtitleDelayReset,
-        onAutoSyncCapture = onAutoSyncCapture,
-        onAutoSyncCueSelected = onAutoSyncCueSelected,
-        onAutoSyncReload = onAutoSyncReload,
-        onDismiss = onSubtitleModalDismissed,
-    )
+    val subtitleFactory = subtitleModalFactory
+    if (subtitleFactory != null) {
+        subtitleFactory(showSubtitleModal, onSubtitleModalDismissed) {
+            SubtitleModal(
+                visible = true,
+                activeTab = activeSubtitleTab,
+                subtitleTracks = subtitleTracks,
+                selectedSubtitleIndex = selectedSubtitleIndex,
+                addonSubtitles = addonSubtitles,
+                selectedAddonSubtitleId = selectedAddonSubtitleId,
+                isLoadingAddonSubtitles = isLoadingAddonSubtitles,
+                subtitleStyle = subtitleStyle,
+                subtitleDelayMs = subtitleDelayMs,
+                selectedAddonSubtitle = selectedAddonSubtitle,
+                subtitleAutoSyncState = subtitleAutoSyncState,
+                onTabSelected = onSubtitleTabSelected,
+                onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
+                onAddonSubtitleSelected = onAddonSubtitleSelected,
+                onFetchAddonSubtitles = onFetchAddonSubtitles,
+                onStyleChanged = onSubtitleStyleChanged,
+                onSubtitleDelayChanged = onSubtitleDelayChanged,
+                onSubtitleDelayReset = onSubtitleDelayReset,
+                onAutoSyncCapture = onAutoSyncCapture,
+                onAutoSyncCueSelected = onAutoSyncCueSelected,
+                onAutoSyncReload = onAutoSyncReload,
+                onDismiss = onSubtitleModalDismissed,
+            )
+        }
+    } else {
+        SubtitleModal(
+            visible = showSubtitleModal,
+            activeTab = activeSubtitleTab,
+            subtitleTracks = subtitleTracks,
+            selectedSubtitleIndex = selectedSubtitleIndex,
+            addonSubtitles = addonSubtitles,
+            selectedAddonSubtitleId = selectedAddonSubtitleId,
+            isLoadingAddonSubtitles = isLoadingAddonSubtitles,
+            subtitleStyle = subtitleStyle,
+            subtitleDelayMs = subtitleDelayMs,
+            selectedAddonSubtitle = selectedAddonSubtitle,
+            subtitleAutoSyncState = subtitleAutoSyncState,
+            onTabSelected = onSubtitleTabSelected,
+            onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
+            onAddonSubtitleSelected = onAddonSubtitleSelected,
+            onFetchAddonSubtitles = onFetchAddonSubtitles,
+            onStyleChanged = onSubtitleStyleChanged,
+            onSubtitleDelayChanged = onSubtitleDelayChanged,
+            onSubtitleDelayReset = onSubtitleDelayReset,
+            onAutoSyncCapture = onAutoSyncCapture,
+            onAutoSyncCueSelected = onAutoSyncCueSelected,
+            onAutoSyncReload = onAutoSyncReload,
+            onDismiss = onSubtitleModalDismissed,
+        )
+    }
 
     IosVideoSettingsModal(
         visible = showVideoSettingsModal,

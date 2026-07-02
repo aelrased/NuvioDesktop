@@ -22,6 +22,7 @@
 #include <GL/glext.h>
 #include <fcntl.h>
 #include <gbm.h>
+#include "nuvio_subs_lua.h"
 
 /* ------------------------------------------------------------------ */
 /*  Debug logging                                                      */
@@ -121,7 +122,10 @@ typedef struct {
 static void callEventSink(JNIEnv *env, JavaVM *jvm,
     jobject eventSink, jmethodID eventMethod,
     const char *type, double value) {
-    if (!eventSink || !eventMethod) return;
+    if (!eventSink || !eventMethod) {
+        DBG("callEventSink: null sink=%p method=%p\n", (void*)eventSink, (void*)eventMethod);
+        return;
+    }
     int detach = 0;
     if (!env) {
         jint ret = (*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6);
@@ -133,6 +137,7 @@ static void callEventSink(JNIEnv *env, JavaVM *jvm,
     if (env) {
         jstring jType = (*env)->NewStringUTF(env, type);
         (*env)->CallVoidMethod(env, eventSink, eventMethod, jType, value);
+        DBG("callEventSink: called %s=%.1f\n", type, value);
         (*env)->DeleteLocalRef(env, jType);
     }
     if (detach) {
@@ -883,7 +888,7 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         mpv_set_option_string(task->mpv, "sub-auto", "no");
         mpv_set_option_string(task->mpv, "config", "yes");
         mpv_set_option_string(task->mpv, "terminal", "no");
-        mpv_set_option_string(task->mpv, "msg-level", "all=no,nuvio_osc=info");
+        mpv_set_option_string(task->mpv, "msg-level", "all=no,lua=info,status=info,nuvio_subs=info");
         mpv_set_option_string(task->mpv, "hwdec", "auto");
         mpv_set_option_string(task->mpv, "vd-lavc-dr", "yes");
         mpv_set_option_string(task->mpv, "video-latency-hacks", "yes");
@@ -897,7 +902,7 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         mpv_set_option_string(task->mpv, "input-default-bindings", "yes");
         mpv_set_option_string(task->mpv, "input-vo-keyboard", "no");
         mpv_set_option_string(task->mpv, "window-dragging", "no");
-        mpv_set_option_string(task->mpv, "osc", "no");
+        mpv_set_option_string(task->mpv, "osc", "yes");
         mpv_set_option_string(task->mpv, "osd-level", "1");
         mpv_set_option_string(task->mpv, "osd-duration", "3000");
         mpv_set_option_string(task->mpv, "osd-bar", "yes");
@@ -931,22 +936,26 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
                 free(hdr);
             }
         }
-
-        /* Load custom Lua OSC script from same directory as this .so */
+        
+        /* Load custom Lua subtitle-trigger script */
         {
             char script_path[1024];
-            so_dir_path("nuvio-osc.lua", script_path, sizeof(script_path));
-            DBG("create: loading script '%s'\n", script_path);
-            /* Check if the file exists */
-            FILE *test = fopen(script_path, "r");
-            if (test) {
-                DBG("create: script file EXISTS at '%s'\n", script_path);
-                fclose(test);
+            snprintf(script_path, sizeof(script_path), "/tmp/nuvio-subs.lua");
+            int fd = open(script_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                ssize_t total = (ssize_t)sizeof(NUVIO_SUBS_LUA) - 1;
+                ssize_t written = 0;
+                while (written < total) {
+                    ssize_t n = write(fd, NUVIO_SUBS_LUA + written, (size_t)(total - written));
+                    if (n <= 0) break;
+                    written += n;
+                }
+                close(fd);
+                DBG("create: wrote subs script (%zd bytes) to %s\n", total, script_path);
             } else {
-                DBG("create: script file NOT FOUND at '%s' (errno=%d)\n", script_path, errno);
+                DBG("create: open(%s) failed (errno=%d)\n", script_path, errno);
             }
-            int r = mpv_set_option_string(task->mpv, "scripts", script_path);
-            DBG("create: mpv_set_option_string(scripts) returned %d\n", r);
+            mpv_set_option_string(task->mpv, "scripts", script_path);
         }
 
         if (mpv_initialize(task->mpv) < 0) {
@@ -1406,7 +1415,11 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
     (void)env; (void)thiz; CreateTask *task = getTask(hdl); if (!task || !task->mpv) return;
     if (id <= 0) { mpv_set_property_string(task->mpv, "sid", "no"); return; }
     char buf[16]; snprintf(buf, sizeof(buf), "%d", id);
+    /* Create sentinel file so Lua script doesn't intercept this change */
+    int sentinel = open("/tmp/nuvio-subs-ignore", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (sentinel >= 0) close(sentinel);
     mpv_set_property_string(task->mpv, "sid", buf);
+    unlink("/tmp/nuvio-subs-ignore");
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_addSubtitleUrl(JNIEnv *env, jobject thiz, jlong hdl, jstring url) {
@@ -1422,8 +1435,12 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_clearExternalSubtitlesAndSelect(JNIEnv *env, jobject thiz, jlong hdl, jint id) {
     (void)env; (void)thiz; CreateTask *task = getTask(hdl); if (!task || !task->mpv) return;
-    if (id <= 0) { mpv_set_property_string(task->mpv, "sid", "no"); return; }
-    char buf[16]; snprintf(buf, sizeof(buf), "%d", id); mpv_set_property_string(task->mpv, "sid", buf);
+    int sentinel = open("/tmp/nuvio-subs-ignore", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (sentinel >= 0) close(sentinel);
+    if (id <= 0) { mpv_set_property_string(task->mpv, "sid", "no"); } else {
+        char buf[16]; snprintf(buf, sizeof(buf), "%d", id); mpv_set_property_string(task->mpv, "sid", buf);
+    }
+    unlink("/tmp/nuvio-subs-ignore");
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applyWindowChrome(JNIEnv *env, jobject thiz, jlong hwnd, jboolean dm, jint cc, jint bc, jint tc) {
@@ -1468,6 +1485,24 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
 
 JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_warmupWebView2(JNIEnv *env, jobject thiz, jstring url) { (void)env; (void)thiz; (void)url; return JNI_FALSE; }
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_shutdownWebView2Warmup(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; }
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_processEvents(JNIEnv *env, jobject thiz, jlong handle) {
+    CreateTask *task = getTask(handle);
+    if (!task || !task->mpv) return;
+    /* Scan for pending mpv events without blocking */
+    while (1) {
+        mpv_event *event = mpv_wait_event(task->mpv, 0);
+        if (event->event_id == MPV_EVENT_NONE) break;
+        if (event->event_id == MPV_EVENT_CLIENT_MESSAGE) {
+            mpv_event_client_message *msg = (mpv_event_client_message *)event->data;
+            if (msg->num_args > 0 && strcmp(msg->args[0], "nuvio-open-subtitle-panel") == 0) {
+                DBG("processEvents: received nuvio-open-subtitle-panel\n");
+                callEventSink(env, task->jvm, task->eventSink, task->eventMethod,
+                    "openSubtitlePanel", 0.0);
+            }
+        }
+    }
+}
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_resizeNativeView(JNIEnv *env, jobject thiz, jlong hdl, jint w, jint h) {
     (void)env; (void)thiz; CreateTask *task = getTask(hdl); if (!task) return;

@@ -26,21 +26,26 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import javax.swing.SwingUtilities
+import javax.swing.Timer
 import kotlin.concurrent.Volatile
 
 internal class NativePlayerController(
     private val host: PlayerHost,
 ) : PlayerEngineController {
-    private companion object {
+    companion object {
         val json = Json { ignoreUnknownKeys = true }
         val log = Logger.withTag("NativePlayerControls")
 
         @Volatile
         var rememberedVolumeLevel: Float = 1f
+
+        @Volatile
+        var eventForwarder: ((String, Double) -> Unit)? = null
     }
 
     @Volatile
     private var handle: Long = 0L
+    private var eventPollTimer: Timer? = null
     // mpv handles its own OSC — no overlay needed
     private var pendingSource: PendingSource? = null
     private var controlsState = PlayerControlsState()
@@ -55,6 +60,21 @@ internal class NativePlayerController(
         SwingUtilities.invokeLater {
             handlePlayerEvent(type, value)
         }
+    }
+
+    private fun startEventPolling() {
+        stopEventPolling()
+        eventPollTimer = Timer(250) {
+            val h = handle
+            if (h != 0L) {
+                NativePlayerBridge.processEvents(h)
+            }
+        }.apply { start() }
+    }
+
+    private fun stopEventPolling() {
+        eventPollTimer?.stop()
+        eventPollTimer = null
     }
 
     fun attach(
@@ -94,6 +114,8 @@ internal class NativePlayerController(
     private fun attachPending() {
         val pending = pendingSource ?: return
 
+        eventForwarder = { type, value -> handlePlayerEvent(type, value) }
+
         if (host is LinuxPlayerHost) {
             // Linux offscreen path — no AWT peer, no SwingUtilities needed
             attachPendingDirect(pending)
@@ -128,6 +150,7 @@ internal class NativePlayerController(
                     eventSink = eventSink,
                 )
                 if (handle == 0L) error("Native player did not return a handle.")
+                startEventPolling()
                 log.d {
                     "attach created handle=$handle source=${resolvedSource.toPlaybackLogKey()} " +
                         "initialPositionMs=${pending.initialPositionMs}"
@@ -166,6 +189,7 @@ internal class NativePlayerController(
                 eventSink = eventSink,
             )
             if (handle == 0L) error("Native player did not return a handle.")
+            startEventPolling()
             host.nativeHandle = handle
             log.d {
                 "attach direct handle=$handle source=${resolvedSource.toPlaybackLogKey()} " +
@@ -225,6 +249,7 @@ internal class NativePlayerController(
                 "subsLabel=${stateWithVolume.subtitlesLabel} fullscreen=$isFullscreen"
         }
         NativePlayerBridge.updateControls(current, stateWithVolume.toControlsJson(isFullscreen))
+        JavaFXPlayerOverlay.updateControls(stateWithVolume.toControlsJson(isFullscreen))
     }
 
     fun onDesktopFullscreenChanged() {
@@ -275,6 +300,12 @@ internal class NativePlayerController(
                 log.d { "scrubFinish positionMs=${value.toLong()} handled=$scrubHandled handle=$handle" }
                 if (!scrubHandled) {
                     seekTo(value.toLong())
+                }
+            }
+            "openSubtitlePanel" -> {
+                log.d { "openSubtitlePanel event received" }
+                if (!onEvent("subtitles", 0.0)) {
+                    onAction(PlayerControlsAction.Subtitles)
                 }
             }
             "toggleFullscreen" -> {
@@ -396,11 +427,13 @@ internal class NativePlayerController(
     }
 
     fun dispose() {
+        eventForwarder = null
         host.resetCursorVisibility()
         disposePlayerHandle()
     }
 
     private fun disposePlayerHandle() {
+        stopEventPolling()
         val current = handle
         handle = 0L
         lastSentControlsStructureKey = null

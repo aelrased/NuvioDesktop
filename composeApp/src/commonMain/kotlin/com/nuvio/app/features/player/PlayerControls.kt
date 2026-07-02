@@ -60,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nuvio.app.core.ui.AppIconResource
+import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.NuvioTypeScale
 import com.nuvio.app.core.ui.appIconPainter
 import com.nuvio.app.core.ui.nuvioTypeScale
@@ -248,6 +249,14 @@ private fun PlayerHeader(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        NuvioBackButton(
+            onClick = onBack,
+            containerColor = Color.Black.copy(alpha = 0.35f),
+            contentColor = Color.White,
+            buttonSize = metrics.headerIconSize + 16.dp,
+            iconSize = metrics.headerIconSize,
+            contentDescription = stringResource(Res.string.compose_player_close),
+        )
         PlayerHeaderIconButton(
             icon = if (isLocked) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
             contentDescription = if (isLocked) {
@@ -281,14 +290,6 @@ private fun PlayerHeader(
                 onClick = onFullscreenClick,
             )
         }
-        PlayerHeaderIconButton(
-            icon = Icons.Rounded.Build,
-            contentDescription = stringResource(Res.string.compose_player_close),
-            buttonSize = metrics.headerIconSize + 16.dp,
-            iconSize = metrics.headerIconSize,
-            onClick = onBack,
-            customTint = Color.Unspecified,
-        )
     }
 }
 

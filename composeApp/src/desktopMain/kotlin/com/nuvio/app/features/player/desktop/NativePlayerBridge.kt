@@ -100,6 +100,7 @@ internal object NativePlayerBridge {
     external fun videoWidth(handle: Long): Int
     external fun videoHeight(handle: Long): Int
     external fun setProperty(handle: Long, name: String, value: String)
+    external fun processEvents(handle: Long)
 
     // Linux X11 overlay controls
     external fun createOverlay(parentWindowPtr: Long, x: Int, y: Int, w: Int, h: Int): Long

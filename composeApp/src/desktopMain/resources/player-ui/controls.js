@@ -389,6 +389,11 @@ const chromeInteractionSelector = [
 ].join(",");
 
 const send = (type, value = 0) => {
+  const fxBridge = window.javaFxBridge;
+  if (fxBridge) {
+    fxBridge.onPlayerEvent(type, value);
+    return;
+  }
   const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.player;
   if (bridge) {
     bridge.postMessage({ type, value });
@@ -852,6 +857,9 @@ const closePlayerModal = (notifyDismiss = false, animated = true) => {
   });
   if (notifyDismiss && closingModal === "p2pConsent") {
     send("cancelP2pForPlayerControls", 0);
+  }
+  if (closingModal === "subtitles") {
+    send("close", 0);
   }
   renderChrome();
 };

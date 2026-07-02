@@ -1,0 +1,47 @@
+/* Auto-generated from nuvio-subs.lua */
+#ifndef NUVIO_SUBS_LUA_H
+#define NUVIO_SUBS_LUA_H
+
+static const char NUVIO_SUBS_LUA[] =
+    "-- Nuvio subtitle panel trigger\n"
+    "-- Opens the Nuvio subtitle selection panel when subtitles change via OSC\n"
+    "local mp = require 'mp'\n"
+    "\n"
+    "mp.msg.info(\"nuvio-subs: loaded OK\")\n"
+    "mp.osd_message(\"nuvio-subs loaded\", 2)\n"
+    "\n"
+    "local last_sid = mp.get_property('sid')\n"
+    "local file_loaded = false\n"
+    "\n"
+    "mp.register_event(\"file-loaded\", function()\n"
+    "    file_loaded = true\n"
+    "    last_sid = mp.get_property('sid')\n"
+    "    mp.msg.info(\"nuvio-subs: file loaded, last_sid=\" .. tostring(last_sid))\n"
+    "end)\n"
+    "\n"
+    "mp.register_event(\"end-file\", function()\n"
+    "    file_loaded = false\n"
+    "end)\n"
+    "\n"
+    "mp.observe_property('sid', 'string', function(name, new_sid)\n"
+    "    if not file_loaded then\n"
+    "        last_sid = new_sid\n"
+    "        return\n"
+    "    end\n"
+    "    if new_sid ~= last_sid then\n"
+    "        mp.msg.info(\"nuvio-subs: sid changed: \" .. tostring(last_sid) .. \" -> \" .. tostring(new_sid))\n"
+    "        last_sid = new_sid\n"
+    "        local file = io.open(\"/tmp/nuvio-subs-ignore\", \"r\")\n"
+    "        if file then\n"
+    "            file:close()\n"
+    "            mp.msg.info(\"nuvio-subs: ignoring (sentinel present)\")\n"
+    "            return\n"
+    "        end\n"
+    "        mp.osd_message(\"Nuvio: opening subtitle panel\")\n"
+    "        mp.command('script-message nuvio-open-subtitle-panel')\n"
+    "    end\n"
+    "end)\n"
+    "\n"
+;
+
+#endif

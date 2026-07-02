@@ -13,6 +13,7 @@ import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.player.PlatformPlayerSurface
 import com.nuvio.app.features.player.desktop.DesktopAppFullscreenController
+import com.nuvio.app.features.player.installLinuxSubtitleModalFactory
 import com.nuvio.app.features.player.desktop.applyNativeDesktopWindowChrome
 import com.nuvio.app.features.player.desktop.installDesktopAppFullscreenShortcuts
 import com.nuvio.app.features.player.desktop.installDesktopMouseButtonShortcuts
@@ -27,6 +28,7 @@ private const val MacosDarkAquaAppearance = "NSAppearanceNameDarkAqua"
 
 fun main() {
     configureDesktopChrome()
+    installLinuxSubtitleModalFactory()
     preloadNativePlayerBridgeAsync()
 
     application {
