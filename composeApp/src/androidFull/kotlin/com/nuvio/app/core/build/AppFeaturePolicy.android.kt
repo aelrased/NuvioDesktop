@@ -4,6 +4,9 @@ actual object AppFeaturePolicy {
     actual val pluginsEnabled: Boolean = true
     actual val downloadsEnabled: Boolean = true
     actual val notificationsEnabled: Boolean = true
+    actual val supportersContributorsPageEnabled: Boolean = true
+    actual val accountDeletionEnabled: Boolean = false
+    actual val personalMediaAddonCopyEnabled: Boolean = false
     actual val p2pEnabled: Boolean = true
     actual val externalPlayerSupported: Boolean = true
     actual val trailerPlaybackMode: TrailerPlaybackMode = TrailerPlaybackMode.IN_APP

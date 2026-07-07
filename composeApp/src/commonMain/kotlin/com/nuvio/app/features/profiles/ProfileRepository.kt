@@ -5,6 +5,7 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.auth.isAnonymous
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.sync.putSyncOriginClientId
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
 import com.nuvio.app.features.collection.CollectionRepository
@@ -197,7 +198,9 @@ object ProfileRepository {
         }
         try {
             val params = buildJsonObject {
+                put("p_client_max_profiles", MAX_PROFILES)
                 put("p_profiles", json.encodeToJsonElement(profiles))
+                putSyncOriginClientId()
             }
             SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
             pullProfiles()
@@ -215,7 +218,7 @@ object ProfileRepository {
         usesPrimaryAddons: Boolean = false,
     ) {
         val existing = _state.value.profiles
-        val nextIndex = ((1..4).toSet() - existing.map { it.profileIndex }.toSet()).minOrNull() ?: return
+        val nextIndex = ((1..MAX_PROFILES).toSet() - existing.map { it.profileIndex }.toSet()).minOrNull() ?: return
 
         val allPayloads = existing.map { profile ->
             ProfilePushPayload(
@@ -288,7 +291,10 @@ object ProfileRepository {
             return
         }
         try {
-            val params = buildJsonObject { put("p_profile_id", profileIndex) }
+            val params = buildJsonObject {
+                put("p_profile_id", profileIndex)
+                putSyncOriginClientId()
+            }
             SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
             pullProfiles()
         } catch (e: Throwable) {
@@ -490,7 +496,7 @@ object ProfileRepository {
 
     private fun syncPinCache(profiles: List<NuvioProfile>) {
         val profilesByIndex = profiles.associateBy { it.profileIndex }
-        for (profileIndex in 1..4) {
+        for (profileIndex in 1..MAX_PROFILES) {
             val profile = profilesByIndex[profileIndex]
             if (profile == null || !profile.pinEnabled) {
                 ProfilePinCacheStorage.removePayload(profileIndex)

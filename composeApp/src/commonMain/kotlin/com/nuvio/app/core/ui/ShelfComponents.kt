@@ -85,6 +85,7 @@ fun <T> NuvioShelfSection(
     onViewAllClick: (() -> Unit)? = null,
     viewAllPillSize: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
     key: ((T) -> Any)? = null,
+    animatePlacement: Boolean = false,
     itemContent: @Composable (T) -> Unit,
 ) {
     val tokens = MaterialTheme.nuvio
@@ -113,11 +114,19 @@ fun <T> NuvioShelfSection(
                     items = entries.withDuplicateSafeLazyKeys(key),
                     key = { entry -> entry.lazyKey },
                 ) { keyedEntry ->
-                    itemContent(keyedEntry.value)
+                    if (animatePlacement) {
+                        Box(modifier = Modifier.animateItem()) { itemContent(keyedEntry.value) }
+                    } else {
+                        itemContent(keyedEntry.value)
+                    }
                 }
             } else {
                 items(entries) { entry ->
-                    itemContent(entry)
+                    if (animatePlacement) {
+                        Box(modifier = Modifier.animateItem()) { itemContent(entry) }
+                    } else {
+                        itemContent(entry)
+                    }
                 }
             }
         }

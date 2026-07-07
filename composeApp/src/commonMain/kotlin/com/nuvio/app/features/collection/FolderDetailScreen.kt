@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -23,7 +25,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.LocalRippleConfiguration
-import androidx.compose.material3.CircularProgressIndicator
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
+import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import com.nuvio.app.core.ui.NuvioPosterCard
 import com.nuvio.app.core.ui.NuvioPosterShape
 import com.nuvio.app.core.ui.NuvioScreenHeader
@@ -273,41 +276,50 @@ private fun TabbedGridContent(
                 selectedTab.error != null && selectedTab.items.isEmpty() -> ErrorMessage(selectedTab.error)
                 selectedTab.items.isEmpty() -> EmptyMessage()
                 else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(columns),
-                        state = gridState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 16.dp,
-                            end = 16.dp,
-                            bottom = nuvioSafeBottomPadding(18.dp),
-                        ),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        items(
-                            items = selectedTab.items.withDuplicateSafeLazyKeys { item -> item.stableKey() },
-                            key = { item -> item.lazyKey },
-                        ) { keyedItem ->
-                            val item = keyedItem.value
-                            NuvioPosterCard(
-                                title = item.name,
-                                imageUrl = item.poster,
-                                shape = NuvioPosterShape.Poster,
-                                detailLine = item.releaseInfo,
-                                isWatched = WatchingState.isPosterWatched(
-                                    watchedKeys = watchedKeys,
-                                    item = item,
-                                ),
-                                onClick = { onPosterClick(item) },
-                            )
-                        }
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(columns),
+                            state = gridState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                bottom = nuvioSafeBottomPadding(18.dp),
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            items(
+                                items = selectedTab.items.withDuplicateSafeLazyKeys { item -> item.stableKey() },
+                                key = { item -> item.lazyKey },
+                            ) { keyedItem ->
+                                val item = keyedItem.value
+                                NuvioPosterCard(
+                                    title = item.name,
+                                    imageUrl = item.poster,
+                                    shape = NuvioPosterShape.Poster,
+                                    detailLine = item.releaseInfo,
+                                    isWatched = WatchingState.isPosterWatched(
+                                        watchedKeys = watchedKeys,
+                                        item = item,
+                                    ),
+                                    onClick = { onPosterClick(item) },
+                                )
+                            }
 
-                        if (uiState.selectedTabIsLoadingMore) {
-                            item(span = { GridItemSpan(maxLineSpan) }) {
-                                PaginationLoadingFooter()
+                            if (uiState.selectedTabIsLoadingMore) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    PaginationLoadingFooter()
+                                }
                             }
                         }
+                        NuvioDesktopVerticalScrollbar(
+                            state = gridState,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                        )
                     }
                 }
             }
@@ -324,6 +336,7 @@ private fun RowsContent(
     onPosterClick: (MetaPreview) -> Unit,
 ) {
     val sections = FolderDetailRepository.getCatalogSectionsForRows()
+    val listState = rememberLazyListState()
 
     if (uiState.isLoading && sections.isEmpty()) {
         LoadingIndicator()
@@ -335,30 +348,40 @@ private fun RowsContent(
         return
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            bottom = nuvioSafeBottomPadding(18.dp),
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        items(
-            items = sections.withDuplicateSafeLazyKeys { it.key },
-            key = { it.lazyKey },
-        ) { keyedSection ->
-            val section = keyedSection.value
-            HomeCatalogRowSection(
-                section = section,
-                entries = section.items.take(18),
-                onViewAllClick = if (section.canOpenCatalog(18)) {
-                    { onCatalogClick(section) }
-                } else {
-                    null
-                },
-                watchedKeys = watchedKeys,
-                onPosterClick = { onPosterClick(it) },
-            )
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                bottom = nuvioSafeBottomPadding(18.dp),
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            items(
+                items = sections.withDuplicateSafeLazyKeys { it.key },
+                key = { it.lazyKey },
+            ) { keyedSection ->
+                val section = keyedSection.value
+                HomeCatalogRowSection(
+                    section = section,
+                    entries = section.items.take(18),
+                    onViewAllClick = if (section.canOpenCatalog(18)) {
+                        { onCatalogClick(section) }
+                    } else {
+                        null
+                    },
+                    watchedKeys = watchedKeys,
+                    onPosterClick = { onPosterClick(it) },
+                )
+            }
         }
+        NuvioDesktopVerticalScrollbar(
+            state = listState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+        )
     }
 }
 
@@ -370,10 +393,9 @@ private fun PaginationLoadingFooter() {
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
-        CircularProgressIndicator(
+        NuvioLoadingIndicator(
             modifier = Modifier.size(28.dp),
             color = MaterialTheme.colorScheme.primary,
-            strokeWidth = 3.dp,
         )
     }
 }
@@ -393,10 +415,9 @@ private fun LoadingIndicator() {
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
-        CircularProgressIndicator(
+        NuvioLoadingIndicator(
             modifier = Modifier.size(32.dp),
             color = MaterialTheme.colorScheme.primary,
-            strokeWidth = 3.dp,
         )
     }
 }

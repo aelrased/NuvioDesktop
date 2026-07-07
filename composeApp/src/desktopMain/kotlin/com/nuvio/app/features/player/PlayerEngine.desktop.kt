@@ -34,11 +34,13 @@ import com.nuvio.app.features.player.desktop.DesktopPlayerLaunchShield
 import com.nuvio.app.features.player.desktop.NativePlayerController
 import com.nuvio.app.features.player.desktop.NativePlayerHost
 import com.nuvio.app.features.player.desktop.toggleDesktopAppFullscreen
+import com.nuvio.app.features.player.desktop.desktopFullscreenChanges
 import java.awt.AWTEvent
 import java.awt.Toolkit
 import java.awt.event.AWTEventListener
 import java.awt.event.MouseEvent
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 
 @Composable
 actual fun PlatformPlayerSurface(
@@ -312,7 +314,7 @@ private fun LegacyAwtNativePlayerSurface(
     val latestOnPlayerControlsScrubFinished = rememberUpdatedState(onPlayerControlsScrubFinished)
     val latestOnError = rememberUpdatedState(onError)
 
-    LaunchedEffect(controller) {
+    LaunchedEffect(controller, sourceUrl, playbackHeaders) {
         onControllerReady(controller)
     }
 
@@ -361,6 +363,7 @@ private fun LegacyAwtNativePlayerSurface(
             initialPositionMs = initialPositionMs,
             onError = { message -> latestOnError.value(message) },
         )
+        onControllerReady(controller)
     }
 
     LaunchedEffect(controller, playWhenReady) {
@@ -377,6 +380,12 @@ private fun LegacyAwtNativePlayerSurface(
 
     LaunchedEffect(controller, playerControlsState) {
         controller.updateControls(playerControlsState)
+    }
+
+    LaunchedEffect(controller) {
+        desktopFullscreenChanges.drop(1).collect {
+            controller.onDesktopFullscreenChanged()
+        }
     }
 
     LaunchedEffect(controller) {

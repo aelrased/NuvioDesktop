@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:usesCleartextTraffic="true"
@@ -16,6 +16,10 @@
         android:localeConfig="@xml/locale_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.Nuvio">
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="false" />
+
         <activity
             android:exported="true"
             android:name="com.nuvio.app.MainActivity"
@@ -51,7 +55,7 @@
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/nuvio_file_paths" />
+                android:resource="@xml/file_paths" />
         </provider>
     </application>
 

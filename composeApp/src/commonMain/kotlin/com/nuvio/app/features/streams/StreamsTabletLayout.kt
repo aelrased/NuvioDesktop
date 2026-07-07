@@ -41,7 +41,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
+import com.nuvio.app.core.ui.nuvioDesktopDragScroll
 import com.nuvio.app.isIos
+import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
@@ -172,8 +174,11 @@ internal fun TabletStreamsLayout(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(24.dp))
-                        .hazeEffect(state = hazeState)
-                        .background(Color.Black.copy(alpha = 0.22f)),
+                        .hazeEffect(state = hazeState) {
+                            inputScale = HazeInputScale.Fixed(0.66f)
+                            blurRadius = 56.dp
+                        }
+                        .background(Color.Black.copy(alpha = 0.36f)),
                 ) {
                     Column(
                         modifier = Modifier
@@ -351,6 +356,7 @@ private fun ActiveScrapersStatusBlock(
         groups.filter { it.isLoading }.map { it.addonName }.distinct()
     }
     if (activeScrapers.isEmpty()) return
+    val scrollState = rememberScrollState()
 
     Column(
         modifier = modifier
@@ -369,7 +375,8 @@ private fun ActiveScrapersStatusBlock(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+                .nuvioDesktopDragScroll(scrollState)
+                .horizontalScroll(scrollState),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             activeScrapers.forEach { addonName ->

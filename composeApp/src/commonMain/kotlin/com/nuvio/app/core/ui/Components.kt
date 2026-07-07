@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,7 +36,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,20 +84,31 @@ fun NuvioScreen(
 ) {
     val tokens = MaterialTheme.nuvio
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    LazyColumn(
-        state = listState,
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(tokens.colors.background),
-        contentPadding = PaddingValues(
-            start = horizontalPadding,
-            top = topPadding ?: tokens.spacing.screenTop + statusBarTop + nuvioPlatformExtraTopPadding,
-            end = horizontalPadding,
-            bottom = nuvioSafeBottomPadding(tokens.spacing.screenBottom),
-        ),
-        verticalArrangement = Arrangement.spacedBy(tokens.spacing.listGap),
-        content = content,
-    )
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = horizontalPadding,
+                top = topPadding ?: tokens.spacing.screenTop + statusBarTop + nuvioPlatformExtraTopPadding,
+                end = horizontalPadding,
+                bottom = nuvioSafeBottomPadding(tokens.spacing.screenBottom),
+            ),
+            verticalArrangement = Arrangement.spacedBy(tokens.spacing.listGap),
+            content = content,
+        )
+        NuvioDesktopVerticalScrollbar(
+            state = listState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+        )
+    }
 }
 
 internal fun Modifier.nuvioConsumePointerEvents(): Modifier =
@@ -437,9 +448,8 @@ fun NuvioStatusModal(
                 modifier = Modifier.padding(tokens.spacing.dialogPadding),
             ) {
                 if (isBusy) {
-                    CircularProgressIndicator(
+                    NuvioLoadingIndicator(
                         color = tokens.colors.accent,
-                        strokeWidth = NuvioTokens.Border.medium + NuvioTokens.Space.hairline,
                     )
                     Spacer(modifier = Modifier.height(NuvioTokens.Space.s16))
                 }
