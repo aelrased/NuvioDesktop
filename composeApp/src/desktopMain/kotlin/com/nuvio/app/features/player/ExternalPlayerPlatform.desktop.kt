@@ -12,20 +12,48 @@ private data class DesktopExternalPlayerIntent(
 internal actual object ExternalPlayerPlatform {
     private const val systemPlayerId = "system"
 
+    private val detectedPlayers: List<DesktopPlayerInstall> by lazy {
+        detectDesktopExternalPlayers()
+    }
+
     actual fun defaultPlayerId(): String? = systemPlayerId
 
-    actual fun availablePlayers(): List<ExternalPlayerApp> =
-        listOf(ExternalPlayerApp(systemPlayerId, "System default"))
+    actual fun availablePlayers(): List<ExternalPlayerApp> {
+        val detected = detectedPlayers.map { install ->
+            ExternalPlayerApp(id = install.definition.id, name = install.definition.name)
+        }
+        return listOf(ExternalPlayerApp(systemPlayerId, "System default")) + detected
+    }
 
     actual fun open(
         request: ExternalPlayerPlaybackRequest,
         playerId: String?,
-    ): ExternalPlayerOpenResult =
-        if (openUri(request.sourceUrl)) {
+    ): ExternalPlayerOpenResult {
+        val player = playerId?.takeIf { it != systemPlayerId }
+        if (player != null) {
+            val install = detectedPlayers.firstOrNull { it.definition.id == player }
+            if (install != null) {
+                val result = buildDesktopPlayerCommand(install, request)
+                val command = result.command
+                if (command != null) {
+                    return try {
+                        ProcessBuilder(command)
+                            .redirectErrorStream(true)
+                            .start()
+                        ExternalPlayerOpenResult.Opened
+                    } catch (e: Exception) {
+                        ExternalPlayerOpenResult.Failed
+                    }
+                }
+                return ExternalPlayerOpenResult.Failed
+            }
+        }
+        return if (openUri(request.sourceUrl)) {
             ExternalPlayerOpenResult.Opened
         } else {
             ExternalPlayerOpenResult.Failed
         }
+    }
 
     actual fun buildIntent(
         request: ExternalPlayerPlaybackRequest,
@@ -64,5 +92,14 @@ internal actual object ExternalPlayerPlatform {
             else -> listOf("xdg-open", rawUri)
         }
         return runCatching { ProcessBuilder(command).start() }.isSuccess
+    }
+
+    private fun detectDesktopExternalPlayers(): List<DesktopPlayerInstall> {
+        val osName = System.getProperty("os.name").orEmpty().lowercase()
+        return when {
+            osName.contains("win") -> detectWindowsExternalPlayers().map { it.toDesktopPlayerInstall() }
+            osName.contains("mac") -> detectMacosExternalPlayers().map { it.toDesktopPlayerInstall() }
+            else -> detectLinuxExternalPlayers().map { it.toDesktopPlayerInstall() }
+        }
     }
 }

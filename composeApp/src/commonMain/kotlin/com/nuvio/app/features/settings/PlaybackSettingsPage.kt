@@ -353,7 +353,7 @@ private fun PlaybackSettingsSection(
                         isTablet = isTablet,
                         onClick = { showExternalPlayerDialog = true },
                     )
-                    if (isIos && autoPlayPlayerSettings.externalPlayerEnabled) {
+                    if (autoPlayPlayerSettings.externalPlayerEnabled) {
                         SettingsGroupDivider(isTablet = isTablet)
                         SettingsNavigationRow(
                             title = stringResource(Res.string.settings_playback_external_player_app),

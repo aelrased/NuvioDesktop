@@ -34,6 +34,8 @@ internal fun detectLinuxExternalPlayers(
     val binaryPlayers = listOf(
         "vlc" to "VLC",
         "mpv" to "mpv",
+        "celluloid" to "Celluloid",
+        "smplayer" to "SMPlayer",
         "kodi" to "Kodi",
         "kodi-standalone" to "Kodi (standalone)",
         "kodi-x11" to "Kodi (X11)",
@@ -75,6 +77,8 @@ private fun detectFlatpakMediaPlayers(
         val flatpakPlayers = mapOf(
             "org.videolan.VLC" to "VLC (Flatpak)",
             "io.mpv.Mpv" to "mpv (Flatpak)",
+            "io.github.celluloid_celluloid" to "Celluloid (Flatpak)",
+            "io.github.smplayer_smplayer" to "SMPlayer (Flatpak)",
             "tv.kodi.Kodi" to "Kodi (Flatpak)",
         )
 
@@ -106,7 +110,9 @@ internal fun buildLinuxExternalPlayerCommand(
             buildLinuxKodiCommand(install, request.copy(sourceUrl = sourceUrl))
         install.id.contains("vlc", ignoreCase = true) ->
             buildLinuxVlcCommand(install, request.copy(sourceUrl = sourceUrl))
-        install.id.contains("mpv", ignoreCase = true) ->
+        install.id.contains("mpv", ignoreCase = true) ||
+        install.id.contains("celluloid", ignoreCase = true) ||
+        install.id.contains("smplayer", ignoreCase = true) ->
             buildLinuxMpvCommand(install, request.copy(sourceUrl = sourceUrl))
         else -> LinuxExternalPlayerCommandResult(null, "unknown player id: ${install.id}")
     }
@@ -203,6 +209,8 @@ private fun detectSnapMediaPlayers(): List<LinuxExternalPlayerInstall> {
         val snapPlayers = mapOf(
             "vlc" to LinuxExternalPlayerInstall(id = "vlc-snap", name = "VLC (Snap)", executablePath = "/snap/bin/vlc"),
             "mpv" to LinuxExternalPlayerInstall(id = "mpv-snap", name = "mpv (Snap)", executablePath = "/snap/bin/mpv"),
+            "celluloid" to LinuxExternalPlayerInstall(id = "celluloid-snap", name = "Celluloid (Snap)", executablePath = "/snap/bin/celluloid"),
+            "smplayer" to LinuxExternalPlayerInstall(id = "smplayer-snap", name = "SMPlayer (Snap)", executablePath = "/snap/bin/smplayer"),
             "kodi" to LinuxExternalPlayerInstall(id = "kodi-snap", name = "Kodi (Snap)", executablePath = "/snap/bin/kodi"),
         )
 
@@ -226,6 +234,8 @@ private fun detectAppImageMediaPlayers(
     val appImagePatterns = mapOf(
         "vlc" to "VLC",
         "mpv" to "mpv",
+        "celluloid" to "Celluloid",
+        "smplayer" to "SMPlayer",
         "kodi" to "Kodi",
     )
 
@@ -258,10 +268,14 @@ internal val linuxDesktopPlayerDefinitions: List<DesktopPlayerDefinition> = list
 internal fun LinuxExternalPlayerInstall.toDesktopPlayerInstall(): DesktopPlayerInstall {
     val kind = when {
         id.contains("vlc", ignoreCase = true) -> DesktopPlayerKind.Vlc
-        id.contains("mpv", ignoreCase = true) || id.contains("mpv", ignoreCase = true) -> DesktopPlayerKind.Mpv
+        id.contains("mpv", ignoreCase = true) ||
+        id.contains("celluloid", ignoreCase = true) ||
+        id.contains("smplayer", ignoreCase = true) -> DesktopPlayerKind.Mpv
         id.contains("kodi", ignoreCase = true) -> DesktopPlayerKind.Kodi
         executablePath.contains("vlc", ignoreCase = true) -> DesktopPlayerKind.Vlc
         executablePath.contains("mpv", ignoreCase = true) -> DesktopPlayerKind.Mpv
+        executablePath.contains("celluloid", ignoreCase = true) -> DesktopPlayerKind.Mpv
+        executablePath.contains("smplayer", ignoreCase = true) -> DesktopPlayerKind.Mpv
         executablePath.contains("kodi", ignoreCase = true) -> DesktopPlayerKind.Kodi
         else -> DesktopPlayerKind.Mpv
     }

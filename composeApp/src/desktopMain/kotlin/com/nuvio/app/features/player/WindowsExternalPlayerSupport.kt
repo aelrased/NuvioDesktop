@@ -9,6 +9,7 @@ internal enum class WindowsExternalPlayerKind {
     Vlc,
     Mpv,
     Kodi,
+    PotPlayer,
 }
 
 internal data class WindowsExternalPlayerDefinition(
@@ -96,6 +97,16 @@ internal val windowsExternalPlayerDefinitions = listOf(
             "Kodi/kodi.exe",
         ),
     ),
+    WindowsExternalPlayerDefinition(
+        id = "potplayer",
+        name = "PotPlayer",
+        kind = WindowsExternalPlayerKind.PotPlayer,
+        executableNames = listOf("PotPlayerMini64.exe", "PotPlayerMini.exe"),
+        relativeInstallPaths = listOf(
+            "DAUM/PotPlayer/PotPlayerMini64.exe",
+            "DAUM/PotPlayer/PotPlayerMini.exe",
+        ),
+    ),
 )
 
 internal val windowsDesktopPlayerDefinitions: List<DesktopPlayerDefinition> =
@@ -108,6 +119,7 @@ internal val windowsDesktopPlayerDefinitions: List<DesktopPlayerDefinition> =
                 WindowsExternalPlayerKind.Vlc -> DesktopPlayerKind.Vlc
                 WindowsExternalPlayerKind.Mpv -> DesktopPlayerKind.Mpv
                 WindowsExternalPlayerKind.Kodi -> DesktopPlayerKind.Kodi
+                WindowsExternalPlayerKind.PotPlayer -> DesktopPlayerKind.PotPlayer
             },
         )
     }
@@ -121,6 +133,7 @@ internal fun WindowsExternalPlayerInstall.toDesktopPlayerInstall() = DesktopPlay
             WindowsExternalPlayerKind.Vlc -> DesktopPlayerKind.Vlc
             WindowsExternalPlayerKind.Mpv -> DesktopPlayerKind.Mpv
             WindowsExternalPlayerKind.Kodi -> DesktopPlayerKind.Kodi
+            WindowsExternalPlayerKind.PotPlayer -> DesktopPlayerKind.PotPlayer
         },
     ),
     executablePath = executablePath,
@@ -140,6 +153,7 @@ internal fun buildDesktopPlayerCommand(
         DesktopPlayerKind.Mpv -> buildMpvCommand(install.executablePath, request.copy(sourceUrl = url))
         DesktopPlayerKind.Kodi -> buildKodiCommand(install.executablePath, request.copy(sourceUrl = url))
         DesktopPlayerKind.Iina -> buildMacosIinaCommand(install.executablePath, request.copy(sourceUrl = url))
+        DesktopPlayerKind.PotPlayer -> buildPotPlayerCommand(install.executablePath, request.copy(sourceUrl = url))
     } }
     return DesktopPlayerCommandResult(cmd.command, cmd.failureReason, cmd.logFilePath)
 }
@@ -186,6 +200,7 @@ internal fun buildWindowsExternalPlayerCommand(
         WindowsExternalPlayerKind.Vlc -> buildVlcCommand(install.executablePath, request.copy(sourceUrl = sourceUrl))
         WindowsExternalPlayerKind.Mpv -> buildMpvCommand(install.executablePath, request.copy(sourceUrl = sourceUrl))
         WindowsExternalPlayerKind.Kodi -> buildKodiCommand(install.executablePath, request.copy(sourceUrl = sourceUrl))
+        WindowsExternalPlayerKind.PotPlayer -> buildPotPlayerCommand(install.executablePath, request.copy(sourceUrl = sourceUrl))
     }
 }
 
@@ -288,6 +303,20 @@ private fun buildKodiCommand(
     return WindowsExternalPlayerCommandResult(command)
 }
 
+private fun buildPotPlayerCommand(
+    executablePath: String,
+    request: ExternalPlayerPlaybackRequest,
+): WindowsExternalPlayerCommandResult {
+    if (request.sourceHeaders.isNotEmpty()) {
+        return WindowsExternalPlayerCommandResult(null, "PotPlayer does not support per-stream HTTP headers")
+    }
+    val command = mutableListOf(executablePath, request.sourceUrl)
+    request.resumePositionMs.toStartSeconds()?.let { startSeconds ->
+        command += "/seek=$startSeconds"
+    }
+    return WindowsExternalPlayerCommandResult(command)
+}
+
 private fun buildMacosIinaCommand(
     executablePath: String,
     request: ExternalPlayerPlaybackRequest,
@@ -382,6 +411,8 @@ private fun DesktopPlayerKind.seekSupportNote(): String = when (this) {
         "Kodi receives start time and direct URL"
     DesktopPlayerKind.Iina ->
         "IINA receives headers, resume, and mpv-passthrough flags from Nuvio"
+    DesktopPlayerKind.PotPlayer ->
+        "PotPlayer receives direct URL and seek position from Nuvio"
 }
 
 internal fun List<String>.redactExternalPlayerCommand(): List<String> =
