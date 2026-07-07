@@ -173,6 +173,62 @@ fi
 echo "Running: ./gradlew ${gradle_tasks[*]} ${gradle_common[*]} ${extra_gradle_args[*]}"
 ./gradlew "${gradle_tasks[@]}" "${gradle_common[@]}" "${extra_gradle_args[@]}"
 
+# ------------------------------------------------------------------
+# Bundle native player libraries into app directory
+# ------------------------------------------------------------------
+app_dir="$repo_root/composeApp/build/compose/binaries/main-release/app/Nuvio"
+player_bridge_src="$repo_root/composeApp/build/native/linux/libplayer_bridge.so"
+runtime_src="$repo_root/composeApp/build/native/linux-runtime"
+
+if [[ -d "$app_dir" ]]; then
+  echo ""
+  echo "=== Bundling native player libraries into app directory ==="
+
+  # Copy player bridge
+  if [[ -f "$player_bridge_src" ]]; then
+    cp "$player_bridge_src" "$app_dir/lib/"
+    echo "  + libplayer_bridge.so"
+  fi
+
+  # Copy bundled runtime (libmpv.so, libmpv.so.2)
+  if [[ -d "$runtime_src" ]]; then
+    for f in "$runtime_src"/libmpv.so*; do
+      [[ -f "$f" ]] || continue
+      cp "$f" "$app_dir/lib/"
+      echo "  + $(basename "$f")"
+    done
+  fi
+
+  # Copy system native player dependencies
+  system_lib_dir="/usr/lib/x86_64-linux-gnu"
+  native_libs=(
+    "libplacebo.so"
+    "libass.so"
+    "libdav1d.so"
+    "libvulkan.so"
+    "libuchardet.so"
+  )
+  for lib in "${native_libs[@]}"; do
+    # Copy symlink + real files
+    for f in "$system_lib_dir"/${lib}*; do
+      [[ -e "$f" ]] || continue
+      cp -P "$f" "$app_dir/lib/"
+      echo "  + $(basename "$f")"
+    done
+  done
+
+  # Fix RPATH on bundled libraries so they find each other
+  if command -v patchelf &>/dev/null; then
+    echo "  Fixing RPATH on bundled libraries..."
+    for f in "$app_dir/lib/"lib{player_bridge,mpv,placebo,ass,dav1d,vulkan,uchardet}*.so*; do
+      [[ -f "$f" && ! -L "$f" ]] || continue
+      patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+    done
+  fi
+
+  echo "  Native libraries bundled in: $app_dir/lib/"
+fi
+
 # Patch DEB dependencies for all built DEB packages
 deb_dirs=(
   "$repo_root/composeApp/build/compose/binaries/main-release/deb"
@@ -187,6 +243,36 @@ for deb_dir in "${deb_dirs[@]}"; do
     done
   fi
 done
+
+# Inject bundled native libraries into .deb packages
+if [[ -d "$app_dir" ]]; then
+  for deb_dir in "${deb_dirs[@]}"; do
+    [[ -d "$deb_dir" ]] || continue
+    for deb in "$deb_dir"/*.deb; do
+      [[ -f "$deb" ]] || continue
+      echo "Injecting native libs into: $(basename "$deb")"
+      tmpdir=$(mktemp -d)
+      cd "$tmpdir"
+      ar x "$deb"
+      mkdir -p data
+      cd data
+      tar xf ../data.tar.xz
+
+      # Copy native player libs into /opt/nuvio/lib/
+      mkdir -p opt/nuvio/lib
+      for f in "$app_dir/lib/"lib{player_bridge,mpv,placebo,ass,dav1d,vulkan,uchardet}*.so*; do
+        [[ -e "$f" ]] || continue
+        cp -P "$f" opt/nuvio/lib/
+      done
+
+      tar cf - --owner=root --group=root --numeric-owner . | xz > ../data.tar.xz
+      cd "$tmpdir"
+      ar rc "$deb" debian-binary control.tar.xz data.tar.xz
+      rm -rf "$tmpdir"
+      echo "  OK: $(basename "$deb")"
+    done
+  done
+fi
 
 # ------------------------------------------------------------------
 # Build AppImage from app image directory using appimagetool
