@@ -48,7 +48,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
+import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import nuvio.composeapp.generated.resources.*
+import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 import com.nuvio.app.core.ui.landscapePosterHeightForWidth
 import com.nuvio.app.core.ui.landscapePosterWidth
@@ -202,32 +204,42 @@ private fun EntityBrowseContent(
                     )
                 }
             } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(top = 56.dp),
-                ) {
-                    EntityHeroSection(
-                        header = data.header,
+                val scrollState = rememberScrollState()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 16.dp),
-                    )
-
-                    data.rails.forEach { rail ->
-                        DetailPosterRailSection(
-                            title = entityRailTitle(rail),
-                            items = rail.items,
-                            watchedKeys = watchedKeys,
-                            headerHorizontalPadding = 20.dp,
-                            onPosterClick = onOpenMeta,
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .padding(top = 56.dp),
+                    ) {
+                        EntityHeroSection(
+                            header = data.header,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 16.dp),
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
 
-                    Spacer(modifier = Modifier.height(32.dp))
+                        data.rails.forEach { rail ->
+                            DetailPosterRailSection(
+                                title = entityRailTitle(rail),
+                                items = rail.items,
+                                watchedKeys = watchedKeys,
+                                headerHorizontalPadding = 20.dp,
+                                onPosterClick = onOpenMeta,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
+                        Spacer(modifier = Modifier.height(32.dp))
+                    }
+                    NuvioDesktopVerticalScrollbar(
+                        state = scrollState,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                    )
                 }
             }
         }
@@ -275,23 +287,36 @@ private fun WideEntityBrowseContent(
                 )
             }
         } else {
-            Column(
+            val scrollState = rememberScrollState()
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
-                    .verticalScroll(rememberScrollState())
-                    .padding(start = 40.dp, bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(34.dp),
+                    .fillMaxHeight(),
             ) {
-                data.rails.forEach { rail ->
-                    DetailPosterRailSection(
-                        title = entityRailTitle(rail),
-                        items = rail.items,
-                        watchedKeys = watchedKeys,
-                        headerHorizontalPadding = 0.dp,
-                        onPosterClick = onOpenMeta,
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(start = 40.dp, bottom = 40.dp),
+                    verticalArrangement = Arrangement.spacedBy(34.dp),
+                ) {
+                    data.rails.forEach { rail ->
+                        DetailPosterRailSection(
+                            title = entityRailTitle(rail),
+                            items = rail.items,
+                            watchedKeys = watchedKeys,
+                            headerHorizontalPadding = 0.dp,
+                            onPosterClick = onOpenMeta,
+                        )
+                    }
                 }
+                NuvioDesktopVerticalScrollbar(
+                    state = scrollState,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                )
             }
         }
     }
@@ -304,137 +329,152 @@ private fun EntityIdentitySidebar(
     modifier: Modifier = Modifier,
 ) {
     val accentColor = MaterialTheme.colorScheme.primary
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(start = 40.dp, end = 36.dp, top = 40.dp, bottom = 42.dp),
-        verticalArrangement = Arrangement.spacedBy(22.dp),
-    ) {
-        Text(
-            text = when (header.kind) {
-                TmdbEntityKind.COMPANY -> stringResource(Res.string.details_browse_kind_company)
-                TmdbEntityKind.NETWORK -> stringResource(Res.string.details_browse_kind_network)
-            }.uppercase(),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 1.6.sp,
-            ),
-            color = accentColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+    val scrollState = rememberScrollState()
+    Box(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(start = 40.dp, end = 36.dp, top = 40.dp, bottom = 42.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            Text(
+                text = when (header.kind) {
+                    TmdbEntityKind.COMPANY -> stringResource(Res.string.details_browse_kind_company)
+                    TmdbEntityKind.NETWORK -> stringResource(Res.string.details_browse_kind_network)
+                }.uppercase(),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 1.6.sp,
+                ),
+                color = accentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
 
-        if (!header.logo.isNullOrBlank()) {
-            Box(
-                modifier = Modifier
-                    .width(184.dp)
-                    .height(104.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color.White)
-                    .padding(18.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                AsyncImage(
-                    model = header.logo,
-                    contentDescription = header.name,
-                    modifier = Modifier.matchParentSize(),
-                    contentScale = ContentScale.Fit,
-                )
-            }
-        } else {
-            Box(
-                modifier = Modifier.size(144.dp),
-                contentAlignment = Alignment.Center,
-            ) {
+            if (!header.logo.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .matchParentSize()
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(accentColor.copy(alpha = 0.14f)),
-                )
-                Box(
-                    modifier = Modifier
-                        .size(120.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.40f),
-                            shape = RoundedCornerShape(24.dp),
-                        )
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                        .width(184.dp)
+                        .height(104.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White)
+                        .padding(18.dp),
                     contentAlignment = Alignment.Center,
                 ) {
+                    AsyncImage(
+                        model = header.logo,
+                        contentDescription = header.name,
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier.size(144.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clip(RoundedCornerShape(28.dp))
+                            .background(accentColor.copy(alpha = 0.14f)),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(120.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.40f),
+                                shape = RoundedCornerShape(24.dp),
+                            )
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = header.name.initials(),
+                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text(
+                    text = header.name,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = (-0.5).sp,
+                        lineHeight = 34.sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val metaLine = listOfNotNull(
+                    header.secondaryLabel?.takeIf { it.isNotBlank() },
+                    header.originCountry?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
+                if (metaLine.isNotBlank()) {
                     Text(
-                        text = header.name.initials(),
-                        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
+                        text = metaLine,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                header.originCountry?.takeIf { it.isNotBlank() }?.let { country ->
+                    EntitySidebarFact(label = stringResource(Res.string.entity_browse_country), value = country)
+                }
+                header.secondaryLabel?.takeIf { it.isNotBlank() }?.let { label ->
+                    EntitySidebarFact(label = stringResource(Res.string.entity_browse_type), value = label)
+                }
+                if (catalogueCount > 0) {
+                    EntitySidebarFact(
+                        label = stringResource(Res.string.entity_browse_catalogue),
+                        value = pluralStringResource(
+                            Res.plurals.entity_browse_title_count,
+                            catalogueCount,
+                            catalogueCount,
+                        ),
+                    )
+                }
+            }
+
+            header.description?.takeIf { it.isNotBlank() }?.let { description ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    EntitySidebarLabel(text = stringResource(Res.string.entity_browse_about))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 12,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
         }
-
-        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Text(
-                text = header.name,
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = (-0.5).sp,
-                    lineHeight = 34.sp,
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val metaLine = listOfNotNull(
-                header.secondaryLabel?.takeIf { it.isNotBlank() },
-                header.originCountry?.takeIf { it.isNotBlank() },
-            ).joinToString(" · ")
-            if (metaLine.isNotBlank()) {
-                Text(
-                    text = metaLine,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(15.dp)) {
-            header.originCountry?.takeIf { it.isNotBlank() }?.let { country ->
-                EntitySidebarFact(label = "Country", value = country)
-            }
-            header.secondaryLabel?.takeIf { it.isNotBlank() }?.let { label ->
-                EntitySidebarFact(label = "Type", value = label)
-            }
-            if (catalogueCount > 0) {
-                EntitySidebarFact(
-                    label = "Catalogue",
-                    value = "$catalogueCount ${if (catalogueCount == 1) "title" else "titles"}",
-                )
-            }
-        }
-
-        header.description?.takeIf { it.isNotBlank() }?.let { description ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.30f)),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                EntitySidebarLabel(text = "About")
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 12,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
+        NuvioDesktopVerticalScrollbar(
+            state = scrollState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+        )
     }
 }
 

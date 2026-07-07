@@ -24,6 +24,7 @@ internal actual object PlayerSettingsStorage {
     private const val touchGesturesEnabledKey = "touch_gestures_enabled"
     private const val externalPlayerEnabledKey = "external_player_enabled"
     private const val externalPlayerForwardSubtitlesKey = "external_player_forward_subtitles"
+    private const val externalPlayerSendSkipSegmentsKey = "external_player_send_skip_segments"
     private const val externalPlayerIdKey = "external_player_id"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
@@ -95,6 +96,7 @@ internal actual object PlayerSettingsStorage {
         touchGesturesEnabledKey,
         externalPlayerEnabledKey,
         externalPlayerForwardSubtitlesKey,
+        externalPlayerSendSkipSegmentsKey,
         externalPlayerIdKey,
         preferredAudioLanguageKey,
         secondaryPreferredAudioLanguageKey,
@@ -171,6 +173,9 @@ internal actual object PlayerSettingsStorage {
     actual fun saveExternalPlayerEnabled(enabled: Boolean) = saveBoolean(externalPlayerEnabledKey, enabled)
     actual fun loadExternalPlayerForwardSubtitles(): Boolean? = loadBoolean(externalPlayerForwardSubtitlesKey)
     actual fun saveExternalPlayerForwardSubtitles(enabled: Boolean) = saveBoolean(externalPlayerForwardSubtitlesKey, enabled)
+    actual fun loadExternalPlayerSendSkipSegments(): Boolean? = loadBoolean(externalPlayerSendSkipSegmentsKey)
+    actual fun saveExternalPlayerSendSkipSegments(enabled: Boolean) =
+        saveBoolean(externalPlayerSendSkipSegmentsKey, enabled)
     actual fun loadExternalPlayerId(): String? = loadString(externalPlayerIdKey)
     actual fun saveExternalPlayerId(playerId: String?) = saveOptionalString(externalPlayerIdKey, playerId)
     actual fun loadPreferredAudioLanguage(): String? = loadString(preferredAudioLanguageKey)
@@ -319,6 +324,7 @@ internal actual object PlayerSettingsStorage {
         loadTouchGesturesEnabled()?.let { put(touchGesturesEnabledKey, encodeSyncBoolean(it)) }
         loadExternalPlayerEnabled()?.let { put(externalPlayerEnabledKey, encodeSyncBoolean(it)) }
         loadExternalPlayerForwardSubtitles()?.let { put(externalPlayerForwardSubtitlesKey, encodeSyncBoolean(it)) }
+        loadExternalPlayerSendSkipSegments()?.let { put(externalPlayerSendSkipSegmentsKey, encodeSyncBoolean(it)) }
         loadExternalPlayerId()?.let { put(externalPlayerIdKey, encodeSyncString(it)) }
         loadPreferredAudioLanguage()?.let { put(preferredAudioLanguageKey, encodeSyncString(it)) }
         loadSecondaryPreferredAudioLanguage()?.let { put(secondaryPreferredAudioLanguageKey, encodeSyncString(it)) }
@@ -391,6 +397,7 @@ internal actual object PlayerSettingsStorage {
         payload.decodeSyncBoolean(touchGesturesEnabledKey)?.let(::saveTouchGesturesEnabled)
         payload.decodeSyncBoolean(externalPlayerEnabledKey)?.let(::saveExternalPlayerEnabled)
         payload.decodeSyncBoolean(externalPlayerForwardSubtitlesKey)?.let(::saveExternalPlayerForwardSubtitles)
+        payload.decodeSyncBoolean(externalPlayerSendSkipSegmentsKey)?.let(::saveExternalPlayerSendSkipSegments)
         payload.decodeSyncString(externalPlayerIdKey)?.let(::saveExternalPlayerId)
         payload.decodeSyncString(preferredAudioLanguageKey)?.let(::savePreferredAudioLanguage)
         payload.decodeSyncString(secondaryPreferredAudioLanguageKey)?.let(::saveSecondaryPreferredAudioLanguage)

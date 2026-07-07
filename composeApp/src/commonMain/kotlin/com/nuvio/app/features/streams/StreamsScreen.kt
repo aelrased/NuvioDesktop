@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,7 +44,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
-import androidx.compose.material3.CircularProgressIndicator
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -75,6 +76,7 @@ import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.NuvioBottomSheetActionRow
 import com.nuvio.app.core.ui.NuvioBottomSheetDivider
+import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import com.nuvio.app.core.ui.NuvioModalBottomSheet
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.dismissNuvioBottomSheet
@@ -340,10 +342,9 @@ fun StreamsScreen(
                             modifier = Modifier.padding(horizontal = 24.dp),
                         )
                     }
-                    CircularProgressIndicator(
+                    NuvioLoadingIndicator(
                         modifier = Modifier.size(32.dp),
                         color = Color.White,
-                        strokeWidth = 2.5.dp,
                     )
                     Text(
                         text = uiState.overlayMessage
@@ -362,7 +363,7 @@ fun StreamsScreen(
             showDownloadAction = AppFeaturePolicy.downloadsEnabled,
             onDismiss = { streamActionsTarget = null },
             onCopyLink = { stream ->
-                val directUrl = stream.playableDirectUrl
+                val directUrl = stream.playableDirectUrl ?: stream.externalOpenUrl
                 if (!directUrl.isNullOrBlank()) {
                     clipboardManager.setText(AnnotatedString(directUrl))
                     NuvioToastController.show(streamLinkCopiedText)
@@ -867,60 +868,71 @@ internal fun StreamList(
     val hasAnyStreams = filteredGroups.any { it.streams.isNotEmpty() }
     val anyLoading = filteredGroups.any { it.isLoading }
     val torrentNotSupportedText = stringResource(Res.string.streams_torrent_not_supported)
+    val listState = rememberLazyListState()
     val streamBadgeSettings by remember {
         StreamBadgeSettingsRepository.ensureLoaded()
         StreamBadgeSettingsRepository.uiState
     }.collectAsStateWithLifecycle()
 
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(
-            horizontal = 12.dp,
-            vertical = 12.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(0.dp),
-    ) {
-        when {
-            hasGroups && anyLoading && !hasAnyStreams -> {
-                item {
-                    LoadingStateBlock()
-                }
-            }
-
-            !hasAnyStreams && !uiState.isAnyLoading -> {
-                item {
-                    EmptyStateBlock(reason = uiState.emptyStateReason)
-                }
-            }
-
-            else -> {
-                filteredGroups.forEachIndexed { groupIndex, group ->
-                    streamSection(
-                        sectionKey = streamSectionRenderKey(groupIndex = groupIndex, group = group),
-                        group = group,
-                        showHeader = uiState.selectedFilter == null,
-                        debridEnabled = debridEnabled,
-                        appendInstantServiceToDefaultName = appendInstantServiceToDefaultName,
-                        showFileSizeBadges = streamBadgeSettings.showFileSizeBadges,
-                        showAddonLogo = streamBadgeSettings.showAddonLogo,
-                        badgePlacement = streamBadgeSettings.badgePlacement,
-                        torrentNotSupportedText = torrentNotSupportedText,
-                        onStreamSelected = onStreamSelected,
-                        onStreamLongPress = onStreamLongPress,
-                        resumePositionMs = resumePositionMs,
-                        resumeProgressFraction = resumeProgressFraction,
-                    )
-                }
-                if (anyLoading) {
+    Box(modifier = modifier.fillMaxWidth()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                horizontal = 12.dp,
+                vertical = 12.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+        ) {
+            when {
+                hasGroups && anyLoading && !hasAnyStreams -> {
                     item {
-                        FooterLoadingBlock()
+                        LoadingStateBlock()
                     }
                 }
-                item {
-                    Spacer(modifier = Modifier.height(nuvioSafeBottomPadding(80.dp)))
+
+                !hasAnyStreams && !uiState.isAnyLoading -> {
+                    item {
+                        EmptyStateBlock(reason = uiState.emptyStateReason)
+                    }
+                }
+
+                else -> {
+                    filteredGroups.forEachIndexed { groupIndex, group ->
+                        streamSection(
+                            sectionKey = streamSectionRenderKey(groupIndex = groupIndex, group = group),
+                            group = group,
+                            showHeader = uiState.selectedFilter == null,
+                            debridEnabled = debridEnabled,
+                            appendInstantServiceToDefaultName = appendInstantServiceToDefaultName,
+                            showFileSizeBadges = streamBadgeSettings.showFileSizeBadges,
+                            showAddonLogo = streamBadgeSettings.showAddonLogo,
+                            badgePlacement = streamBadgeSettings.badgePlacement,
+                            torrentNotSupportedText = torrentNotSupportedText,
+                            onStreamSelected = onStreamSelected,
+                            onStreamLongPress = onStreamLongPress,
+                            resumePositionMs = resumePositionMs,
+                            resumeProgressFraction = resumeProgressFraction,
+                        )
+                    }
+                    if (anyLoading) {
+                        item {
+                            FooterLoadingBlock()
+                        }
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(nuvioSafeBottomPadding(80.dp)))
+                    }
                 }
             }
         }
+        NuvioDesktopVerticalScrollbar(
+            state = listState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+        )
     }
 }
 
@@ -995,7 +1007,7 @@ private fun LazyListScope.streamSection(
                     }
                 },
                 onLongClick = {
-                    if (stream.playableDirectUrl != null || stream.isAddonDebridCandidate) {
+                    if (stream.playableDirectUrl != null || stream.shouldOpenExternally || stream.isAddonDebridCandidate) {
                         onStreamLongPress(stream)
                     }
                 },
@@ -1023,6 +1035,10 @@ internal fun streamCardRenderKey(
     append(itemIndex)
     append(':')
     append(stream.url ?: stream.infoHash ?: stream.clientResolve?.infoHash ?: stream.streamLabel)
+    stream.externalUrl?.let {
+        append(':')
+        append(it)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,9 +1068,8 @@ private fun StreamSectionHeader(
         )
         AnimatedVisibility(visible = isLoading, enter = fadeIn(), exit = fadeOut()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(
+                NuvioLoadingIndicator(
                     modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Spacer(modifier = Modifier.width(6.dp))
@@ -1224,7 +1239,7 @@ private fun LoadingStateBlock(modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        CircularProgressIndicator(
+        NuvioLoadingIndicator(
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(32.dp),
         )
@@ -1309,9 +1324,8 @@ private fun FooterLoadingBlock(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircularProgressIndicator(
+        NuvioLoadingIndicator(
             modifier = Modifier.size(14.dp),
-            strokeWidth = 2.dp,
             color = MaterialTheme.colorScheme.primary,
         )
         Spacer(modifier = Modifier.width(8.dp))

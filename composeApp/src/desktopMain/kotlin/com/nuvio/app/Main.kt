@@ -11,6 +11,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.unit.dp
+import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.player.PlatformPlayerSurface
 import com.nuvio.app.features.player.desktop.DesktopAppFullscreenController
 import com.nuvio.app.features.player.desktop.applyNativeDesktopWindowChrome
@@ -73,7 +74,10 @@ fun main() {
         val fullscreenController = remember { DesktopAppFullscreenController() }
 
         Window(
-            onCloseRequest = ::exitApplication,
+            onCloseRequest = {
+                P2pStreamingEngine.shutdown()
+                exitApplication()
+            },
             title = if (smokePlayerUrl == null) "Nuvio" else "Nuvio Player Smoke",
             state = windowState,
             icon = painterResource(NuvioDesktopIconPath),

@@ -43,7 +43,7 @@ import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.VideoLibrary
-import androidx.compose.material3.CircularProgressIndicator
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -168,6 +168,7 @@ internal fun PlayerControlsShell(
                 onLockToggle = onLockToggle,
                 onVideoSettingsClick = onVideoSettingsClick,
                 onFullscreenClick = onFullscreenClick,
+                onOpenInExternalPlayer = onOpenInExternalPlayer,
                 onBack = onBack,
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -212,7 +213,6 @@ internal fun PlayerControlsShell(
                     onVolumeClick = onVolumeClick,
                     onSourcesClick = onSourcesClick,
                     onEpisodesClick = onEpisodesClick,
-                    onOpenInExternalPlayer = onOpenInExternalPlayer,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -243,6 +243,7 @@ private fun PlayerHeader(
     onLockToggle: () -> Unit,
     onVideoSettingsClick: (() -> Unit)?,
     onFullscreenClick: (() -> Unit)?,
+    onOpenInExternalPlayer: (() -> Unit)?,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -340,6 +341,15 @@ private fun PlayerHeader(
                             buttonSize = metrics.headerIconSize + 16.dp,
                             iconSize = metrics.headerIconSize,
                             onClick = onSubmitIntroClick,
+                        )
+                    }
+                    if (onOpenInExternalPlayer != null) {
+                        PlayerHeaderIconButton(
+                            icon = Icons.AutoMirrored.Rounded.OpenInNew,
+                            contentDescription = stringResource(Res.string.streams_open_external_player),
+                            buttonSize = metrics.headerIconSize + 16.dp,
+                            iconSize = metrics.headerIconSize,
+                            onClick = onOpenInExternalPlayer,
                         )
                     }
                     PlayerHeaderIconButton(
@@ -487,9 +497,8 @@ private fun PlayPauseControlButton(
         contentAlignment = Alignment.Center,
     ) {
         if (isBuffering) {
-            CircularProgressIndicator(
+            NuvioLoadingIndicator(
                 color = Color.White,
-                strokeWidth = 3.dp,
                 modifier = Modifier.size(metrics.playIconSize),
             )
         } else {
@@ -526,7 +535,6 @@ private fun ProgressControls(
     onVolumeClick: () -> Unit,
     onSourcesClick: (() -> Unit)? = null,
     onEpisodesClick: (() -> Unit)? = null,
-    onOpenInExternalPlayer: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val durationMs = playbackSnapshot.durationMs.coerceAtLeast(1L)

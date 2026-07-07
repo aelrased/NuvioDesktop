@@ -8,6 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
@@ -130,6 +131,18 @@ internal actual object DownloadsPlatformDownloader {
         return File(downloadsDir, fileName).takeIf { it.exists() }?.toURI()?.toString()
     }
 
+    actual fun openDownloadsDirectory(): Boolean {
+        val directory = downloadsDir
+        val desktop = runCatching { Desktop.getDesktop() }.getOrNull()
+
+        if (desktop != null && Desktop.isDesktopSupported() && desktop.isSupported(Desktop.Action.OPEN)) {
+            val opened = runCatching { desktop.open(directory) }.isSuccess
+            if (opened) return true
+        }
+
+        return openDirectoryWithPlatformCommand(directory)
+    }
+
     private fun sendDownloadRequest(
         request: DownloadPlatformRequest,
         rangeStart: Long?,
@@ -148,6 +161,16 @@ internal actual object DownloadsPlatformDownloader {
         }
         return desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
     }
+}
+
+private fun openDirectoryWithPlatformCommand(directory: File): Boolean {
+    val osName = System.getProperty("os.name").orEmpty().lowercase()
+    val command = when {
+        osName.contains("mac") -> listOf("open", directory.absolutePath)
+        osName.contains("win") -> listOf("explorer", directory.absolutePath)
+        else -> listOf("xdg-open", directory.absolutePath)
+    }
+    return runCatching { ProcessBuilder(command).start() }.isSuccess
 }
 
 private class DesktopDownloadsTaskHandle(

@@ -27,6 +27,9 @@ interface PlayerEngineController {
 
     /** Return current volume in 0..100 range, or -1f if unknown/unavailable. */
     fun getVolume(): Float = -1f
+
+    fun updateNowPlayingMetadata(info: PlayerNowPlayingInfo) {}
+    fun clearNowPlayingInfo() {}
 }
 
 enum class PlayerControlsAction {

@@ -1404,6 +1404,8 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     setMpvOptionString(_mpv, "input-vo-keyboard", "no");
     setMpvOptionString(_mpv, "keep-open", "yes");
     setMpvOptionString(_mpv, "vo", "libmpv");
+    setMpvOptionString(_mpv, "ao", "avfoundation,coreaudio,");
+    setMpvOptionString(_mpv, "audio-channels", "auto");
     setMpvOptionString(_mpv, "hwdec", "auto");
     setMpvOptionString(_mpv, "gpu-hwdec-interop", "auto");
     setMpvOptionString(_mpv, "hwdec-codecs", "all");
@@ -1421,11 +1423,17 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     setMpvOptionString(_mpv, "demuxer-max-bytes", "512MiB");
     setMpvOptionString(_mpv, "demuxer-max-back-bytes", "256MiB");
     setMpvOptionString(_mpv, "demuxer-seekable-cache", "yes");
-    setMpvOptionString(_mpv, "cache-secs", "120");
+    setMpvOptionString(_mpv, "cache-secs", "36000");
     setMpvOptionString(_mpv, "hr-seek", "no");
 
     if (headerLines.count > 0) {
-        NSString *headers = [headerLines componentsJoinedByString:@","];
+        NSMutableArray *escaped = [NSMutableArray arrayWithCapacity:headerLines.count];
+        for (NSString *line in headerLines) {
+            NSString *esc = [[line stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+                             stringByReplacingOccurrencesOfString:@"," withString:@"\\,"];
+            [escaped addObject:esc];
+        }
+        NSString *headers = [escaped componentsJoinedByString:@","];
         setMpvOptionString(_mpv, "http-header-fields", headers.UTF8String);
     }
 
@@ -1927,11 +1935,10 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
 - (BOOL)rawLoadingWithPaused:(BOOL)paused ended:(BOOL)eofReached duration:(double)duration {
     BOOL idle = [self flagProperty:"core-idle" fallback:YES];
-    BOOL seeking = [self flagProperty:"seeking" fallback:NO];
     BOOL bufferingCache = [self flagProperty:"paused-for-cache" fallback:NO];
     BOOL fileReady = duration > 0.0
         || [self int64Property:"track-list/count" fallback:0] > 0;
-    return !fileReady || (idle && !paused && !eofReached) || seeking || bufferingCache;
+    return !fileReady || (idle && !paused && !eofReached) || bufferingCache;
 }
 
 - (BOOL)isEnded {

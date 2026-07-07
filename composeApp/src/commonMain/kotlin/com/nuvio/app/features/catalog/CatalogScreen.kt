@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,7 +20,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,6 +48,7 @@ import com.nuvio.app.core.ui.NuvioNetworkOfflineCard
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
 import com.nuvio.app.core.ui.NuvioBackButton
+import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import com.nuvio.app.core.ui.NuvioPosterWatchedOverlay
 import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
 import com.nuvio.app.core.ui.posterCardClickable
@@ -82,6 +84,7 @@ fun CatalogScreen(
         WatchedRepository.ensureLoaded()
         WatchedRepository.uiState
     }.collectAsStateWithLifecycle()
+    val fullyWatchedSeriesKeys by WatchedRepository.fullyWatchedSeriesKeys.collectAsStateWithLifecycle()
     val initialScrollPosition = remember(
         target,
         homeCatalogSettingsUiState.hideUnreleasedContent,
@@ -203,6 +206,7 @@ fun CatalogScreen(
                             isWatched = WatchingState.isPosterWatched(
                                 watchedKeys = watchedUiState.watchedKeys,
                                 item = item,
+                                fullyWatchedSeriesKeys = fullyWatchedSeriesKeys,
                             ),
                             onClick = onPosterClick?.let { { it(item) } },
                             onLongClick = onPosterLongClick?.let { { it(item) } },
@@ -215,6 +219,13 @@ fun CatalogScreen(
                     }
                 }
             }
+            NuvioDesktopVerticalScrollbar(
+                state = gridState,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+            )
 
             CatalogHeader(
                 title = title,
@@ -377,10 +388,9 @@ private fun CatalogLoadingFooter() {
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        CircularProgressIndicator(
+        NuvioLoadingIndicator(
             modifier = Modifier.size(22.dp),
             color = MaterialTheme.colorScheme.primary,
-            strokeWidth = 2.dp,
         )
     }
 }
