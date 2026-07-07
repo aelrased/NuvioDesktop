@@ -229,7 +229,7 @@ EOF
 
   mkdir -p "$appimage_output_dir"
   appimage_name="Nuvio-${marketing_version}-x86_64.AppImage"
-  ARCH=x86_64 appimagetool "$app_image_parent" "$appimage_output_dir/$appimage_name"
+  APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 appimagetool --appimage-extract-and-run "$app_image_parent" "$appimage_output_dir/$appimage_name"
   echo "AppImage created: $appimage_output_dir/$appimage_name"
 fi
 

@@ -29,7 +29,7 @@ mkdir data
 cd data
 tar xf "$TMPDIR/data.tar.xz"
 
-desktop_files=$(find . -name '*.desktop' 2>/dev/null || true)
+desktop_files=$(find . -name '*.desktop' -not -type l -not -path '*/runtime/*' 2>/dev/null || true)
 for df in $desktop_files; do
     echo "Fixing: $df"
     sed -i 's/^Categories=Unknown/Categories=AudioVideo;Player;/' "$df"
