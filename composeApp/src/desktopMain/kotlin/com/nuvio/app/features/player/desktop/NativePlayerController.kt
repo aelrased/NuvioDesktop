@@ -20,6 +20,7 @@ import com.nuvio.app.features.player.SUBTITLE_DELAY_MIN_MS
 import com.nuvio.app.features.player.SubtitleColorSwatches
 import com.nuvio.app.features.player.SubtitleStyleState
 import com.nuvio.app.features.player.SubtitleTrack
+import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.player.inferForcedSubtitleTrack
 import com.nuvio.app.features.player.toStorageHexString
 import kotlinx.serialization.Serializable
@@ -41,6 +42,7 @@ internal class NativePlayerController(
 
     @Volatile
     private var handle: Long = 0L
+    private var _volume: Float = 50f // 0..100 range
     private var pendingSource: PendingSource? = null
     private var controlsState = PlayerControlsState()
     private var pendingSubtitleDelayMs: Int? = null
@@ -106,7 +108,6 @@ internal class NativePlayerController(
         } else {
             // WaylandPlayerHost — no AWT peer needed
             attachPending()
-        }
         }
     }
 
@@ -240,9 +241,10 @@ internal class NativePlayerController(
     }
 
     private fun requestKeyboardFocus() {
+        val awtHost = host as? java.awt.Component ?: return
         SwingUtilities.invokeLater {
-            if (!host.isDisplayable) return@invokeLater
-            host.requestFocusInWindow()
+            if (!awtHost.isDisplayable) return@invokeLater
+            awtHost.requestFocusInWindow()
             val current = handle.takeIf { it != 0L } ?: return@invokeLater
             NativePlayerBridge.requestFocus(current)
         }

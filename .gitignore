@@ -31,3 +31,5 @@ AGENTS.md
 release-assets/linux/*.AppImage
 release-assets/linux/*.AppImage.zsync
 release-assets/linux/*.deb
+WAYLAND_EGL_IMPLEMENTATION.md
+hs_err_pid*.log

@@ -1331,7 +1331,8 @@ private:
         const std::string &sourceUrl,
         const std::vector<std::string> &headerLines,
         bool playWhenReady,
-        long long initialPositionMs
+        long long initialPositionMs,
+        bool nvidiaRtxSuperResolutionEnabled = false
     ) {
         MpvApi &api = mpvApi();
         {
