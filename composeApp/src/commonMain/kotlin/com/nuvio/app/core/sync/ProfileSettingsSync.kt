@@ -18,6 +18,8 @@ import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepositor
 import com.nuvio.app.features.player.PlayerSettingsStorage
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.core.ui.CardDepthStyleRepository
+import com.nuvio.app.core.ui.CardDepthStyleStorage
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleStorage
 import com.nuvio.app.features.settings.ThemeSettingsStorage
@@ -28,6 +30,7 @@ import com.nuvio.app.features.tmdb.TmdbSettingsStorage
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktCommentsStorage
 import com.nuvio.app.features.trakt.TraktCommentsSettings
+import com.nuvio.app.features.trakt.ProfileSettingsWatchSourceOutbox
 import com.nuvio.app.features.trakt.TraktSettingsStorage
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesStorage
@@ -35,6 +38,9 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepositor
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlin.concurrent.Volatile
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -46,6 +52,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,10 +68,22 @@ import kotlinx.serialization.json.put
 
 private const val PUSH_DEBOUNCE_MS = 1500L
 
+private data class ObservedProfileSettingsChange(
+    val signature: String,
+    val accountId: String?,
+)
+
+private data class SkippedProfileSettingsPush(
+    val signature: String,
+    val accountId: String?,
+    val profileId: Int,
+)
+
 object ProfileSettingsSync {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val log = Logger.withTag("ProfileSettingsSync")
     private val syncMutex = Mutex()
+    private val observeLock = SynchronizedObject()
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -77,130 +96,298 @@ object ProfileSettingsSync {
     private var isServerSyncInFlight: Boolean = false
 
     @Volatile
-    private var skipNextPushSignature: String? = null
+    private var skipNextPush: SkippedProfileSettingsPush? = null
+
+    @Volatile
+    private var pushEnabledAccountId: String? = null
+
+    @Volatile
+    private var pendingLocalPush: SkippedProfileSettingsPush? = null
 
     private var observeJob: Job? = null
+    private var pendingPushRetryJob: Job? = null
 
     private val profileSettingsPlatform: String
         get() = if (isDesktop) DESKTOP_SYNC_PLATFORM else MOBILE_SYNC_PLATFORM
 
-    fun startObserving() {
-        if (observeJob?.isActive == true) return
+    fun startObserving() = synchronized(observeLock) {
+        if (observeJob?.isActive == true) return@synchronized
         ensureRepositoriesLoaded()
         observeLocalChangesAndPush()
     }
 
+    fun clearAccountState() {
+        synchronized(observeLock) {
+            observeJob?.cancel()
+            observeJob = null
+        }
+        skipNextPush = null
+        pushEnabledAccountId = null
+        pendingLocalPush = null
+        pendingPushRetryJob?.cancel()
+        pendingPushRetryJob = null
+    }
+
     suspend fun pull(profileId: Int): Boolean {
-        ensureRepositoriesLoaded()
+        startObserving()
+        val accountId = currentCloudAccountId() ?: return false
         return syncMutex.withLock {
-            if (ProfileRepository.activeProfileId != profileId) {
+            if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
                 log.d { "pull(profileId=$profileId) — skipped because profile is no longer active" }
                 return@withLock false
             }
             isServerSyncInFlight = true
             try {
-                val remoteJson = fetchRemoteSettingsJson(profileId)
-                if (ProfileRepository.activeProfileId != profileId) return@withLock false
+                pushEnabledAccountId = accountId
+                hydrateDurableWatchSourcePush(profileId = profileId, accountId = accountId)
+                if (
+                    !pushCurrentStateLocked(
+                        profileId = profileId,
+                        accountId = accountId,
+                        forceCurrentState = false,
+                    )
+                ) {
+                    schedulePendingPushRetry()
+                    return@withLock false
+                }
+                val observedSignatureAtStart = currentObservedStateSignature()
+                val localBlob = exportSettingsBlob()
+                if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
+                    throw CancellationException("Profile settings pull target changed")
+                }
+                val localSignature = buildSignature(localBlob)
 
-                if (remoteJson == null) {
-                    log.i { "pull(profileId=$profileId) — no remote settings blob found" }
-                    if (ProfileRepository.activeProfileId != profileId) return@withLock false
-                    val localBlob = exportSettingsBlob()
-                    val localSignature = buildSignature(localBlob)
-                    if (localSignature != defaultSignature()) {
-                        pushToRemoteLocked(profileId, localBlob)
+                val params = buildJsonObject {
+                    put("p_profile_id", profileId)
+                    put("p_platform", profileSettingsPlatform)
+                }
+                val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profile_settings_blob", params)
+                if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
+                    throw CancellationException("Profile settings pull target changed")
+                }
+                val response = result.decodeList<SettingsBlobResponse>().firstOrNull()
+                val remoteJson = response?.settingsJson
+
+                val pendingDuringPull = pendingLocalPush?.let { pending ->
+                    pending.accountId == accountId && pending.profileId == profileId
+                } == true
+                val durableSourceChangeDuringPull =
+                    ProfileSettingsWatchSourceOutbox.pendingFor(accountId, profileId) != null
+                if (
+                    pendingDuringPull ||
+                    durableSourceChangeDuringPull ||
+                    currentObservedStateSignature() != observedSignatureAtStart
+                ) {
+                    if (
+                        !pushCurrentStateLocked(
+                            profileId = profileId,
+                            accountId = accountId,
+                            forceCurrentState = true,
+                        )
+                    ) {
+                        schedulePendingPushRetry()
                     }
                     return@withLock false
                 }
 
+                if (remoteJson == null) {
+                    log.i { "pull(profileId=$profileId) — no remote settings blob found" }
+                    if (localSignature != defaultSignature()) {
+                        pushToRemoteLocked(profileId, localBlob, accountId)
+                    }
+                    pushEnabledAccountId = accountId
+                    return@withLock false
+                }
+
+                val remoteBlob = try {
+                    json.decodeFromJsonElement(MobileProfileSettingsBlob.serializer(), remoteJson)
+                } catch (error: Throwable) {
+                    log.e(error) { "pull(profileId=$profileId) — failed to decode remote settings blob" }
+                    throw error
+                }
+
+                var restoredPendingSourceAfterRemoteApply = false
                 isApplyingRemoteBlob = true
                 try {
-                    val remoteBlob = runCatching {
-                        json.decodeFromJsonElement(MobileProfileSettingsBlob.serializer(), remoteJson)
-                    }.getOrElse { error ->
-                        log.e(error) { "pull(profileId=$profileId) — failed to decode remote settings blob" }
-                        return@withLock false
-                    }
-
-                    val localBlob = exportSettingsBlob()
-                    val localSignature = buildSignature(localBlob)
                     val remoteSignature = buildSignature(remoteBlob)
                     if (remoteSignature == localSignature) {
                         log.d { "pull(profileId=$profileId) — remote matches local" }
+                        pushEnabledAccountId = accountId
                         return@withLock false
                     }
 
-                    if (ProfileRepository.activeProfileId != profileId) return@withLock false
+                    if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
+                        throw CancellationException("Profile settings pull target changed")
+                    }
                     applyRemoteBlob(remoteBlob)
-                    skipNextPushSignature = currentObservedStateSignature()
+                    ProfileSettingsWatchSourceOutbox.pendingFor(accountId, profileId)?.let { pendingSource ->
+                        if (TraktSettingsRepository.uiState.value.watchProgressSource != pendingSource.source) {
+                            TraktSettingsRepository.setWatchProgressSource(pendingSource.source, profileId)
+                        }
+                        restoredPendingSourceAfterRemoteApply = true
+                    }
+                    skipNextPush = SkippedProfileSettingsPush(
+                        signature = currentObservedStateSignature(),
+                        accountId = currentCloudAccountId(),
+                        profileId = profileId,
+                    )
                 } finally {
                     isApplyingRemoteBlob = false
                 }
 
+                if (restoredPendingSourceAfterRemoteApply) {
+                    pendingLocalPush = SkippedProfileSettingsPush(
+                        signature = currentObservedStateSignature(),
+                        accountId = accountId,
+                        profileId = profileId,
+                    )
+                    if (
+                        !pushCurrentStateLocked(
+                            profileId = profileId,
+                            accountId = accountId,
+                            forceCurrentState = true,
+                        )
+                    ) {
+                        schedulePendingPushRetry()
+                    }
+                    return@withLock false
+                }
+
                 log.i { "pull(profileId=$profileId) — applied remote settings blob" }
+                pushEnabledAccountId = accountId
                 true
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 log.e(error) { "pull(profileId=$profileId) — FAILED" }
-                false
+                throw error
             } finally {
                 isServerSyncInFlight = false
             }
         }
     }
 
-    suspend fun pushCurrentProfileToRemote() {
+    suspend fun pushCurrentProfileToRemote(): Boolean {
         ensureRepositoriesLoaded()
-        syncMutex.withLock {
-            runCatching {
+        val accountId = currentCloudAccountId() ?: return false
+        return syncMutex.withLock {
+            try {
                 val profileId = ProfileRepository.activeProfileId
-                val blob = exportSettingsBlob()
-                if (ProfileRepository.activeProfileId != profileId) return@runCatching
-                pushToRemoteLocked(profileId, blob)
-            }.onFailure { error ->
+                if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) return@withLock false
+                pushCurrentStateLocked(
+                    profileId = profileId,
+                    accountId = accountId,
+                    forceCurrentState = true,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
                 log.e(error) { "pushCurrentProfileToRemote() — FAILED" }
+                false
             }
         }
     }
 
     @OptIn(FlowPreview::class)
     private fun observeLocalChangesAndPush() {
-        val signatureFlows = buildList {
-            add(ThemeSettingsRepository.selectedTheme.map { "theme" })
-            add(ThemeSettingsRepository.amoledEnabled.map { "amoled" })
-            add(ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.map { "liquid_glass_tab_bar" })
-            add(PosterCardStyleRepository.uiState.map { "poster_card_style" })
-            add(PlayerSettingsRepository.uiState.map { "player" })
-            add(StreamBadgeSettingsRepository.uiState.map { "stream_badges" })
-            add(DebridSettingsRepository.uiState.map { "debrid" })
-            add(TmdbSettingsRepository.uiState.map { "tmdb" })
-            add(MdbListSettingsRepository.uiState.map { "mdblist" })
-            add(MetaScreenSettingsRepository.uiState.map { "meta" })
-            add(CollectionMobileSettingsRepository.uiState.map { "collection_mobile_settings" })
-            add(ContinueWatchingPreferencesRepository.uiState.map { "continue_watching" })
-            add(TraktSettingsRepository.uiState.map { "trakt_settings" })
-            add(TraktCommentsSettings.enabled.map { "trakt_comments" })
-            add(EpisodeReleaseNotificationsRepository.uiState.map { "episode_release_alerts" })
-        }
+        val signatureFlows = listOf(
+            ThemeSettingsRepository.selectedTheme.map { "theme" },
+            ThemeSettingsRepository.amoledEnabled.map { "amoled" },
+            ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.map { "liquid_glass_tab_bar" },
+            PosterCardStyleRepository.uiState.map { "poster_card_style" },
+            CardDepthStyleRepository.uiState.map { "card_depth_style" },
+            PlayerSettingsRepository.uiState.map { "player" },
+            StreamBadgeSettingsRepository.uiState.map { "stream_badges" },
+            DebridSettingsRepository.uiState.map { "debrid" },
+            TmdbSettingsRepository.uiState.map { "tmdb" },
+            MdbListSettingsRepository.uiState.map { "mdblist" },
+            MetaScreenSettingsRepository.uiState.map { "meta" },
+            CollectionMobileSettingsRepository.uiState.map { "collection_mobile_settings" },
+            ContinueWatchingPreferencesRepository.uiState.map { "continue_watching" },
+            TraktSettingsRepository.uiState.map { "trakt_settings" },
+            TraktCommentsSettings.enabled.map { "trakt_comments" },
+            EpisodeReleaseNotificationsRepository.uiState.map { "episode_release_alerts" },
+        )
 
         observeJob = scope.launch {
-            combine(signatureFlows) { currentObservedStateSignature() }
+            combine(signatureFlows) {
+                ObservedProfileSettingsChange(
+                    signature = currentObservedStateSignature(),
+                    accountId = currentCloudAccountId(),
+                )
+            }
                 .drop(1)
                 .distinctUntilChanged()
+                .onEach { change ->
+                    val authState = AuthRepository.state.value
+                    if (authState !is AuthState.Authenticated || authState.isAnonymous) return@onEach
+                    if (change.accountId == null || change.accountId != authState.userId) return@onEach
+                    val observedChange = SkippedProfileSettingsPush(
+                        signature = change.signature,
+                        accountId = change.accountId,
+                        profileId = ProfileRepository.activeProfileId,
+                    )
+                    if (skipNextPush != observedChange) {
+                        pendingLocalPush = observedChange
+                        schedulePendingPushRetry()
+                    }
+                }
                 .debounce(PUSH_DEBOUNCE_MS)
-                .collect { signature ->
+                .collect { change ->
                     val authState = AuthRepository.state.value
                     if (authState !is AuthState.Authenticated || authState.isAnonymous) return@collect
-                    if (isApplyingRemoteBlob || isServerSyncInFlight) return@collect
-                    if (signature == skipNextPushSignature) {
-                        skipNextPushSignature = null
+                    if (change.accountId == null || change.accountId != authState.userId) return@collect
+                    val profileId = ProfileRepository.activeProfileId
+                    val observedChange = SkippedProfileSettingsPush(
+                        signature = change.signature,
+                        accountId = change.accountId,
+                        profileId = profileId,
+                    )
+                    if (skipNextPush == observedChange) {
+                        skipNextPush = null
+                        if (pendingLocalPush == observedChange) {
+                            pendingLocalPush = null
+                        }
                         return@collect
                     }
+                    pendingLocalPush = observedChange
+                    if (pushEnabledAccountId != change.accountId) return@collect
+                    if (isApplyingRemoteBlob || isServerSyncInFlight) return@collect
                     pushCurrentProfileToRemote()
                 }
         }
     }
 
-    private suspend fun pushToRemoteLocked(profileId: Int, blob: MobileProfileSettingsBlob) {
+    private fun schedulePendingPushRetry() {
+        if (pendingPushRetryJob?.isActive == true) return
+        pendingPushRetryJob = scope.launch {
+            var retryDelayMs = 5_000L
+            while (pendingLocalPush != null) {
+                delay(retryDelayMs)
+                val pending = pendingLocalPush ?: break
+                if (
+                    pending.accountId == currentCloudAccountId() &&
+                    pending.profileId == ProfileRepository.activeProfileId &&
+                    pushEnabledAccountId == pending.accountId &&
+                    !isApplyingRemoteBlob &&
+                    !isServerSyncInFlight &&
+                    pushCurrentProfileToRemote()
+                ) {
+                    break
+                }
+                retryDelayMs = (retryDelayMs * 2L).coerceAtMost(60_000L)
+            }
+        }
+    }
+
+    private suspend fun pushToRemoteLocked(
+        profileId: Int,
+        blob: MobileProfileSettingsBlob,
+        accountId: String,
+    ) {
+        if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
+            throw CancellationException("Profile settings push target changed")
+        }
         val params = buildJsonObject {
             put("p_profile_id", profileId)
             put("p_platform", profileSettingsPlatform)
@@ -208,7 +395,72 @@ object ProfileSettingsSync {
             putSyncOriginClientId()
         }
         SupabaseProvider.client.postgrest.rpc("sync_push_profile_settings_blob", params)
-        log.d { "pushToRemoteLocked(profileId=$profileId, platform=$profileSettingsPlatform) — success" }
+        if (!isCurrentSyncTarget(profileId = profileId, accountId = accountId)) {
+            throw CancellationException("Profile settings push target changed")
+        }
+        log.d { "pushToRemoteLocked(profileId=$profileId) — success" }
+    }
+
+    private fun hydrateDurableWatchSourcePush(profileId: Int, accountId: String) {
+        val durableChange = ProfileSettingsWatchSourceOutbox.pendingFor(accountId, profileId) ?: return
+        if (TraktSettingsRepository.uiState.value.watchProgressSource != durableChange.source) {
+            TraktSettingsRepository.setWatchProgressSource(durableChange.source, profileId)
+        }
+        pendingLocalPush = SkippedProfileSettingsPush(
+            signature = currentObservedStateSignature(),
+            accountId = accountId,
+            profileId = profileId,
+        )
+        schedulePendingPushRetry()
+    }
+
+    private suspend fun pushCurrentStateLocked(
+        profileId: Int,
+        accountId: String,
+        forceCurrentState: Boolean,
+    ): Boolean {
+        val durableChange = ProfileSettingsWatchSourceOutbox.pendingFor(accountId, profileId)
+        val inMemoryChange = pendingLocalPush?.takeIf { pending ->
+            pending.accountId == accountId && pending.profileId == profileId
+        }
+        if (!forceCurrentState && durableChange == null && inMemoryChange == null) return true
+
+        val signature = currentObservedStateSignature()
+        pushToRemoteLocked(profileId, exportSettingsBlob(), accountId)
+        if (currentObservedStateSignature() != signature) {
+            pendingLocalPush = SkippedProfileSettingsPush(
+                signature = currentObservedStateSignature(),
+                accountId = accountId,
+                profileId = profileId,
+            )
+            schedulePendingPushRetry()
+            return false
+        }
+
+        val pushedChange = SkippedProfileSettingsPush(
+            signature = signature,
+            accountId = accountId,
+            profileId = profileId,
+        )
+        if (pendingLocalPush == pushedChange) {
+            pendingLocalPush = null
+        }
+        if (
+            durableChange != null &&
+            TraktSettingsRepository.uiState.value.watchProgressSource == durableChange.source
+        ) {
+            ProfileSettingsWatchSourceOutbox.clearIfMatches(durableChange)
+        }
+
+        val durablePushRemains = ProfileSettingsWatchSourceOutbox.pendingFor(accountId, profileId) != null
+        val memoryPushRemains = pendingLocalPush?.let { pending ->
+            pending.accountId == accountId && pending.profileId == profileId
+        } == true
+        if (durablePushRemains || memoryPushRemains) {
+            schedulePendingPushRetry()
+            return false
+        }
+        return true
     }
 
     private fun exportSettingsBlob(): MobileProfileSettingsBlob {
@@ -217,6 +469,7 @@ object ProfileSettingsSync {
             features = MobileProfileSettingsFeatures(
                 themeSettings = ThemeSettingsStorage.exportToSyncPayload(),
                 posterCardStyleSettingsPayload = PosterCardStyleStorage.loadPayload().orEmpty().trim(),
+                cardDepthStyleSettingsPayload = CardDepthStyleStorage.loadPayload().orEmpty().trim(),
                 playerSettings = PlayerSettingsStorage.exportToSyncPayload(),
                 streamBadgeSettings = StreamBadgeSettingsStorage.exportToSyncPayload(),
                 debridSettings = DebridSettingsStorage.exportToSyncPayload(),
@@ -240,6 +493,9 @@ object ProfileSettingsSync {
 
         PosterCardStyleStorage.savePayload(blob.features.posterCardStyleSettingsPayload)
         PosterCardStyleRepository.onProfileChanged()
+
+        CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload)
+        CardDepthStyleRepository.onProfileChanged()
 
         PlayerSettingsStorage.replaceFromSyncPayload(blob.features.playerSettings)
         PlayerSettingsRepository.onProfileChanged()
@@ -278,6 +534,7 @@ object ProfileSettingsSync {
     private fun ensureRepositoriesLoaded() {
         ThemeSettingsRepository.ensureLoaded()
         PosterCardStyleRepository.ensureLoaded()
+        CardDepthStyleRepository.ensureLoaded()
         PlayerSettingsRepository.ensureLoaded()
         StreamBadgeSettingsRepository.ensureLoaded()
         DebridSettingsRepository.ensureLoaded()
@@ -297,32 +554,32 @@ object ProfileSettingsSync {
     private fun defaultSignature(): String =
         buildSignature(MobileProfileSettingsBlob())
 
-    private fun currentObservedStateSignature(): String = buildList {
-        add("theme=${ThemeSettingsRepository.selectedTheme.value.name}")
-        add("amoled=${ThemeSettingsRepository.amoledEnabled.value}")
-        add("liquid_glass_tab_bar=${ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.value}")
-        add("poster_card_style=${PosterCardStyleRepository.uiState.value}")
-        add("player=${PlayerSettingsRepository.uiState.value}")
-        add("stream_badges=${StreamBadgeSettingsRepository.uiState.value}")
-        add("debrid=${DebridSettingsRepository.uiState.value}")
-        add("tmdb=${TmdbSettingsRepository.uiState.value}")
-        add("mdblist=${MdbListSettingsRepository.uiState.value}")
-        add("meta=${MetaScreenSettingsRepository.uiState.value}")
-        add("collection_mobile_settings=${CollectionMobileSettingsRepository.uiState.value}")
-        add("continue=${ContinueWatchingPreferencesRepository.uiState.value}")
-        add("trakt_settings=${TraktSettingsRepository.uiState.value}")
-        add("trakt_comments=${TraktCommentsSettings.enabled.value}")
-        add("episode_release_alerts=${EpisodeReleaseNotificationsRepository.uiState.value.isEnabled}")
-    }.joinToString(separator = "||")
+    private fun currentObservedStateSignature(): String = listOf(
+        "theme=${ThemeSettingsRepository.selectedTheme.value.name}",
+        "amoled=${ThemeSettingsRepository.amoledEnabled.value}",
+        "liquid_glass_tab_bar=${ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.value}",
+        "poster_card_style=${PosterCardStyleRepository.uiState.value}",
+        "card_depth_style=${CardDepthStyleRepository.uiState.value}",
+        "player=${PlayerSettingsRepository.uiState.value}",
+        "stream_badges=${StreamBadgeSettingsRepository.uiState.value}",
+        "debrid=${DebridSettingsRepository.uiState.value}",
+        "tmdb=${TmdbSettingsRepository.uiState.value}",
+        "mdblist=${MdbListSettingsRepository.uiState.value}",
+        "meta=${MetaScreenSettingsRepository.uiState.value}",
+        "collection_mobile_settings=${CollectionMobileSettingsRepository.uiState.value}",
+        "continue=${ContinueWatchingPreferencesRepository.uiState.value}",
+        "trakt_settings=${TraktSettingsRepository.uiState.value}",
+        "trakt_comments=${TraktCommentsSettings.enabled.value}",
+        "episode_release_alerts=${EpisodeReleaseNotificationsRepository.uiState.value.isEnabled}",
+    ).joinToString(separator = "||")
 
-    private suspend fun fetchRemoteSettingsJson(profileId: Int): JsonObject? {
-        val params = buildJsonObject {
-            put("p_profile_id", profileId)
-            put("p_platform", profileSettingsPlatform)
-        }
-        val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profile_settings_blob", params)
-        return result.decodeList<SettingsBlobResponse>().firstOrNull()?.settingsJson
-    }
+    private fun currentCloudAccountId(): String? =
+        (AuthRepository.state.value as? AuthState.Authenticated)
+            ?.takeUnless { it.isAnonymous }
+            ?.userId
+
+    private fun isCurrentSyncTarget(profileId: Int, accountId: String): Boolean =
+        ProfileRepository.activeProfileId == profileId && currentCloudAccountId() == accountId
 }
 
 @Serializable
@@ -335,6 +592,7 @@ private data class MobileProfileSettingsBlob(
 private data class MobileProfileSettingsFeatures(
     @SerialName("theme_settings") val themeSettings: JsonObject = JsonObject(emptyMap()),
     @SerialName("poster_card_style_settings_payload") val posterCardStyleSettingsPayload: String = "",
+    @SerialName("card_depth_style_settings_payload") val cardDepthStyleSettingsPayload: String = "",
     @SerialName("player_settings") val playerSettings: JsonObject = JsonObject(emptyMap()),
     @SerialName("stream_badge_settings") val streamBadgeSettings: JsonObject = JsonObject(emptyMap()),
     @SerialName("debrid_settings") val debridSettings: JsonObject = JsonObject(emptyMap()),

@@ -98,6 +98,23 @@ internal class DesktopAppFullscreenController {
         exitWindowsFullscreen(window)
     }
 
+    /**
+     * Applies a fullscreen state restored from a previous session, before the
+     * window has been interacted with. Only acts when [fullscreen] is true;
+     * windowed is already the default state for a freshly created window.
+     */
+    fun applyRestoredFullscreenState(window: Window, windowState: WindowState, fullscreen: Boolean) {
+        if (!fullscreen) return
+        if (DesktopHostOs.current == DesktopHostOs.WINDOWS) {
+            enterWindowsFullscreen(window)
+        } else {
+            restoreWindowPlacement = windowState.placement
+                .takeUnless { it == WindowPlacement.Fullscreen }
+                ?: WindowPlacement.Floating
+            windowState.placement = WindowPlacement.Fullscreen
+        }
+    }
+
     fun isFullscreen(window: Window, windowState: WindowState): Boolean =
         if (DesktopHostOs.current == DesktopHostOs.WINDOWS) {
             windowsRestoreState?.let { true } == true

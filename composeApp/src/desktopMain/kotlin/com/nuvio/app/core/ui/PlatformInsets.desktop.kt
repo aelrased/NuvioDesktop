@@ -11,3 +11,6 @@ internal actual val nuvioBottomNavigationExtraVerticalPadding: Dp = 0.dp
 
 @Composable
 internal actual fun nuvioBottomNavigationBarInsets(): WindowInsets = WindowInsets(0.dp)
+
+@Composable
+internal actual fun platformPhysicalTopInset(): Dp = 0.dp

@@ -33,3 +33,7 @@ release-assets/linux/*.AppImage.zsync
 release-assets/linux/*.deb
 WAYLAND_EGL_IMPLEMENTATION.md
 hs_err_pid*.log
+PERFORMANCE_FINDINGS.md
+
+# Local MPVKit iOS build environment (sparse APFS image, see MPVKit docs)
+.mpvkit-build.sparseimage

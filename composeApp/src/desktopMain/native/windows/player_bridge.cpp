@@ -77,6 +77,70 @@ struct BorderlessFullscreenState {
 std::mutex gBorderlessFullscreenMutex;
 std::unordered_map<HWND, BorderlessFullscreenState> gBorderlessFullscreenStates;
 
+struct DisplaySleepInhibitRequest {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool stop = false;
+};
+
+std::mutex gDisplaySleepInhibitMutex;
+std::shared_ptr<DisplaySleepInhibitRequest> gDisplaySleepInhibitRequest;
+std::thread *gDisplaySleepInhibitThread = nullptr;
+
+void displaySleepInhibitThreadMain(std::shared_ptr<DisplaySleepInhibitRequest> request) {
+    SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+
+    std::unique_lock<std::mutex> lock(request->mutex);
+    request->condition.wait(lock, [request] { return request->stop; });
+    lock.unlock();
+
+    SetThreadExecutionState(ES_CONTINUOUS);
+}
+
+bool setDisplaySleepInhibited(bool inhibited) {
+    if (inhibited) {
+        std::lock_guard<std::mutex> stateLock(gDisplaySleepInhibitMutex);
+        if (gDisplaySleepInhibitThread != nullptr) return true;
+
+        auto request = std::make_shared<DisplaySleepInhibitRequest>();
+        try {
+            gDisplaySleepInhibitThread = new std::thread(displaySleepInhibitThreadMain, request);
+            gDisplaySleepInhibitRequest = request;
+            return true;
+        } catch (...) {
+            gDisplaySleepInhibitRequest.reset();
+            return false;
+        }
+    }
+
+    std::shared_ptr<DisplaySleepInhibitRequest> request;
+    std::thread *threadToJoin = nullptr;
+    {
+        std::lock_guard<std::mutex> stateLock(gDisplaySleepInhibitMutex);
+        if (gDisplaySleepInhibitThread == nullptr) return true;
+
+        request = gDisplaySleepInhibitRequest;
+        threadToJoin = gDisplaySleepInhibitThread;
+        gDisplaySleepInhibitThread = nullptr;
+        gDisplaySleepInhibitRequest.reset();
+    }
+
+    if (request) {
+        {
+            std::lock_guard<std::mutex> requestLock(request->mutex);
+            request->stop = true;
+        }
+        request->condition.notify_all();
+    }
+    if (threadToJoin != nullptr) {
+        if (threadToJoin->joinable()) {
+            threadToJoin->join();
+        }
+        delete threadToJoin;
+    }
+    return true;
+}
+
 std::wstring toWide(const std::string &value) {
     if (value.empty()) return std::wstring();
     int size = MultiByteToWideChar(CP_UTF8, 0, value.data(), (int)value.size(), nullptr, 0);
@@ -2007,6 +2071,11 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_warmupWebView2(JNI
 extern "C" JNIEXPORT void JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_shutdownWebView2Warmup(JNIEnv *, jobject) {
     stopWebView2Warmup();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowsDisplaySleepInhibited(JNIEnv *, jobject, jboolean inhibited) {
+    return setDisplaySleepInhibited(inhibited == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

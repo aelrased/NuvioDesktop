@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.IntSize
 import com.nuvio.app.core.ui.DesktopBackHandlers
 import com.nuvio.app.features.player.desktop.DesktopHostOs
+import com.nuvio.app.features.player.desktop.NativePlayerBridge
 
 @Composable
 actual fun LockPlayerToLandscape() = Unit
@@ -131,6 +132,17 @@ private class DesktopKeepAwakeController : AutoCloseable {
             ?.takeIf(Process::isAlive)
             ?.destroy()
         inhibitProcess = null
+    }
+
+    private fun setWindowsDisplaySleepInhibited(inhibited: Boolean) {
+        if (windowsDisplaySleepInhibited == inhibited) return
+
+        val applied = runCatching {
+            NativePlayerBridge.setWindowsDisplaySleepInhibited(inhibited)
+        }.getOrDefault(false)
+        if (applied) {
+            windowsDisplaySleepInhibited = inhibited
+        }
     }
 
     override fun close() {

@@ -545,10 +545,12 @@ object StreamsRepository {
                                         } else {
                                             null
                                         }
-                                        group.copy(
-                                            streams = mergedStreams,
-                                            isLoading = stillLoading,
-                                            error = finalError,
+                                        presentStreamGroup(
+                                            group.copy(
+                                                streams = mergedStreams,
+                                                isLoading = stillLoading,
+                                                error = finalError,
+                                            ),
                                         )
                                     }
                                 },

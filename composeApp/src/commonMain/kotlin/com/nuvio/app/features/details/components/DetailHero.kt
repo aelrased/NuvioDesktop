@@ -57,7 +57,7 @@ import org.jetbrains.compose.resources.stringResource
 fun DetailHero(
     meta: MetaDetails,
     isTablet: Boolean = false,
-    scrollOffset: Int = 0,
+    scrollOffsetProvider: () -> Float = { 0f },
     contentMaxWidth: Dp = 560.dp,
     viewportHeight: Dp = 0.dp,
     onHeightChanged: (Int) -> Unit = {},
@@ -116,11 +116,11 @@ fun DetailHero(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                translationY = scrollOffset * 0.5f
+                                translationY = scrollOffsetProvider() * 0.5f
                                 scaleX = backdropScale
                                 scaleY = backdropScale
                             },
-                        alignment = Alignment.Center,
+                        alignment = if (isTablet) Alignment.TopCenter else Alignment.Center,
                         contentScale = ContentScale.Crop,
                         desktopImageScaling = NuvioDesktopImageScaling.Disabled,
                         onSuccess = { state ->
@@ -147,7 +147,7 @@ fun DetailHero(
                             .fillMaxSize()
                             .graphicsLayer {
                                 alpha = trailerAlpha
-                                translationY = scrollOffset * 0.5f
+                                translationY = scrollOffsetProvider() * 0.5f
                                 scaleX = backdropScale
                                 scaleY = backdropScale
                             },

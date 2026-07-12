@@ -1380,6 +1380,8 @@
     <string name="entity_browse_catalogue">Catalogue</string>
     <string name="entity_browse_country">Country</string>
     <string name="entity_browse_type">Type</string>
+    <string name="entity_browse_title_count_one">%d title</string>
+    <string name="entity_browse_title_count_other">%d titles</string>
     <string name="episode_mark_previous_seasons_watched">Mark Προηγούμενο seasons as watched</string>
     <string name="external_player_android_system">Android system Αναπαραγωγήer</string>
     <string name="external_player_failed">Couldn't Άνοιγμα external player</string>

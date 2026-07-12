@@ -11,6 +11,7 @@ import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.Sync
 import org.gradle.api.tasks.TaskAction
 import org.gradle.jvm.tasks.Jar
+import org.gradle.language.jvm.tasks.ProcessResources
 import org.gradle.process.ExecOperations
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -301,6 +302,59 @@ abstract class NotarizeMacosDmgWithKeychainTask @Inject constructor(
     }
 }
 
+abstract class PrepareMacosTorrServerResourcesTask @Inject constructor(
+    private val execOperations: ExecOperations,
+) : DefaultTask() {
+    @get:InputDirectory
+    abstract val sourceDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @get:Input
+    abstract val signingIdentity: Property<String>
+
+    @TaskAction
+    fun prepare() {
+        val sourceRoot = sourceDir.get().asFile
+        val outputRoot = outputDir.get().asFile
+        val resourceRoot = outputRoot.resolve("torrserver")
+
+        outputRoot.deleteRecursively()
+        resourceRoot.mkdirs()
+
+        sourceRoot.walkTopDown()
+            .filter(File::isFile)
+            .forEach { sourceFile ->
+                val relativePath = sourceFile.relativeTo(sourceRoot)
+                val outputFile = resourceRoot.resolve(relativePath.path)
+                outputFile.parentFile.mkdirs()
+                sourceFile.copyTo(outputFile, overwrite = true)
+                outputFile.setExecutable(sourceFile.canExecute())
+            }
+
+        val identity = signingIdentity.get().trim()
+        if (identity.isNotEmpty()) {
+            resourceRoot.walkTopDown()
+                .filter(File::isFile)
+                .forEach { binary ->
+                    execOperations.exec {
+                        commandLine(
+                            "codesign",
+                            "--force",
+                            "--options",
+                            "runtime",
+                            "--timestamp",
+                            "--sign",
+                            identity,
+                            binary.absolutePath,
+                        )
+                    }
+                }
+        }
+    }
+}
+
 fun readXcconfigValue(file: File, key: String): String? {
     if (!file.exists()) return null
     return file.readLines()
@@ -527,6 +581,12 @@ val generateRuntimeConfigs = tasks.register<GenerateRuntimeConfigsTask>("generat
 val isMacHost = System.getProperty("os.name").contains("mac", ignoreCase = true)
 val isWindowsHost = System.getProperty("os.name").contains("win", ignoreCase = true)
 val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
+val prepareMacosTorrServerResources = tasks.register<PrepareMacosTorrServerResourcesTask>("prepareMacosTorrServerResources") {
+    enabled = isMacHost
+    sourceDir.set(layout.projectDirectory.dir("src/desktopMain/torrserver"))
+    outputDir.set(layout.buildDirectory.dir("generated/signed-macos-torrserver-resources"))
+    signingIdentity.set(macosSigningIdentity.orEmpty())
+}
 val mpvKitDir = providers.gradleProperty("nuvio.mpvkit.dir")
     .orElse(rootProject.layout.projectDirectory.dir("MPVKit").asFile.absolutePath)
 val macosPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/macos/player_bridge.mm")
@@ -554,6 +614,7 @@ if (isMacHost && isMacosDmgBuildRequested && macosPlayerBridgeArch != macosHostJ
     )
 }
 val macosPlayerBridgeOutput = layout.buildDirectory.file("native/macos/$macosPlayerBridgeArch/libplayer_bridge.dylib")
+val macosPlayerRuntimeOutput = layout.buildDirectory.dir("native/macos-runtime/$macosPlayerBridgeArch")
 val macosDmgArchName = macosPlayerBridgeArch
 val isMacosDmgNotarizationRequested = requestedGradleTasks.any { taskName ->
     taskName == "notarizedmg" || taskName == "notarizereleasedmg"
@@ -561,36 +622,29 @@ val isMacosDmgNotarizationRequested = requestedGradleTasks.any { taskName ->
 val mpvKitRoot = File(mpvKitDir.get())
 val mpvKitDistRoot = File(mpvKitRoot, "dist")
 val mpvKitLibmpvRoot = File(mpvKitDistRoot, "libmpv/macos/thin/$macosPlayerBridgeArch")
-val mpvKitLibmpvPkgConfigFile = File(mpvKitLibmpvRoot, "lib/pkgconfig/mpv.pc")
-val mpvKitGeneratedPkgConfigDirs = if (mpvKitDistRoot.exists()) {
-    mpvKitDistRoot.walkTopDown()
-        .filter { it.isDirectory && it.invariantSeparatorsPath.endsWith("/macos/thin/$macosPlayerBridgeArch/lib/pkgconfig") }
-        .toList()
-        .sortedBy { it.absolutePath }
-} else {
-    emptyList()
-}
-val mpvKitGeneratedLibSearchArgs = mpvKitGeneratedPkgConfigDirs
-    .mapNotNull { it.parentFile }
-    .distinctBy { it.absolutePath }
-    .joinToString(" ") { "-L${shellQuote(it.absolutePath)}" }
-val missingMpvKitMacosFrameworks = if (mpvKitLibmpvPkgConfigFile.exists()) emptyList() else listOf("mpv.pc")
+val mpvKitLibmpvHeaders = File(mpvKitLibmpvRoot, "include")
+val bundledMacosLibmpvRuntimeRoot = layout.projectDirectory.dir("src/desktopMain/native/macos/runtime").asFile
+val bundledMacosLibmpvRuntimeDir = File(bundledMacosLibmpvRuntimeRoot, macosPlayerBridgeArch)
+val bundledMacosLibmpvDylib = File(bundledMacosLibmpvRuntimeDir, "libmpv.2.dylib")
+val missingMacosPlayerBridgeInputs = listOfNotNull(
+    "MPVKit headers".takeUnless { File(mpvKitLibmpvHeaders, "mpv/client.h").exists() },
+    "bundled libmpv.2.dylib".takeUnless { bundledMacosLibmpvDylib.exists() },
+)
 val missingMpvKitMacosMessage = """
-    MPVKit macOS libmpv artifacts are missing for $macosPlayerBridgeArch: ${missingMpvKitMacosFrameworks.joinToString()}.
+    macOS libmpv inputs are missing for $macosPlayerBridgeArch: ${missingMacosPlayerBridgeInputs.joinToString()}.
     Build MPVKit's macOS runtime first:
       cd ${mpvKitRoot.absolutePath}
       make build platform=macos
-    Or pass -Pnuvio.mpvkit.dir=/absolute/path/to/MPVKit.
+    The dynamic libmpv runtime must be present under ${bundledMacosLibmpvRuntimeDir.absolutePath}.
 """.trimIndent()
 val missingMpvKitMacosShellMessage = missingMpvKitMacosMessage.replace("'", "'\"'\"'")
 val macosPlayerBridgeSourceFile = macosPlayerBridgeSource.asFile
 val macosPlayerBridgeOutputFile = macosPlayerBridgeOutput.get().asFile
 val macosPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
-val mpvKitLibmpvStaticLib = File(mpvKitLibmpvRoot, "lib/libmpv.a")
 if (isMacHost) {
     macosPlayerBridgeOutputFile.parentFile.mkdirs()
 }
-val macosPlayerBridgeCommand = if (missingMpvKitMacosFrameworks.isNotEmpty()) {
+val macosPlayerBridgeCommand = if (missingMacosPlayerBridgeInputs.isNotEmpty()) {
     listOf(
         "/bin/sh",
         "-c",
@@ -606,8 +660,6 @@ val macosPlayerBridgeCommand = if (missingMpvKitMacosFrameworks.isNotEmpty()) {
         SWIFTC="${'$'}(xcrun --toolchain XcodeDefault --find swiftc)"
         SWIFT_TOOLCHAIN="${'$'}{SWIFTC%/usr/bin/swiftc}"
         SWIFT_LIB="${'$'}{SWIFT_TOOLCHAIN}/usr/lib/swift/macosx"
-        DEFAULT_PC="${'$'}(pkg-config --variable pc_path pkg-config)"
-        export PKG_CONFIG_LIBDIR=${shellQuote(mpvKitGeneratedPkgConfigDirs.joinToString(":"))}:"${'$'}{DEFAULT_PC}"
         exec xcrun clang++ \
           -std=c++17 \
           -dynamiclib \
@@ -615,16 +667,18 @@ val macosPlayerBridgeCommand = if (missingMpvKitMacosFrameworks.isNotEmpty()) {
           -ObjC++ \
           -arch ${shellQuote(macosPlayerBridgeArch)} \
           -isysroot "${'$'}{SDKROOT}" \
-          -mmacosx-version-min=11.0 \
+          -mmacosx-version-min=12.0 \
           ${shellQuote(macosPlayerBridgeSourceFile.absolutePath)} \
           -o ${shellQuote(macosPlayerBridgeOutputFile.absolutePath)} \
           -I${shellQuote("$macosPlayerBridgeJavaHome/include")} \
           -I${shellQuote("$macosPlayerBridgeJavaHome/include/darwin")} \
-          -I${shellQuote(File(mpvKitLibmpvRoot, "include").absolutePath)} \
-          $mpvKitGeneratedLibSearchArgs \
+          -I${shellQuote(mpvKitLibmpvHeaders.absolutePath)} \
           -L"${'$'}{SWIFT_LIB}" \
           -L/usr/lib/swift \
           -framework AppKit \
+          -framework IOKit \
+          -framework OpenGL \
+          -framework QuartzCore \
           -framework WebKit \
           -framework Metal \
           -framework Security \
@@ -632,21 +686,17 @@ val macosPlayerBridgeCommand = if (missingMpvKitMacosFrameworks.isNotEmpty()) {
           -lswiftCompatibilityConcurrency \
           -lswiftCompatibilityPacks \
           -lc++ \
-          ${'$'}(pkg-config --libs --static mpv)
+          -Wl,-rpath,@loader_path \
+          ${shellQuote(bundledMacosLibmpvDylib.absolutePath)}
         """.trimIndent(),
     )
 }
 val buildMacosPlayerBridge = tasks.register<Exec>("buildMacosPlayerBridge") {
-    notCompatibleWithConfigurationCache("Builds a host-local player bridge against MPVKit's macOS libmpv artifacts.")
+    notCompatibleWithConfigurationCache("Builds a host-local player bridge against the bundled macOS libmpv runtime.")
     enabled = isMacHost
     inputs.file(macosPlayerBridgeSource)
-    if (mpvKitLibmpvStaticLib.exists()) {
-        inputs.file(mpvKitLibmpvStaticLib)
-    }
-    if (mpvKitLibmpvPkgConfigFile.exists()) {
-        inputs.file(mpvKitLibmpvPkgConfigFile)
-    }
-    inputs.files(mpvKitGeneratedPkgConfigDirs.mapNotNull { it.parentFile?.resolve("lib")?.takeIf(File::exists) })
+    inputs.file(bundledMacosLibmpvDylib)
+    inputs.dir(mpvKitLibmpvHeaders)
     outputs.file(macosPlayerBridgeOutput)
     commandLine(macosPlayerBridgeCommand)
 }
@@ -943,10 +993,28 @@ val downloadTorrserver = tasks.register("downloadTorrserver") {
     }
 }
 
+val prepareMacosPlayerRuntime = tasks.register<Sync>("prepareMacosPlayerRuntime") {
+    enabled = isMacHost
+    from(bundledMacosLibmpvRuntimeDir) {
+        include("*.dylib")
+    }
+    into(macosPlayerRuntimeOutput)
+}
+
+val generateMacosPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexTask>("generateMacosPlayerRuntimeIndex") {
+    enabled = isMacHost
+    dependsOn(prepareMacosPlayerRuntime)
+    runtimeDir.set(macosPlayerRuntimeOutput)
+    indexFile.set(macosPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
+}
+
 tasks.withType<Jar>().configureEach {
     if (isMacHost && name == "desktopJar") {
-        dependsOn(buildMacosPlayerBridge)
+        dependsOn(buildMacosPlayerBridge, prepareMacosPlayerRuntime, generateMacosPlayerRuntimeIndex)
         from(macosPlayerBridgeOutput) {
+            into("native/macos")
+        }
+        from(macosPlayerRuntimeOutput) {
             into("native/macos")
         }
     }
@@ -1002,6 +1070,13 @@ val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
     "buildAppImage",
     "patchLinuxDebDependencies",
 )
+
+tasks.withType<ProcessResources>().matching { it.name == "desktopProcessResources" }.configureEach {
+    if (isMacHost) {
+        dependsOn(prepareMacosTorrServerResources)
+        from(prepareMacosTorrServerResources.map { it.outputDir })
+    }
+}
 if (isWindowsHost) {
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
         dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
@@ -1027,6 +1102,7 @@ kotlin {
         }
         minSdk = libs.versions.android.minSdk.get().toInt()
         androidResources.enable = true
+        withHostTest {}
 
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
@@ -1121,6 +1197,7 @@ kotlin {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.kotlinx.coroutines.swing)
                 implementation(libs.ktor.client.cio)
+                implementation("com.squareup.okhttp3:okhttp:4.12.0")
                 implementation(libs.quickjs.kt)
                 implementation(libs.ksoup)
             }
@@ -1148,7 +1225,7 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.atomicfu)
             implementation(libs.kmpalette.core)
-            implementation(libs.androidx.navigation.compose)
+            implementation(libs.androidx.navigation3.ui)
             implementation(libs.kermit)
             implementation(libs.supabase.postgrest)
             implementation(libs.supabase.auth)
@@ -1198,11 +1275,28 @@ compose.desktop {
                 "java.instrument",
                 "java.management",
                 "java.net.http",
+                "jdk.httpserver",
                 "jdk.unsupported",
             )
             macOS {
                 bundleID = "com.nuvio.media.desktop"
                 iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon.icns"))
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                            <dict>
+                                <key>CFBundleURLName</key>
+                                <string>com.nuvio.media.desktop</string>
+                                <key>CFBundleURLSchemes</key>
+                                <array>
+                                    <string>nuvio</string>
+                                    <string>stremio</string>
+                                </array>
+                            </dict>
+                        </array>
+                    """.trimIndent()
+                }
                 if (macosSigningIdentity != null) {
                     signing {
                         sign.set(true)

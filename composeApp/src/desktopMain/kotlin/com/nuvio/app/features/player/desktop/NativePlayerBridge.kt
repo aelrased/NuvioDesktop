@@ -92,6 +92,7 @@ internal object NativePlayerBridge {
     )
     external fun warmupWebView2(controlsPageUrl: String): Boolean
     external fun shutdownWebView2Warmup()
+    external fun setWindowsDisplaySleepInhibited(inhibited: Boolean): Boolean
 
     // Linux-specific native methods
     external fun renderFrame(handle: Long, dstPixels: IntArray, dstW: Int, dstH: Int): Boolean
@@ -201,18 +202,35 @@ internal object NativePlayerBridge {
     }
 
     private fun findLocalBuildLibrary(platformDir: String, libraryName: String): File? {
-        val candidates = listOf(
-            File("composeApp/build/native/$platformDir/$libraryName"),
-            File("build/native/$platformDir/$libraryName"),
+        val architectureDirectories = nativeArchitectureDirectoryNames(platformDir)
+        val roots = listOf(
+            File("composeApp/build/native/$platformDir"),
+            File("build/native/$platformDir"),
         )
+        val candidates = roots.map { it.resolve(libraryName) } + roots.flatMap { root ->
+            architectureDirectories.map { architecture -> root.resolve(architecture).resolve(libraryName) }
+        }
         return candidates.firstOrNull { it.exists() }
     }
 
+    private fun nativeArchitectureDirectoryNames(platformDir: String): List<String> =
+        when (platformDir) {
+            "macos" -> when (System.getProperty("os.arch").lowercase()) {
+                "aarch64", "arm64" -> listOf("arm64", "aarch64")
+                "amd64", "x64", "x86_64" -> listOf("x86_64")
+                else -> emptyList()
+            }
+            else -> emptyList()
+        }
+
     private fun copyLocalRuntimeResources(platformDir: String, targetDir: File) {
-        val runtimeDirs = listOf(
+        val runtimeRoots = listOf(
             File("composeApp/build/native/$platformDir-runtime"),
             File("build/native/$platformDir-runtime"),
         )
+        val runtimeDirs = runtimeRoots.flatMap { root ->
+            nativeArchitectureDirectoryNames(platformDir).map(root::resolve)
+        } + runtimeRoots
         runtimeDirs.firstOrNull(File::isDirectory)
             ?.listFiles { file -> file.isFile }
             ?.forEach { runtimeFile ->

@@ -50,7 +50,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import nuvio.composeapp.generated.resources.*
-import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 import com.nuvio.app.core.ui.landscapePosterHeightForWidth
 import com.nuvio.app.core.ui.landscapePosterWidth
@@ -63,6 +62,7 @@ import com.nuvio.app.features.tmdb.TmdbEntityMediaType
 import com.nuvio.app.features.tmdb.TmdbEntityRailType
 import com.nuvio.app.features.tmdb.TmdbMetadataService
 import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.navigation.LocalUseNativeNavigation
 
 private sealed interface EntityBrowseUiState {
     data object Loading : EntityBrowseUiState
@@ -127,18 +127,20 @@ fun TmdbEntityBrowseScreen(
             }
         }
 
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(start = 4.dp, top = 4.dp)
-                .align(Alignment.TopStart),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                contentDescription = stringResource(Res.string.action_back),
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
+        if (!LocalUseNativeNavigation.current) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(start = 4.dp, top = 4.dp)
+                    .align(Alignment.TopStart),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                    contentDescription = stringResource(Res.string.action_back),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }
@@ -440,11 +442,11 @@ private fun EntityIdentitySidebar(
                 if (catalogueCount > 0) {
                     EntitySidebarFact(
                         label = stringResource(Res.string.entity_browse_catalogue),
-                        value = pluralStringResource(
-                            Res.plurals.entity_browse_title_count,
-                            catalogueCount,
-                            catalogueCount,
-                        ),
+                        value = if (catalogueCount == 1) {
+                            stringResource(Res.string.entity_browse_title_count_one, catalogueCount)
+                        } else {
+                            stringResource(Res.string.entity_browse_title_count_other, catalogueCount)
+                        },
                     )
                 }
             }

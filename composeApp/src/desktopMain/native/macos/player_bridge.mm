@@ -1408,22 +1408,23 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     setMpvOptionString(_mpv, "audio-channels", "auto");
     setMpvOptionString(_mpv, "hwdec", "auto");
     setMpvOptionString(_mpv, "gpu-hwdec-interop", "auto");
-    setMpvOptionString(_mpv, "hwdec-codecs", "all");
-    setMpvOptionString(_mpv, "vd-lavc-software-fallback", "yes");
-    setMpvOptionString(_mpv, "vd-lavc-threads", "4");
+    if (decoderPriority == 0) {
+        setMpvOptionString(_mpv, "vd-lavc-software-fallback", "no");
+    } else if (decoderPriority == 2) {
+        setMpvOptionString(_mpv, "hwdec", "no");
+        setMpvOptionString(_mpv, "vd-lavc-software-fallback", "yes");
+    } else {
+        setMpvOptionString(_mpv, "vd-lavc-software-fallback", "yes");
+    }
+    setMpvOptionString(_mpv, "vd-lavc-threads", "0");
     setMpvOptionString(_mpv, "target-colorspace-hint", "yes");
     setMpvOptionString(_mpv, "target-colorspace-hint-mode", "source");
     setMpvOptionString(_mpv, "target-colorspace-hint-strict", "no");
     setMpvOptionString(_mpv, "tone-mapping", "auto");
     setMpvOptionString(_mpv, "hdr-compute-peak", "no");
     setMpvOptionString(_mpv, "dither-depth", "auto");
-    setMpvOptionString(_mpv, "deband", "yes");
-    setMpvOptionString(_mpv, "scale", "spline36");
-    setMpvOptionString(_mpv, "cscale", "spline36");
-    setMpvOptionString(_mpv, "demuxer-max-bytes", "512MiB");
-    setMpvOptionString(_mpv, "demuxer-max-back-bytes", "256MiB");
-    setMpvOptionString(_mpv, "demuxer-seekable-cache", "yes");
-    setMpvOptionString(_mpv, "cache-secs", "36000");
+    setMpvOptionString(_mpv, "demuxer-max-bytes", "150MiB");
+    setMpvOptionString(_mpv, "cache-secs", "120");
     setMpvOptionString(_mpv, "hr-seek", "no");
 
     if (headerLines.count > 0) {

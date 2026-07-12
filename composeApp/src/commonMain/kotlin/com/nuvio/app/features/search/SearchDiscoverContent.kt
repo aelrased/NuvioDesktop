@@ -39,6 +39,7 @@ import com.nuvio.app.core.ui.NuvioNetworkOfflineCard
 import com.nuvio.app.core.ui.NuvioPosterWatchedOverlay
 import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
 import com.nuvio.app.core.ui.posterCardClickable
+import com.nuvio.app.core.ui.desktopPosterHoverScale
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.home.components.HomeEmptyStateCard
@@ -244,7 +245,7 @@ private fun DiscoverPosterTile(
 ) {
     Column(
         modifier = Modifier
-            .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
+            .desktopPosterHoverScale()
             .then(modifier),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -253,7 +254,14 @@ private fun DiscoverPosterTile(
                 .fillMaxWidth()
                 .aspectRatio(item.posterShape.discoverAspectRatio())
                 .clip(RoundedCornerShape(cornerRadiusDp.dp))
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .posterCardClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    zoomImageUrl = item.poster,
+                    zoomCornerRadius = cornerRadiusDp.dp,
+                    hoverScaleEnabled = false,
+                ),
         ) {
             if (item.poster != null) {
                 AsyncImage(
