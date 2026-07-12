@@ -1,6 +1,8 @@
 package com.nuvio.app.features.player.desktop
 
 import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.Data
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
 import java.awt.Cursor
@@ -9,16 +11,10 @@ import java.awt.Point
 import java.awt.Toolkit
 import java.awt.Window
 import java.awt.image.BufferedImage
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import javax.swing.Timer
 
-/**
- * PlayerHost for Linux Wayland sessions where mpv cannot render directly
- * into an X11 window (no wid support). Instead, mpv renders offscreen
- * (EGL FBO via GBM) and this host pulls finished frames via
- * [NativePlayerBridge.renderFrameBytes] into a Skia [Image] that
- * Compose Canvas draws each tick. Double-buffered byte arrays avoid
- * per-frame allocation overhead.
- */
 internal class WaylandPlayerHost : PlayerHost {
     @Volatile
     override var nativeHandle: Long = 0L
@@ -30,45 +26,61 @@ internal class WaylandPlayerHost : PlayerHost {
     private var lastWidth = 0
     private var lastHeight = 0
 
-    /* Double-buffer: one being drawn by Compose, other being filled by native. */
-    private var bufferA: ByteArray? = null
-    private var bufferB: ByteArray? = null
-    private var useBufferA = true
+    /* Double-buffer: DirectByteBuffer for zero-copy JNI */
+    private var bufA: ByteBuffer? = null
+    private var bufB: ByteBuffer? = null
+    private var useBufA = true
 
     var latestImage: Image? = null
         private set
+
+    private var reusedBytes: ByteArray? = null
 
     private var controlsVisible = true
     private var cursorVisible = true
     private var cursorHideTimer: Timer? = null
 
+    private fun ensureDirectBuffer(existing: ByteBuffer?, capacity: Int): ByteBuffer {
+        if (existing != null && existing.capacity() >= capacity) return existing
+        return ByteBuffer.allocateDirect(capacity).order(ByteOrder.nativeOrder())
+    }
+
     fun renderFrame(width: Int, height: Int): Boolean {
         val handle = nativeHandle
         if (handle == 0L || width <= 0 || height <= 0) return false
 
+        /* DirectBuffer SW path */
         val byteCount = width * height * 4
-
-        // Use double-buffer: write to inactive buffer while Compose reads from active one
-        val bytes: ByteArray
-        if (useBufferA) {
-            if (bufferA == null || bufferA!!.size < byteCount) bufferA = ByteArray(byteCount)
-            bytes = bufferA!!
+        val buf: ByteBuffer
+        if (useBufA) {
+            bufA = ensureDirectBuffer(bufA, byteCount)
+            buf = bufA!!
         } else {
-            if (bufferB == null || bufferB!!.size < byteCount) bufferB = ByteArray(byteCount)
-            bytes = bufferB!!
+            bufB = ensureDirectBuffer(bufB, byteCount)
+            buf = bufB!!
         }
-        useBufferA = !useBufferA
+        useBufA = !useBufA
 
-        if (!NativePlayerBridge.renderFrameBytes(handle, bytes, width, height)) return false
+        if (!NativePlayerBridge.renderFrameDirect(handle, buf, width, height)) return false
         if (nativeHandle == 0L) return false
 
-        val imageInfo = ImageInfo.makeS32(width, height, ColorAlphaType.UNPREMUL)
-        val previousImage = latestImage
-        latestImage = Image.makeRaster(imageInfo, bytes, width * 4)
-        previousImage?.close()
-        lastWidth = width
-        lastHeight = height
-        return true
+        /* Create Skia Image from DirectByteBuffer (reuse byte array to avoid alloc) */
+        val imageInfo = ImageInfo(width, height, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
+        val prev = latestImage
+        if (reusedBytes == null || reusedBytes!!.size < byteCount) reusedBytes = ByteArray(byteCount)
+        buf.position(0)
+        buf.get(reusedBytes!!)
+        buf.position(0)
+        val data = Data.makeFromBytes(reusedBytes!!)
+        latestImage = Image.makeRaster(imageInfo, data, width * 4)
+        if (latestImage != null && !latestImage!!.isClosed) {
+            prev?.close()
+            lastWidth = width
+            lastHeight = height
+            return true
+        }
+        latestImage = prev
+        return false
     }
 
     override fun setControlsVisible(visible: Boolean) {
@@ -99,8 +111,6 @@ internal class WaylandPlayerHost : PlayerHost {
         resetCursorVisibility()
         latestImage?.close()
         latestImage = null
-        bufferA = null
-        bufferB = null
     }
 
     private fun setCursorVisible(visible: Boolean) {

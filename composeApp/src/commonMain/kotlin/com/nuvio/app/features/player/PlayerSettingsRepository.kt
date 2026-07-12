@@ -39,6 +39,7 @@ data class PlayerSettingsUiState(
     val holdToSpeedValue: Float = 2f,
     val touchGesturesEnabled: Boolean = true,
     val externalPlayerEnabled: Boolean = false,
+    val nuvioPlayerAsInternal: Boolean = false,
     val externalPlayerForwardSubtitles: Boolean = false,
     val externalPlayerSendSkipSegments: Boolean = false,
     val externalPlayerId: String? = ExternalPlayerPlatform.defaultPlayerId(),
@@ -108,6 +109,7 @@ object PlayerSettingsRepository {
     private var holdToSpeedValue = 2f
     private var touchGesturesEnabled = true
     private var externalPlayerEnabled = false
+    private var nuvioPlayerAsInternal = false
     private var externalPlayerForwardSubtitles = false
     private var externalPlayerSendSkipSegments = false
     private var externalPlayerId: String? = ExternalPlayerPlatform.defaultPlayerId()
@@ -182,6 +184,7 @@ object PlayerSettingsRepository {
         holdToSpeedValue = 2f
         touchGesturesEnabled = true
         externalPlayerEnabled = false
+        nuvioPlayerAsInternal = false
         externalPlayerForwardSubtitles = false
         externalPlayerSendSkipSegments = false
         externalPlayerId = ExternalPlayerPlatform.defaultPlayerId()
@@ -450,6 +453,9 @@ object PlayerSettingsRepository {
             return
         }
         externalPlayerEnabled = normalizedEnabled
+        if (normalizedEnabled) {
+            nuvioPlayerAsInternal = false
+        }
         publish()
         if (AppFeaturePolicy.externalPlayerSupported) {
             PlayerSettingsStorage.saveExternalPlayerEnabled(normalizedEnabled)
@@ -463,6 +469,16 @@ object PlayerSettingsRepository {
         externalPlayerId = normalized
         publish()
         PlayerSettingsStorage.saveExternalPlayerId(normalized)
+    }
+
+    fun setNuvioPlayerAsInternal(enabled: Boolean) {
+        ensureLoaded()
+        if (nuvioPlayerAsInternal == enabled) return
+        nuvioPlayerAsInternal = enabled
+        if (enabled) {
+            externalPlayerEnabled = false
+        }
+        publish()
     }
 
     fun setExternalPlayerForwardSubtitles(enabled: Boolean) {
@@ -970,6 +986,7 @@ object PlayerSettingsRepository {
             holdToSpeedValue = holdToSpeedValue,
             touchGesturesEnabled = touchGesturesEnabled,
             externalPlayerEnabled = externalPlayerEnabled && AppFeaturePolicy.externalPlayerSupported,
+            nuvioPlayerAsInternal = nuvioPlayerAsInternal && !externalPlayerEnabled,
             externalPlayerForwardSubtitles = externalPlayerForwardSubtitles && AppFeaturePolicy.externalPlayerSupported,
             externalPlayerSendSkipSegments = externalPlayerSendSkipSegments,
             externalPlayerId = externalPlayerId,

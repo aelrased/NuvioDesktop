@@ -114,6 +114,10 @@ internal fun buildLinuxExternalPlayerCommand(
         install.id.contains("celluloid", ignoreCase = true) ||
         install.id.contains("smplayer", ignoreCase = true) ->
             buildLinuxMpvCommand(install, request.copy(sourceUrl = sourceUrl))
+        install.id.contains("nuvio", ignoreCase = true) ->
+            buildLinuxNuvioPlayerCommand(install, request.copy(sourceUrl = sourceUrl))
+        install.id.contains("soia", ignoreCase = true) ->
+            buildLinuxSoiaCommand(install, request.copy(sourceUrl = sourceUrl))
         else -> LinuxExternalPlayerCommandResult(null, "unknown player id: ${install.id}")
     }
 }
@@ -191,6 +195,90 @@ private fun buildLinuxKodiCommand(
     return LinuxExternalPlayerCommandResult(command)
 }
 
+private fun buildLinuxNuvioPlayerCommand(
+    install: LinuxExternalPlayerInstall,
+    request: ExternalPlayerPlaybackRequest,
+): LinuxExternalPlayerCommandResult {
+    val command = mutableListOf<String>().apply {
+        add(install.executablePath)
+        addAll(install.extraArgs)
+        add("--play")
+        add(request.sourceUrl)
+        add("--title")
+        add(request.title)
+        
+        if (request.resumePositionMs > 0L) {
+            add("--resume")
+            add(request.resumePositionMs.toString())
+        }
+        
+        // Add subtitle URL if available
+        val subtitleUrl = request.subtitles?.firstOrNull()?.url?.takeIf { it.isNotBlank() }
+        if (subtitleUrl != null) {
+            add("--subtitle")
+            add(subtitleUrl)
+        }
+        
+        // Add HTTP headers if available
+        if (request.sourceHeaders.isNotEmpty()) {
+            add("--headers")
+            val headersJson = request.sourceHeaders.entries.joinToString(",") { 
+                "${it.key}: ${it.value}" 
+            }
+            add(headersJson)
+        }
+        
+        // Add skip segments if available
+        if (!request.skipSegmentsJson.isNullOrBlank()) {
+            add("--skip-segments")
+            add(request.skipSegmentsJson)
+        }
+    }
+    return LinuxExternalPlayerCommandResult(command)
+}
+
+private fun buildLinuxSoiaCommand(
+    install: LinuxExternalPlayerInstall,
+    request: ExternalPlayerPlaybackRequest,
+): LinuxExternalPlayerCommandResult {
+    val command = mutableListOf<String>().apply {
+        add(install.executablePath)
+        addAll(install.extraArgs)
+        add("--play")
+        add(request.sourceUrl)
+        add("--title")
+        add(request.title)
+        
+        if (request.resumePositionMs > 0L) {
+            add("--resume")
+            add(request.resumePositionMs.toString())
+        }
+        
+        // Add subtitle URL if available
+        val subtitleUrl = request.subtitles?.firstOrNull()?.url?.takeIf { it.isNotBlank() }
+        if (subtitleUrl != null) {
+            add("--subtitle")
+            add(subtitleUrl)
+        }
+        
+        // Add HTTP headers if available
+        if (request.sourceHeaders.isNotEmpty()) {
+            add("--headers")
+            val headersJson = request.sourceHeaders.entries.joinToString(",") { 
+                "${it.key}: ${it.value}" 
+            }
+            add(headersJson)
+        }
+        
+        // Add skip segments if available
+        if (!request.skipSegmentsJson.isNullOrBlank()) {
+            add("--skip-segments")
+            add(request.skipSegmentsJson)
+        }
+    }
+    return LinuxExternalPlayerCommandResult(command)
+}
+
 private fun detectSnapMediaPlayers(): List<LinuxExternalPlayerInstall> {
     return try {
         val process = ProcessBuilder("/usr/bin/snap", "list")
@@ -263,6 +351,8 @@ internal val linuxDesktopPlayerDefinitions: List<DesktopPlayerDefinition> = list
     DesktopPlayerDefinition(id = "mpv", name = "mpv", kind = DesktopPlayerKind.Mpv),
     DesktopPlayerDefinition(id = "kodi", name = "Kodi", kind = DesktopPlayerKind.Kodi),
     DesktopPlayerDefinition(id = "kodi-standalone", name = "Kodi (standalone)", kind = DesktopPlayerKind.Kodi),
+    DesktopPlayerDefinition(id = "nuvio-player", name = "Nuvio Player", kind = DesktopPlayerKind.NuvioPlayer),
+    DesktopPlayerDefinition(id = "soia", name = "Soia Player", kind = DesktopPlayerKind.Soia),
 )
 
 internal fun LinuxExternalPlayerInstall.toDesktopPlayerInstall(): DesktopPlayerInstall {
@@ -272,11 +362,15 @@ internal fun LinuxExternalPlayerInstall.toDesktopPlayerInstall(): DesktopPlayerI
         id.contains("celluloid", ignoreCase = true) ||
         id.contains("smplayer", ignoreCase = true) -> DesktopPlayerKind.Mpv
         id.contains("kodi", ignoreCase = true) -> DesktopPlayerKind.Kodi
+        id.contains("nuvio", ignoreCase = true) -> DesktopPlayerKind.NuvioPlayer
+        id.contains("soia", ignoreCase = true) -> DesktopPlayerKind.Soia
         executablePath.contains("vlc", ignoreCase = true) -> DesktopPlayerKind.Vlc
         executablePath.contains("mpv", ignoreCase = true) -> DesktopPlayerKind.Mpv
         executablePath.contains("celluloid", ignoreCase = true) -> DesktopPlayerKind.Mpv
         executablePath.contains("smplayer", ignoreCase = true) -> DesktopPlayerKind.Mpv
         executablePath.contains("kodi", ignoreCase = true) -> DesktopPlayerKind.Kodi
+        executablePath.contains("nuvio", ignoreCase = true) -> DesktopPlayerKind.NuvioPlayer
+        executablePath.contains("soia", ignoreCase = true) -> DesktopPlayerKind.Soia
         else -> DesktopPlayerKind.Mpv
     }
     return DesktopPlayerInstall(

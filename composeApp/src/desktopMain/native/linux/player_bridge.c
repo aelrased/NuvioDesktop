@@ -28,6 +28,20 @@ static void on_load(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  EGL / GBM / OpenGL ES includes for Wayland GPU rendering           */
+/* ------------------------------------------------------------------ */
+#include <EGL/egl.h>
+#include <EGL/eglplatform.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <GLES3/gl3.h>
+#include <GLES3/gl31.h>
+#include <mpv/render_gl.h>
+#include <gbm.h>
+#include <fcntl.h>
+
+/* ------------------------------------------------------------------ */
 /*  Wayland detection                                                  */
 /* ------------------------------------------------------------------ */
 static int detect_wayland(void) {
@@ -55,7 +69,7 @@ typedef struct {
     char **headers;
     int nheaders;
     volatile int alive;
-    int gpuMode; /* 0 = SW rendering, 1 = vo=gpu-next with X11 wid, 2 = Wayland SW (optimized) */
+    int gpuMode; /* 0 = SW rendering, 1 = vo=gpu-next with X11 wid, 2 = Wayland GPU (EGL FBO + PBO) */
 
     /* only used in SW mode */
     pthread_t renderThread;
@@ -66,7 +80,33 @@ typedef struct {
     char *frameData;
     volatile int frameReady;
 
+    /* EGL / FBO / PBO state for Wayland GPU path (gpuMode==2) */
+    int eglInitialized;
+    struct gbm_device *gbmDev;
+    EGLDisplay eglDisplay;
+    EGLContext eglContext;
+    EGLSurface eglSurface;
+    GLuint fbo;
+    GLuint glTexture;
+    int fboTexW;
+    int fboTexH;
+
+    /* PBO double-buffer for async glReadPixels */
+    GLuint pbo[2];
+    int pboIdx;
+    int pboSize;
+
+    /* Direct buffer write pointer (from JNI GetDirectBufferAddress) */
+    unsigned char *directDst;
+    int directDstW;
+    int directDstH;
+
 } CreateTask;
+
+/* Forward declarations */
+static void letterbox_scale_rgba_to_bgra(
+    unsigned char *src, int srcW, int srcH, int srcStride,
+    unsigned char *dst, int dstW, int dstH);
 
 static void callEventSink(JNIEnv *env, JavaVM *jvm,
     jobject eventSink, jmethodID eventMethod,
@@ -90,6 +130,134 @@ static void callEventSink(JNIEnv *env, JavaVM *jvm,
     }
 }
 
+static void ensure_egl_init(CreateTask *task) {
+    if (task->eglInitialized) return;
+
+    const char *renderNode = "/dev/dri/renderD128";
+    int drmFd = open(renderNode, O_RDWR | O_CLOEXEC);
+    if (drmFd < 0) {
+        DBG("ensure_egl_init: cannot open %s\n", renderNode);
+        return;
+    }
+
+    task->gbmDev = gbm_create_device(drmFd);
+    if (!task->gbmDev) {
+        DBG("ensure_egl_init: gbm_create_device failed\n");
+        close(drmFd);
+        return;
+    }
+
+    task->eglDisplay = eglGetPlatformDisplay(EGL_PLATFORM_GBM_MESA, task->gbmDev, NULL);
+    if (task->eglDisplay == EGL_NO_DISPLAY) {
+        DBG("ensure_egl_init: eglGetPlatformDisplay failed\n");
+        gbm_device_destroy(task->gbmDev);
+        task->gbmDev = NULL;
+        close(drmFd);
+        return;
+    }
+
+    EGLint major, minor;
+    if (!eglInitialize(task->eglDisplay, &major, &minor)) {
+        DBG("ensure_egl_init: eglInitialize failed\n");
+        eglTerminate(task->eglDisplay);
+        task->eglDisplay = EGL_NO_DISPLAY;
+        gbm_device_destroy(task->gbmDev);
+        task->gbmDev = NULL;
+        close(drmFd);
+        return;
+    }
+
+    /* Choose any config (surfaceless rendering doesn't need Pbuffer support) */
+    EGLConfig config;
+    EGLint numConfigs;
+    static const EGLint configAttribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_NONE
+    };
+    if (!eglChooseConfig(task->eglDisplay, configAttribs, &config, 1, &numConfigs) || numConfigs == 0) {
+        DBG("ensure_egl_init: eglChooseConfig ES3 failed (numConfigs=%d), trying any\n", numConfigs);
+        static const EGLint anyAttribs[] = { EGL_NONE };
+        eglChooseConfig(task->eglDisplay, anyAttribs, &config, 1, &numConfigs);
+    }
+    if (numConfigs == 0) {
+        DBG("ensure_egl_init: eglChooseConfig failed completely\n");
+        eglTerminate(task->eglDisplay);
+        task->eglDisplay = EGL_NO_DISPLAY;
+        gbm_device_destroy(task->gbmDev);
+        task->gbmDev = NULL;
+        close(drmFd);
+        return;
+    }
+
+    /* Create ES3 context */
+    static const EGLint ctxAttribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_NONE
+    };
+    task->eglContext = eglCreateContext(task->eglDisplay, config, EGL_NO_CONTEXT, ctxAttribs);
+    if (task->eglContext == EGL_NO_CONTEXT) {
+        DBG("ensure_egl_init: eglCreateContext ES3 failed, trying ES2\n");
+        static const EGLint ctx2Attribs[] = {
+            EGL_CONTEXT_CLIENT_VERSION, 2,
+            EGL_NONE
+        };
+        task->eglContext = eglCreateContext(task->eglDisplay, config, EGL_NO_CONTEXT, ctx2Attribs);
+    }
+    if (task->eglContext == EGL_NO_CONTEXT) {
+        DBG("ensure_egl_init: eglCreateContext failed\n");
+        eglTerminate(task->eglDisplay);
+        task->eglDisplay = EGL_NO_DISPLAY;
+        gbm_device_destroy(task->gbmDev);
+        task->gbmDev = NULL;
+        close(drmFd);
+        return;
+    }
+
+    /* Surfaceless: make current without any surface */
+    if (!eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, task->eglContext)) {
+        DBG("ensure_egl_init: eglMakeCurrent(NO_SURFACE) failed\n");
+        eglDestroyContext(task->eglDisplay, task->eglContext);
+        eglTerminate(task->eglDisplay);
+        task->eglDisplay = EGL_NO_DISPLAY;
+        gbm_device_destroy(task->gbmDev);
+        task->gbmDev = NULL;
+        close(drmFd);
+        return;
+    }
+
+    DBG("ensure_egl_init: EGL initialized surfaceless (display=%p context=%p)\n",
+        (void*)task->eglDisplay, (void*)task->eglContext);
+
+    /* Create FBO + texture for mpv to render into */
+    glGenFramebuffers(1, &task->fbo);
+    glGenTextures(1, &task->glTexture);
+    glBindFramebuffer(GL_FRAMEBUFFER, task->fbo);
+    glBindTexture(GL_TEXTURE_2D, task->glTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, task->glTexture, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    /* PBO for async readback */
+    glGenBuffers(2, task->pbo);
+    task->pboIdx = 0;
+    task->pboSize = 0;
+
+    task->eglInitialized = 1;
+    (void)drmFd; /* keep drmFd alive - gbm_dev holds a reference */
+}
+
+static void ensure_fbo_size(CreateTask *task, int w, int h) {
+    if (task->fboTexW == w && task->fboTexH == h) return;
+    task->fboTexW = w;
+    task->fboTexH = h;
+
+    glBindTexture(GL_TEXTURE_2D, task->glTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    DBG("ensure_fbo_size: resized to %dx%d\n", w, h);
+}
+
 static void renderFrameToBuffer(CreateTask *task) {
     if (!task->renderCtx) return;
 
@@ -101,27 +269,104 @@ static void renderFrameToBuffer(CreateTask *task) {
     mpv_get_property(task->mpv, "dheight", MPV_FORMAT_INT64, &h);
     if (w <= 0 || h <= 0) return;
 
+    int render_w = (int)w;
+    int render_h = (int)h;
+
+    /* ---- Wayland GPU path: EGL FBO + PBO ---- */
+    if (task->gpuMode == 2 && task->renderCtx) {
+        if (!task->eglInitialized) {
+            DBG("renderFrameToBuffer: EGL not initialized\n");
+            goto sw_path;
+        }
+
+        /* Ensure EGL context is current on this thread (render thread) */
+        if (!eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, task->eglContext)) {
+            DBG("renderFrameToBuffer: eglMakeCurrent failed\n");
+            goto sw_path;
+        }
+
+        ensure_fbo_size(task, render_w, render_h);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, task->fbo);
+
+        /* Render mpv frame into our FBO */
+        struct mpv_opengl_fbo mpvFbo = { task->fbo, render_w, render_h, GL_RGBA };
+        int advanced = 1;
+        mpv_render_param params[] = {
+            {MPV_RENDER_PARAM_API_TYPE, (char *)MPV_RENDER_API_TYPE_OPENGL},
+            {MPV_RENDER_PARAM_OPENGL_FBO, &mpvFbo},
+            {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
+            {0}
+        };
+        mpv_render_context_render(task->renderCtx, params);
+
+        /* PBO double-buffer: start async readback of current frame */
+        int curIdx = task->pboIdx;
+        int nextIdx = 1 - curIdx;
+        int bufSize = render_w * render_h * 4;
+
+        if (task->pboSize != bufSize) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[0]);
+            glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[1]);
+            glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
+            task->pboSize = bufSize;
+        }
+
+        /* Start DMA read of current frame into pbo[curIdx] */
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[curIdx]);
+        glReadPixels(0, 0, render_w, render_h, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+
+        /* Check if the PREVIOUS frame's PBO has completed */
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[nextIdx]);
+        GLubyte *pboPtr = (GLubyte *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bufSize, GL_MAP_READ_BIT);
+
+        if (pboPtr) {
+            /* Previous frame is ready — copy to frameData with letterbox + BGRA swizzle */
+            pthread_mutex_lock(&task->frameMutex);
+            int stride = render_w * 4;
+            char *newBuf = realloc(task->frameData, stride * render_h);
+            if (newBuf) {
+                task->frameData = newBuf;
+                task->frameW = render_w;
+                task->frameH = render_h;
+                task->frameStride = stride;
+
+                /* Copy from PBO (RGBA) to frameData (BGRA) — simple swizzle, no scaling needed */
+                letterbox_scale_rgba_to_bgra(
+                    pboPtr, render_w, render_h, render_w * 4,
+                    (unsigned char *)task->frameData, render_w, render_h);
+                task->frameReady = 1;
+            }
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            pthread_mutex_unlock(&task->frameMutex);
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        task->pboIdx = nextIdx;
+        return;
+    }
+
+sw_path:
+    /* ---- SW path (original) ---- */
     pthread_mutex_lock(&task->frameMutex);
 
-    int stride = (int)(w * 4);
-    if (w != task->frameW || h != task->frameH) {
-        char *newBuf = realloc(task->frameData, stride * (int)h);
+    int stride = render_w * 4;
+    if (render_w != task->frameW || render_h != task->frameH) {
+        char *newBuf = realloc(task->frameData, stride * render_h);
         if (!newBuf) { pthread_mutex_unlock(&task->frameMutex); return; }
         task->frameData = newBuf;
-        task->frameW = (int)w;
-        task->frameH = (int)h;
+        task->frameW = render_w;
+        task->frameH = render_h;
         task->frameStride = stride;
     }
 
-    int render_w = (int)w;
-    int render_h = (int)h;
-    int render_stride = stride;
     void *render_ptr = task->frameData;
 
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_SW_SIZE, &(int[2]){render_w, render_h}},
         {MPV_RENDER_PARAM_SW_FORMAT, (char *)"rgb0"},
-        {MPV_RENDER_PARAM_SW_STRIDE, &render_stride},
+        {MPV_RENDER_PARAM_SW_STRIDE, &stride},
         {MPV_RENDER_PARAM_SW_POINTER, render_ptr},
         {0}
     };
@@ -135,6 +380,11 @@ static void renderFrameToBuffer(CreateTask *task) {
 
 static void mpvWakeupCallback(void *data) {
     (void)data;
+}
+
+static void *mpv_get_proc_address(void *ctx, const char *name) {
+    (void)ctx;
+    return (void *)eglGetProcAddress(name);
 }
 
 static void *renderThreadFunc(void *data) {
@@ -511,30 +761,68 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     if (isGpuMode) {
         DBG("create: GPU mode active, mpv renders directly to X11 window 0x%lx\n", (unsigned long)hostViewPtr);
     } else {
-        /* -- SW mode: create render context + thread -- */
+        /* -- SW / Wayland mode: create render context + thread -- */
         mpv_set_property_string(task->mpv, "vo", "libmpv");
 
+        if (detect_wayland()) {
+            DBG("create: Wayland detected, using OpenGL render context for PBO readback\n");
+            task->gpuMode = 2;
+            mpv_set_option_string(task->mpv, "gpu-context", "wayland");
+            mpv_set_option_string(task->mpv, "gpu-api", "opengl");
+        }
+
         int advanced = 1;
-        mpv_render_param render_params[] = {
-            {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW},
-            {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
-            {0}
-        };
-        if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
-            DBG("create: mpv_render_context_create failed\n");
-            mpv_terminate_destroy(task->mpv);
-            callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 7.0);
-            free(task->sourceUrl);
-            if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
-            if (task->eventSink && task->jvm) (*env)->DeleteGlobalRef(env, task->eventSink);
-            pthread_mutex_destroy(&task->frameMutex);
-            free(task);
-            return 0;
+
+        if (task->gpuMode == 2) {
+            /* Wayland: use OpenGL API — mpv renders into our FBO, we read via PBO */
+            /* First init EGL so mpv can use our GL context */
+            ensure_egl_init(task);
+            if (!task->eglInitialized) {
+                DBG("create: EGL init failed, falling back to SW\n");
+                task->gpuMode = 0;
+            }
+        }
+
+        if (task->gpuMode == 2) {
+            mpv_opengl_init_params gl_init = {
+                .get_proc_address = mpv_get_proc_address,
+                .get_proc_address_ctx = NULL,
+            };
+            mpv_render_param render_params[] = {
+                {MPV_RENDER_PARAM_API_TYPE, (char *)MPV_RENDER_API_TYPE_OPENGL},
+                {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init},
+                {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
+                {0}
+            };
+            if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
+                DBG("create: mpv_render_context_create (OpenGL) failed, falling back to SW\n");
+                task->gpuMode = 0;
+            }
+        }
+
+        if (task->gpuMode != 2) {
+            mpv_render_param render_params[] = {
+                {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW},
+                {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
+                {0}
+            };
+            if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
+                DBG("create: mpv_render_context_create (SW) failed\n");
+                mpv_terminate_destroy(task->mpv);
+                callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 7.0);
+                free(task->sourceUrl);
+                if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
+                if (task->eventSink && task->jvm) (*env)->DeleteGlobalRef(env, task->eventSink);
+                pthread_mutex_destroy(&task->frameMutex);
+                free(task);
+                return 0;
+            }
         }
 
         mpv_render_context_set_update_callback(task->renderCtx, mpvWakeupCallback, task);
 
-        DBG("create: SW mode active, starting render thread\n");
+        DBG("create: %s mode active, starting render thread\n",
+            task->gpuMode == 2 ? "Wayland GPU" : "SW");
     }
 
     DBG("create: mpv initialized, loading source...\n");
@@ -582,6 +870,25 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
             mpv_render_context_free(task->renderCtx);
             task->renderCtx = NULL;
         }
+    }
+
+    /* Clean up EGL / FBO / PBO resources (Wayland GPU path) */
+    if (task->eglInitialized) {
+        if (task->eglDisplay != EGL_NO_DISPLAY) {
+            eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            if (task->fbo) { glDeleteFramebuffers(1, &task->fbo); task->fbo = 0; }
+            if (task->glTexture) { glDeleteTextures(1, &task->glTexture); task->glTexture = 0; }
+            if (task->pbo[0]) { glDeleteBuffers(2, task->pbo); task->pbo[0] = 0; task->pbo[1] = 0; }
+            if (task->eglContext != EGL_NO_CONTEXT) {
+                eglDestroyContext(task->eglDisplay, task->eglContext);
+            }
+            eglTerminate(task->eglDisplay);
+        }
+        if (task->gbmDev) {
+            gbm_device_destroy(task->gbmDev);
+            task->gbmDev = NULL;
+        }
+        task->eglInitialized = 0;
     }
 
     if (task->mpv) {
@@ -775,6 +1082,55 @@ JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlay
         (unsigned char *)dst, dstW, dstH);
 
     (*env)->ReleaseByteArrayElements(env, dstBytes, dst, 0);
+    pthread_mutex_unlock(&task->frameMutex);
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setDirectBufferDst(
+    JNIEnv *env, jobject thiz, jlong handle,
+    jobject dstBuffer, jint dstW, jint dstH) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(handle);
+    if (!task) return;
+    if (dstBuffer) {
+        task->directDst = (unsigned char *)(*env)->GetDirectBufferAddress(env, dstBuffer);
+        task->directDstW = dstW;
+        task->directDstH = dstH;
+    } else {
+        task->directDst = NULL;
+        task->directDstW = 0;
+        task->directDstH = 0;
+    }
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrameDirect(
+    JNIEnv *env, jobject thiz, jlong handle,
+    jobject dstBuffer, jint dstW, jint dstH) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(handle);
+    if (!task || !task->alive) return JNI_FALSE;
+    if (task->gpuMode == 1) return JNI_FALSE;
+
+    unsigned char *dst = (unsigned char *)(*env)->GetDirectBufferAddress(env, dstBuffer);
+    if (!dst) return JNI_FALSE;
+
+    pthread_mutex_lock(&task->frameMutex);
+
+    int srcW = task->frameW;
+    int srcH = task->frameH;
+    int srcStride = task->frameStride;
+    char *src = task->frameData;
+
+    if (!task->frameReady || srcW <= 0 || srcH <= 0) {
+        pthread_mutex_unlock(&task->frameMutex);
+        return JNI_FALSE;
+    }
+    task->frameReady = 0;
+
+    letterbox_scale_rgba_to_bgra(
+        (unsigned char *)src, srcW, srcH, srcStride,
+        dst, dstW, dstH);
+
     pthread_mutex_unlock(&task->frameMutex);
     return JNI_TRUE;
 }

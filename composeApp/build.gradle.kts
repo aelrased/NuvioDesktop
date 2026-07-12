@@ -903,7 +903,10 @@ val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
             *extraCflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
             "-I${mpvInclude}",
             "-include", "stddef.h",
-            "-lm", "-lpthread",
+            "-lm", "-lpthread", "-ldl",
+            "-lmpv",
+            "-lEGL", "-lGL", "-lgbm", "-lX11", "-lGLX",
+            "-lwayland-client", "-lwayland-egl",
         )
     }
 }

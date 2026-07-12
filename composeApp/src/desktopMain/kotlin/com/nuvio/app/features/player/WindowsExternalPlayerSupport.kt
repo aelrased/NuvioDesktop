@@ -154,6 +154,8 @@ internal fun buildDesktopPlayerCommand(
         DesktopPlayerKind.Kodi -> buildKodiCommand(install.executablePath, request.copy(sourceUrl = url))
         DesktopPlayerKind.Iina -> buildMacosIinaCommand(install.executablePath, request.copy(sourceUrl = url))
         DesktopPlayerKind.PotPlayer -> buildPotPlayerCommand(install.executablePath, request.copy(sourceUrl = url))
+    DesktopPlayerKind.NuvioPlayer -> WindowsExternalPlayerCommandResult(null, "NuvioPlayer handles playback via HTTP API")
+    DesktopPlayerKind.Soia -> WindowsExternalPlayerCommandResult(null, "Soia handles playback via HTTP API")
     } }
     return DesktopPlayerCommandResult(cmd.command, cmd.failureReason, cmd.logFilePath)
 }
@@ -413,6 +415,10 @@ private fun DesktopPlayerKind.seekSupportNote(): String = when (this) {
         "IINA receives headers, resume, and mpv-passthrough flags from Nuvio"
     DesktopPlayerKind.PotPlayer ->
         "PotPlayer receives direct URL and seek position from Nuvio"
+    DesktopPlayerKind.NuvioPlayer ->
+        "NuvioPlayer handles playback via HTTP API"
+    DesktopPlayerKind.Soia ->
+        "Soia handles playback via HTTP API"
 }
 
 internal fun List<String>.redactExternalPlayerCommand(): List<String> =

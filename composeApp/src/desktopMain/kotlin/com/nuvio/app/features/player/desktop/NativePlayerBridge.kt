@@ -97,6 +97,10 @@ internal object NativePlayerBridge {
     // Linux-specific native methods
     external fun renderFrame(handle: Long, dstPixels: IntArray, dstW: Int, dstH: Int): Boolean
     external fun renderFrameBytes(handle: Long, dstBytes: ByteArray, dstW: Int, dstH: Int): Boolean
+    external fun renderFrameDirect(handle: Long, dstBuffer: java.nio.ByteBuffer, dstW: Int, dstH: Int): Boolean
+    external fun setDirectBufferDst(handle: Long, dstBuffer: java.nio.ByteBuffer?, dstW: Int, dstH: Int)
+    external fun renderFrameTexture(handle: Long, outSize: IntArray): Long
+    external fun captureSkiaEglContext()
     external fun resizeNativeView(handle: Long, width: Int, height: Int)
     external fun isWaylandSession(): Boolean
     external fun setProperty(handle: Long, name: String, value: String)

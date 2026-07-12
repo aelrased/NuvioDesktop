@@ -50,6 +50,7 @@ actual fun setDesktopBackHandler(handler: (() -> Unit)?) {
 
 private class DesktopKeepAwakeController : AutoCloseable {
     private var inhibitProcess: Process? = null
+    private var windowsDisplaySleepInhibited = false
 
     fun setEnabled(enabled: Boolean) {
         if (enabled) {
@@ -61,10 +62,15 @@ private class DesktopKeepAwakeController : AutoCloseable {
 
     private fun startInhibit() {
         if (inhibitProcess?.isAlive == true) return
+        if (windowsDisplaySleepInhibited) return
 
         inhibitProcess = when (DesktopHostOs.current) {
             DesktopHostOs.MACOS -> startMacOsInhibit()
             DesktopHostOs.LINUX -> startLinuxInhibit()
+            DesktopHostOs.WINDOWS -> {
+                setWindowsDisplaySleepInhibited(true)
+                null
+            }
             else -> null
         }
     }
@@ -84,6 +90,7 @@ private class DesktopKeepAwakeController : AutoCloseable {
 
     private fun startLinuxInhibit(): Process? {
         // Tier 1: systemd-inhibit (systemd / elogind / Devuan)
+        // The "sleep infinity" process blocks, keeping the inhibitor alive.
         runCatching {
             val process = ProcessBuilder(
                 "systemd-inhibit",
@@ -96,32 +103,51 @@ private class DesktopKeepAwakeController : AutoCloseable {
             if (process.isAlive) return process
         }
 
-        // Tier 2: D-Bus direct call to logind (any distro with logind running)
+        // Tier 2: busctl call to logind (newer systemd without systemd-inhibit)
         runCatching {
             val process = ProcessBuilder(
-                "dbus-send",
-                "--session",
-                "--type=method_call",
-                "--dest=org.freedesktop.login1",
+                "busctl",
+                "call",
+                "--user",
+                "org.freedesktop.login1",
                 "/org/freedesktop/login1",
-                "org.freedesktop.login1.Manager.Inhibit",
-                "string:sleep",
-                "string:Nuvio",
-                "string:Playing video",
-                "string:delay",
+                "org.freedesktop.login1.Manager",
+                "Inhibit",
+                "ssss",
+                "sleep",
+                "Nuvio",
+                "Playing video",
+                "delay",
             ).start()
             process.waitFor()
-            if (process.exitValue() == 0) return process
+            if (process.exitValue() == 0) {
+                // busctl exits immediately; re-inhibit periodically via a wrapper
+                val wrapper = ProcessBuilder(
+                    "bash", "-c",
+                    "while true; do busctl call --user org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager Inhibit ssss sleep Nuvio \"Playing video\" delay >/dev/null 2>&1; sleep 60; done",
+                ).start()
+                if (wrapper.isAlive) return wrapper
+            }
         }
 
-        // Tier 3: xdg-screensaver (X11 fallback)
+        // Tier 3: xdg-screensaver suspend (X11 only, needs window ID)
+        // On Wayland this is a no-op; systemd-inhibit above should have worked.
         runCatching {
-            val process = ProcessBuilder(
-                "xdg-screensaver",
-                "suspend",
-                "0",
-            ).start()
-            if (process.isAlive) return process
+            val display = System.getenv("DISPLAY")
+            if (!display.isNullOrBlank()) {
+                // Try to find the active window ID via xdotool
+                val xdotool = ProcessBuilder("xdotool", "getactivewindow").start()
+                val windowId = xdotool.inputStream.bufferedReader().readLine()?.trim()
+                xdotool.waitFor()
+                if (windowId != null && windowId.matches(Regex("\\d+"))) {
+                    val process = ProcessBuilder(
+                        "xdg-screensaver",
+                        "suspend",
+                        windowId,
+                    ).start()
+                    if (process.isAlive) return process
+                }
+            }
         }
 
         return null
@@ -132,6 +158,9 @@ private class DesktopKeepAwakeController : AutoCloseable {
             ?.takeIf(Process::isAlive)
             ?.destroy()
         inhibitProcess = null
+        if (windowsDisplaySleepInhibited) {
+            setWindowsDisplaySleepInhibited(false)
+        }
     }
 
     private fun setWindowsDisplaySleepInhibited(inhibited: Boolean) {

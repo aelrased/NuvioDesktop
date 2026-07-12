@@ -188,7 +188,7 @@ private fun LinuxWaylandPlayerSurface(
         } finally { /* coroutine cancelled on dispose */ }
     }
 
-    // Frame render loop
+    // Frame trigger loop (triggers Canvas redraw, rendering done in Canvas)
     LaunchedEffect(controller) {
         try {
             while (true) {
@@ -196,9 +196,7 @@ private fun LinuxWaylandPlayerSurface(
                 if (disposed) break
                 val size = surfaceSize
                 if (host.nativeHandle != 0L && size.width > 0 && size.height > 0) {
-                    if (host.renderFrame(size.width, size.height)) {
-                        frameTick++
-                    }
+                    frameTick++  // triggers Canvas redraw (rendering happens inside Canvas)
                 }
             }
         } finally { /* coroutine cancelled on dispose */ }
@@ -257,12 +255,20 @@ private fun LinuxWaylandPlayerSurface(
                 .fillMaxSize()
                 .onSizeChanged { surfaceSize = it },
         ) {
+            val nativeCanvas = drawContext.canvas.nativeCanvas
+
+            /* Render video frame */
+            if (!disposed && host.nativeHandle != 0L) {
+                host.renderFrame(size.width.toInt(), size.height.toInt())
+            }
+
+            frameTick
+
             frameTick // read to trigger recomposition
             if (!disposed) {
                 val skiaImage = host.latestImage
                 if (skiaImage != null && !skiaImage.isClosed) {
-                    val canvas = drawContext.canvas.nativeCanvas
-                    canvas.drawImageRect(
+                    nativeCanvas.drawImageRect(
                         skiaImage,
                         org.jetbrains.skia.Rect.makeWH(skiaImage.width.toFloat(), skiaImage.height.toFloat()),
                         org.jetbrains.skia.Rect.makeWH(size.width, size.height),
