@@ -354,7 +354,6 @@ private fun PlaybackSettingsSection(
                     SettingsNavigationRow(
                         title = stringResource(Res.string.settings_playback_player_preference),
                         description = when {
-                            autoPlayPlayerSettings.nuvioPlayerAsInternal -> "NuvioPlayer"
                             autoPlayPlayerSettings.externalPlayerEnabled -> stringResource(Res.string.settings_playback_player_preference_external)
                             else -> stringResource(Res.string.settings_playback_player_preference_internal)
                         },
@@ -1332,14 +1331,12 @@ private fun PlaybackSettingsSection(
     if (showExternalPlayerDialog) {
         val currentKind = when {
             autoPlayPlayerSettings.externalPlayerEnabled -> PlayerKind.EXTERNAL
-            autoPlayPlayerSettings.nuvioPlayerAsInternal -> PlayerKind.NUVIO
             else -> PlayerKind.INTERNAL
         }
         PlayerPreferenceDialog(
             currentKind = currentKind,
             onKindSelected = { kind ->
                 PlayerSettingsRepository.setExternalPlayerEnabled(kind == PlayerKind.EXTERNAL)
-                PlayerSettingsRepository.setNuvioPlayerAsInternal(kind == PlayerKind.NUVIO)
                 showExternalPlayerDialog = false
             },
             onDismiss = { showExternalPlayerDialog = false },
@@ -1583,7 +1580,7 @@ private data class LanguageSelectionOption(
     val description: String? = null,
 )
 
-private enum class PlayerKind { INTERNAL, NUVIO, EXTERNAL }
+private enum class PlayerKind { INTERNAL, EXTERNAL }
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1650,45 +1647,6 @@ private fun PlayerPreferenceDialog(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (currentKind == PlayerKind.INTERNAL) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // NuvioPlayer option
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onKindSelected(PlayerKind.NUVIO) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (currentKind == PlayerKind.NUVIO) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                        },
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "NuvioPlayer",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Box(
-                                modifier = Modifier.size(24.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (currentKind == PlayerKind.NUVIO) {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
                                         contentDescription = null,

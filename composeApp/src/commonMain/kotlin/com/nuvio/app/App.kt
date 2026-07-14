@@ -1535,56 +1535,6 @@ private fun MainAppContent(
             navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title))
         }
 
-        suspend fun openNuvioPlayerPlayback(launch: PlayerLaunch): Boolean {
-            val bingeGroup = launch.bingeGroup
-            if (bingeGroup != null && launch.parentMetaId.isNotBlank()) {
-                BingeGroupCacheRepository.save(launch.parentMetaId, bingeGroup)
-            }
-
-            val baseRequest = launch.toExternalPlayerPlaybackRequest()
-            val shouldForwardSubtitles = playerSettingsUiState.externalPlayerForwardSubtitles &&
-                !playerSettingsUiState.preferredSubtitleLanguage.equals(SubtitleLanguageOption.NONE, ignoreCase = true)
-            val shouldSendSkipSegments = playerSettingsUiState.externalPlayerSendSkipSegments
-            if (shouldForwardSubtitles) {
-                StreamsRepository.setOverlayVisible(true, getString(Res.string.streams_loading_subtitles))
-            } else if (shouldSendSkipSegments) {
-                StreamsRepository.setOverlayVisible(true, getString(Res.string.streams_loading_skip_segments))
-            }
-            val enrichedRequest = prepareExternalPlayerLaunch(
-                request = baseRequest,
-                type = launch.contentType ?: launch.parentMetaType,
-                videoId = launch.videoId ?: launch.parentMetaId,
-                forwardSubtitles = playerSettingsUiState.externalPlayerForwardSubtitles,
-                sendSkipSegments = shouldSendSkipSegments,
-                preferredLanguage = playerSettingsUiState.preferredSubtitleLanguage,
-                secondaryLanguage = playerSettingsUiState.secondaryPreferredSubtitleLanguage,
-                onOverlayMessage = { _ -> },
-            )
-            StreamsRepository.setOverlayVisible(false)
-            return when (
-                val intentResult = ExternalPlayerPlatform.buildIntent(
-                    request = enrichedRequest,
-                    playerId = "nuvio-player",
-                )
-            ) {
-                is ExternalPlayerIntentResult.Success -> {
-                    val launched = launchExternalPlayer(intentResult)
-                    if (!launched) {
-                        NuvioToastController.show(externalPlayerFailedText)
-                    }
-                    launched
-                }
-                ExternalPlayerIntentResult.NotConfigured -> {
-                    NuvioToastController.show(externalPlayerNotConfiguredText)
-                    false
-                }
-                ExternalPlayerIntentResult.Failed -> {
-                    NuvioToastController.show(externalPlayerFailedText)
-                    false
-                }
-            }
-        }
-
         fun openExternalStreamUrl(url: String): Boolean {
             val opened = runCatching {
                 uriHandler.openUri(url)
@@ -2865,14 +2815,6 @@ private fun MainAppContent(
                         if (!forceInternal && externalPlayerSupported && (forceExternal || playerSettings.externalPlayerEnabled)) {
                             streamRouteScope.launch {
                                 openExternalPlayback(playerLaunch)
-                                StreamsRepository.cancelLoading()
-                            }
-                            return
-                        }
-
-                        if (!forceExternal && playerSettings.nuvioPlayerAsInternal) {
-                            streamRouteScope.launch {
-                                openNuvioPlayerPlayback(playerLaunch)
                                 StreamsRepository.cancelLoading()
                             }
                             return

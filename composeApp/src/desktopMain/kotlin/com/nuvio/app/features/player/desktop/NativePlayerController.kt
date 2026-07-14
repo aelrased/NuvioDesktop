@@ -433,7 +433,12 @@ internal class NativePlayerController(
         host.nativeHandle = 0L
         lastSentControlsStructureKey = null
         if (current != 0L) {
-            runCatching { NativePlayerBridge.dispose(current) }
+            Thread({
+                runCatching { NativePlayerBridge.dispose(current) }
+            }, "nuvio-player-dispose").apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 

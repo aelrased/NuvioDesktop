@@ -33,7 +33,7 @@ release-assets/linux/*.AppImage.zsync
 release-assets/linux/*.deb
 WAYLAND_EGL_IMPLEMENTATION.md
 hs_err_pid*.log
-composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe
+composeApp/src/desktopMain/torrserver/windows-amd64/TorrServer.exe
 
 PERFORMANCE_FINDINGS.md
 

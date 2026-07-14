@@ -1,6 +1,5 @@
 package com.nuvio.app.features.player
 
-import kotlinx.coroutines.runBlocking
 import java.awt.Desktop
 import java.io.File
 import java.net.URI
@@ -24,10 +23,7 @@ internal actual object ExternalPlayerPlatform {
             ExternalPlayerApp(id = install.definition.id, name = install.definition.name)
         }
         
-        // Add NuvioPlayer to the list
-        val nuvioPlayer = ExternalPlayerApp("nuvio-player", "Nuvio Player")
-        
-        return listOf(ExternalPlayerApp(systemPlayerId, "System default"), nuvioPlayer) + detected
+        return listOf(ExternalPlayerApp(systemPlayerId, "System default")) + detected
     }
 
     actual fun open(
@@ -35,11 +31,6 @@ internal actual object ExternalPlayerPlatform {
         playerId: String?,
     ): ExternalPlayerOpenResult {
         val player = playerId?.takeIf { it != systemPlayerId }
-        
-        // Check if NuvioPlayer is selected
-        if (player == "nuvio-player" || player?.contains("nuvio", ignoreCase = true) == true) {
-            return openWithNuvioPlayer(request)
-        }
         
         if (player != null) {
             val install = detectedPlayers.firstOrNull { it.definition.id == player }
@@ -66,40 +57,6 @@ internal actual object ExternalPlayerPlatform {
         }
     }
     
-    private fun openWithNuvioPlayer(request: ExternalPlayerPlaybackRequest): ExternalPlayerOpenResult {
-        return try {
-            val result = runBlocking {
-                NuvioPlayerIntegration.sendPlaybackRequest(request)
-            }
-            
-            when (result) {
-                is NuvioPlayerResult.Success -> ExternalPlayerOpenResult.Opened
-                is NuvioPlayerResult.Failed -> {
-                    // Try to launch NuvioPlayer if not running
-                    val launched = runBlocking {
-                        NuvioPlayerIntegration.ensureRunning()
-                    }
-                    
-                    if (launched) {
-                        // Try again
-                        val retryResult = runBlocking {
-                            NuvioPlayerIntegration.sendPlaybackRequest(request)
-                        }
-                        
-                        when (retryResult) {
-                            is NuvioPlayerResult.Success -> ExternalPlayerOpenResult.Opened
-                            is NuvioPlayerResult.Failed -> ExternalPlayerOpenResult.Failed
-                        }
-                    } else {
-                        ExternalPlayerOpenResult.Failed
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            ExternalPlayerOpenResult.Failed
-        }
-    }
-
     actual fun buildIntent(
         request: ExternalPlayerPlaybackRequest,
         playerId: String?,

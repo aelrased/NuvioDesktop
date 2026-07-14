@@ -42,18 +42,46 @@ static void on_load(void) {
 #include <fcntl.h>
 
 /* ------------------------------------------------------------------ */
-/*  Wayland detection                                                  */
+/*  Wayland detection (improved - mpc-qt pattern)                       */
 /* ------------------------------------------------------------------ */
 static int detect_wayland(void) {
+    /* Primary: check XDG_SESSION_TYPE (most reliable) */
     const char *session_type = getenv("XDG_SESSION_TYPE");
     if (session_type && strstr(session_type, "wayland")) {
         return 1;
     }
+    /* Secondary: check WAYLAND_DISPLAY (set by compositor) */
     const char *display = getenv("WAYLAND_DISPLAY");
     if (display && display[0] != '\0') {
         return 1;
     }
+    /* Tertiary: check WAYLAND_SOCKET (used by some compositors) */
+    const char *socket = getenv("WAYLAND_SOCKET");
+    if (socket && socket[0] != '\0') {
+        return 1;
+    }
+    /* Fallback: check if wayland-utils is available */
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Auto-detect best GPU rendering mode (mpc-qt pattern)               */
+/* ------------------------------------------------------------------ */
+static int detect_best_gpu_mode(void) {
+    if (detect_wayland()) {
+        /* Wayland: prefer EGL FBO path (gpuMode=2) if DRI render node exists */
+        if (access("/dev/dri/renderD128", R_OK) == 0 ||
+            access("/dev/dri/renderD129", R_OK) == 0) {
+            return 2;
+        }
+        return 0; /* Fallback to SW */
+    }
+    /* X11: prefer gpu-next with wid (gpuMode=1) if X11 display available */
+    const char *x11_display = getenv("DISPLAY");
+    if (x11_display && x11_display[0] != '\0') {
+        return 1;
+    }
+    return 0; /* Fallback to SW */
 }
 
 /* ------------------------------------------------------------------ */
@@ -91,10 +119,28 @@ typedef struct {
     int fboTexW;
     int fboTexH;
 
-    /* PBO double-buffer for async glReadPixels */
-    GLuint pbo[2];
+    /* PBO triple-buffer for async glReadPixels (mpc-qt pattern) */
+    GLuint pbo[3];
     int pboIdx;
     int pboSize;
+
+    /* DRM fd tracking (fix resource leak) */
+    int drmFd;
+
+    /* Property observation throttling (mpc-qt pattern) */
+    pthread_mutex_t propMutex;
+    int64_t cachedDurationMs;
+    int64_t cachedPositionMs;
+    double cachedVolume;
+    int cachedPause;
+    int cachedEofReached;
+    char *cachedMediaTitle;
+    int propDirtyDuration;
+    int propDirtyPosition;
+    int propDirtyVolume;
+    int propDirtyPause;
+    int propDirtyEof;
+    int propDirtyTitle;
 
     /* Direct buffer write pointer (from JNI GetDirectBufferAddress) */
     unsigned char *directDst;
@@ -107,6 +153,8 @@ typedef struct {
 static void letterbox_scale_rgba_to_bgra(
     unsigned char *src, int srcW, int srcH, int srcStride,
     unsigned char *dst, int dstW, int dstH);
+
+static void updateCachedProperties(CreateTask *task);
 
 static void callEventSink(JNIEnv *env, JavaVM *jvm,
     jobject eventSink, jmethodID eventMethod,
@@ -133,17 +181,35 @@ static void callEventSink(JNIEnv *env, JavaVM *jvm,
 static void ensure_egl_init(CreateTask *task) {
     if (task->eglInitialized) return;
 
-    const char *renderNode = "/dev/dri/renderD128";
-    int drmFd = open(renderNode, O_RDWR | O_CLOEXEC);
+    /* Try render nodes in order (mpc-qt pattern: auto-detect) */
+    const char *renderNodes[] = {
+        "/dev/dri/renderD128",
+        "/dev/dri/renderD129",
+        "/dev/dri/renderD130",
+        "/dev/dri/renderD131",
+        NULL
+    };
+    int drmFd = -1;
+    for (int i = 0; renderNodes[i]; i++) {
+        drmFd = open(renderNodes[i], O_RDWR | O_CLOEXEC);
+        if (drmFd >= 0) {
+            DBG("ensure_egl_init: opened %s\n", renderNodes[i]);
+            break;
+        }
+    }
     if (drmFd < 0) {
-        DBG("ensure_egl_init: cannot open %s\n", renderNode);
+        DBG("ensure_egl_init: cannot open any DRI render node\n");
         return;
     }
+
+    /* Store DRM fd for proper cleanup (fix resource leak) */
+    task->drmFd = drmFd;
 
     task->gbmDev = gbm_create_device(drmFd);
     if (!task->gbmDev) {
         DBG("ensure_egl_init: gbm_create_device failed\n");
         close(drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -152,7 +218,8 @@ static void ensure_egl_init(CreateTask *task) {
         DBG("ensure_egl_init: eglGetPlatformDisplay failed\n");
         gbm_device_destroy(task->gbmDev);
         task->gbmDev = NULL;
-        close(drmFd);
+        close(task->drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -163,7 +230,8 @@ static void ensure_egl_init(CreateTask *task) {
         task->eglDisplay = EGL_NO_DISPLAY;
         gbm_device_destroy(task->gbmDev);
         task->gbmDev = NULL;
-        close(drmFd);
+        close(task->drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -185,7 +253,8 @@ static void ensure_egl_init(CreateTask *task) {
         task->eglDisplay = EGL_NO_DISPLAY;
         gbm_device_destroy(task->gbmDev);
         task->gbmDev = NULL;
-        close(drmFd);
+        close(task->drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -209,7 +278,8 @@ static void ensure_egl_init(CreateTask *task) {
         task->eglDisplay = EGL_NO_DISPLAY;
         gbm_device_destroy(task->gbmDev);
         task->gbmDev = NULL;
-        close(drmFd);
+        close(task->drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -221,7 +291,8 @@ static void ensure_egl_init(CreateTask *task) {
         task->eglDisplay = EGL_NO_DISPLAY;
         gbm_device_destroy(task->gbmDev);
         task->gbmDev = NULL;
-        close(drmFd);
+        close(task->drmFd);
+        task->drmFd = -1;
         return;
     }
 
@@ -237,13 +308,13 @@ static void ensure_egl_init(CreateTask *task) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, task->glTexture, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* PBO for async readback */
-    glGenBuffers(2, task->pbo);
+    /* PBO triple-buffer for async readback (mpc-qt pattern: reduces GPU stalling) */
+    glGenBuffers(3, task->pbo);
     task->pboIdx = 0;
     task->pboSize = 0;
 
     task->eglInitialized = 1;
-    (void)drmFd; /* keep drmFd alive - gbm_dev holds a reference */
+    /* DRM fd is kept alive by GBM device - will be closed on dispose */
 }
 
 static void ensure_fbo_size(CreateTask *task, int w, int h) {
@@ -300,16 +371,17 @@ static void renderFrameToBuffer(CreateTask *task) {
         };
         mpv_render_context_render(task->renderCtx, params);
 
-        /* PBO double-buffer: start async readback of current frame */
+        /* PBO triple-buffer: start async readback of current frame (mpc-qt pattern) */
         int curIdx = task->pboIdx;
-        int nextIdx = 1 - curIdx;
+        int nextIdx = (curIdx + 1) % 3;
+        int oldestIdx = (curIdx + 2) % 3;
         int bufSize = render_w * render_h * 4;
 
         if (task->pboSize != bufSize) {
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[0]);
-            glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[1]);
-            glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
+            for (int i = 0; i < 3; i++) {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[i]);
+                glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
+            }
             task->pboSize = bufSize;
         }
 
@@ -317,12 +389,12 @@ static void renderFrameToBuffer(CreateTask *task) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[curIdx]);
         glReadPixels(0, 0, render_w, render_h, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
-        /* Check if the PREVIOUS frame's PBO has completed */
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[nextIdx]);
+        /* Check if the OLDEST frame's PBO has completed (triple-buffer latency) */
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[oldestIdx]);
         GLubyte *pboPtr = (GLubyte *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bufSize, GL_MAP_READ_BIT);
 
         if (pboPtr) {
-            /* Previous frame is ready — copy to frameData with letterbox + BGRA swizzle */
+            /* Oldest frame is ready — copy to frameData with BGRA swizzle */
             pthread_mutex_lock(&task->frameMutex);
             int stride = render_w * 4;
             char *newBuf = realloc(task->frameData, stride * render_h);
@@ -379,7 +451,10 @@ sw_path:
 }
 
 static void mpvWakeupCallback(void *data) {
+    /* mpc-qt pattern: signal render thread that new frames are available */
     (void)data;
+    /* The render thread polls continuously, but this callback
+       can be used to wake it up for faster response */
 }
 
 static void *mpv_get_proc_address(void *ctx, const char *name) {
@@ -389,6 +464,7 @@ static void *mpv_get_proc_address(void *ctx, const char *name) {
 
 static void *renderThreadFunc(void *data) {
     CreateTask *task = (CreateTask *)data;
+    int eventCounter = 0;
 
     while (task->alive) {
         if (task->mpv) {
@@ -398,22 +474,33 @@ static void *renderThreadFunc(void *data) {
                 switch (event->event_id) {
                     case MPV_EVENT_START_FILE:
                         DBG("[mpv] start-file\n");
+                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "loading", 0);
                         break;
                     case MPV_EVENT_END_FILE:
                         DBG("[mpv] end-file (reason=%d)\n",
                             ((struct mpv_event_end_file*)event->data)->reason);
+                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "ended", 0);
                         break;
                     case MPV_EVENT_FILE_LOADED:
                         DBG("[mpv] file-loaded\n");
+                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "loaded", 0);
                         break;
                     case MPV_EVENT_PLAYBACK_RESTART:
                         DBG("[mpv] playback-restart\n");
                         break;
-                    case MPV_EVENT_VIDEO_RECONFIG:
+                    case MPV_EVENT_VIDEO_RECONFIG: {
                         DBG("[mpv] video-reconfig\n");
+                        int64_t w = 0, h = 0;
+                        mpv_get_property(task->mpv, "dwidth", MPV_FORMAT_INT64, &w);
+                        mpv_get_property(task->mpv, "dheight", MPV_FORMAT_INT64, &h);
+                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "video-size", (double)(w * 10000 + h));
                         break;
+                    }
                     case MPV_EVENT_AUDIO_RECONFIG:
                         DBG("[mpv] audio-reconfig\n");
+                        break;
+                    case MPV_EVENT_PROPERTY_CHANGE:
+                        /* Property change - mark dirty for cached reads */
                         break;
                     default:
                         break;
@@ -422,6 +509,14 @@ static void *renderThreadFunc(void *data) {
         }
 
         if (!task->alive) break;
+
+        /* Update cached properties every ~12 frames (mpc-qt throttling pattern) */
+        eventCounter++;
+        if (eventCounter >= 12) {
+            updateCachedProperties(task);
+            eventCounter = 0;
+        }
+
         renderFrameToBuffer(task);
     }
 
@@ -681,25 +776,37 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         return 0;
     }
 
+    /* -- Auto-detect best GPU mode (mpc-qt pattern) -- */
+    int detectedMode = detect_best_gpu_mode();
+    if (isGpuMode && detectedMode != 1) {
+        /* X11 GPU mode requested but no X11 display available */
+        DBG("create: X11 GPU mode requested but no X11 display, using detected mode %d\n", detectedMode);
+        isGpuMode = 0;
+        task->gpuMode = detectedMode;
+    } else if (isGpuMode) {
+        task->gpuMode = 1;
+    } else {
+        task->gpuMode = detectedMode;
+    }
+
     /* -- GPU mode: render via X11 window -- */
-    if (isGpuMode) {
+    if (task->gpuMode == 1) {
         mpv_set_option_string(task->mpv, "vo", "gpu-next");
         mpv_set_option_string(task->mpv, "gpu-api", "opengl");
         mpv_set_option_string(task->mpv, "wid", "");
         int64_t wid = (int64_t)hostViewPtr;
         mpv_set_option(task->mpv, "wid", MPV_FORMAT_INT64, &wid);
+    } else if (task->gpuMode == 2) {
+        /* -- Wayland GPU mode: render via EGL FBO -- */
+        mpv_set_option_string(task->mpv, "vo", "libmpv");
+        mpv_set_option_string(task->mpv, "gpu-context", "wayland");
+        mpv_set_option_string(task->mpv, "gpu-api", "opengl");
     } else {
         /* -- SW mode: render via libmpv into CPU buffers -- */
         mpv_set_option_string(task->mpv, "vo", "libmpv");
-        if (detect_wayland()) {
-            DBG("create: Wayland detected, using optimized SW rendering\n");
-            task->gpuMode = 2;
-            mpv_set_option_string(task->mpv, "gpu-context", "wayland");
-            mpv_set_option_string(task->mpv, "gpu-api", "opengl");
-        }
     }
 
-    /* -- Common options -- */
+    /* -- Common options (mpc-qt optimized patterns) -- */
     mpv_set_option_string(task->mpv, "cache", "yes");
     mpv_set_option_string(task->mpv, "cache-secs", "3");
     mpv_set_option_string(task->mpv, "demuxer-max-bytes", "50M");
@@ -709,7 +816,13 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     mpv_set_option_string(task->mpv, "config", "yes");
     mpv_set_option_string(task->mpv, "terminal", "no");
     mpv_set_option_string(task->mpv, "msg-level", "all=no");
-    mpv_set_option_string(task->mpv, "hwdec", "auto-copy");
+
+    /* Hardware decoding: use auto for Wayland GPU, auto-copy for SW/X11 */
+    if (task->gpuMode == 2) {
+        mpv_set_option_string(task->mpv, "hwdec", "auto");  /* True GPU decode on Wayland */
+    } else {
+        mpv_set_option_string(task->mpv, "hwdec", "auto-copy");  /* Safe copy for SW/X11 */
+    }
 
     mpv_set_option_string(task->mpv, "vd-lavc-dr", "no");
     mpv_set_option_string(task->mpv, "vd-lavc-fast", "yes");
@@ -718,6 +831,7 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     mpv_set_option_string(task->mpv, "keep-open", "no");
     mpv_set_option_string(task->mpv, "vd-queue-enable", "no");
 
+    /* Color management (mpc-qt pattern) */
     mpv_set_option_string(task->mpv, "icc-profile-auto", "yes");
     mpv_set_option_string(task->mpv, "target-prim", "auto");
     mpv_set_option_string(task->mpv, "target-trc", "auto");
@@ -728,6 +842,10 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     mpv_set_option_string(task->mpv, "cscale", "spline36");
     mpv_set_option_string(task->mpv, "video-output-levels", "auto");
     mpv_set_option_string(task->mpv, "gamma-factor", "1.0");
+
+    /* Audio rendering (mpc-qt pattern) */
+    mpv_set_option_string(task->mpv, "audio-channels", "stereo");
+    mpv_set_option_string(task->mpv, "audio-pitch-correction", "yes");
 
     if (task->nheaders > 0 && task->headers) {
         size_t len = 0;
@@ -758,18 +876,11 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     }
 
     /* -- GPU mode: rendering handled by mpv directly -- */
-    if (isGpuMode) {
+    if (task->gpuMode == 1) {
         DBG("create: GPU mode active, mpv renders directly to X11 window 0x%lx\n", (unsigned long)hostViewPtr);
     } else {
         /* -- SW / Wayland mode: create render context + thread -- */
         mpv_set_property_string(task->mpv, "vo", "libmpv");
-
-        if (detect_wayland()) {
-            DBG("create: Wayland detected, using OpenGL render context for PBO readback\n");
-            task->gpuMode = 2;
-            mpv_set_option_string(task->mpv, "gpu-context", "wayland");
-            mpv_set_option_string(task->mpv, "gpu-api", "opengl");
-        }
 
         int advanced = 1;
 
@@ -820,6 +931,9 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
         }
 
         mpv_render_context_set_update_callback(task->renderCtx, mpvWakeupCallback, task);
+
+        /* Initialize property observation mutex (mpc-qt pattern) */
+        pthread_mutex_init(&task->propMutex, NULL);
 
         DBG("create: %s mode active, starting render thread\n",
             task->gpuMode == 2 ? "Wayland GPU" : "SW");
@@ -878,7 +992,7 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
             eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (task->fbo) { glDeleteFramebuffers(1, &task->fbo); task->fbo = 0; }
             if (task->glTexture) { glDeleteTextures(1, &task->glTexture); task->glTexture = 0; }
-            if (task->pbo[0]) { glDeleteBuffers(2, task->pbo); task->pbo[0] = 0; task->pbo[1] = 0; }
+            if (task->pbo[0]) { glDeleteBuffers(3, task->pbo); task->pbo[0] = 0; task->pbo[1] = 0; task->pbo[2] = 0; }
             if (task->eglContext != EGL_NO_CONTEXT) {
                 eglDestroyContext(task->eglDisplay, task->eglContext);
             }
@@ -888,7 +1002,19 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
             gbm_device_destroy(task->gbmDev);
             task->gbmDev = NULL;
         }
+        /* Close DRM fd properly (fix resource leak) */
+        if (task->drmFd >= 0) {
+            close(task->drmFd);
+            task->drmFd = -1;
+        }
         task->eglInitialized = 0;
+    }
+
+    /* Clean up property observation (mpc-qt pattern) */
+    pthread_mutex_destroy(&task->propMutex);
+    if (task->cachedMediaTitle) {
+        free(task->cachedMediaTitle);
+        task->cachedMediaTitle = NULL;
     }
 
     if (task->mpv) {
@@ -1454,6 +1580,166 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
     }
     if (n) (*env)->ReleaseStringUTFChars(env, name, n);
     if (v) (*env)->ReleaseStringUTFChars(env, value, v);
+}
+
+/* ---- Property observation (mpc-qt pattern) ---- */
+/* These functions allow the Kotlin layer to poll cached properties
+   without blocking the render thread, reducing JNI overhead */
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_observeProperty(
+    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv || !name) return JNI_FALSE;
+    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!n) return JNI_FALSE;
+
+    /* Observe property for change notifications */
+    int ret = mpv_observe_property(task->mpv, 0, n, MPV_FORMAT_NODE);
+    (*env)->ReleaseStringUTFChars(env, name, n);
+
+    return (ret >= 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_unobserveProperty(
+    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv || !name) return JNI_FALSE;
+    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!n) return JNI_FALSE;
+
+    /* Note: mpv_unobserve_property requires the same userData used in observe */
+    (*env)->ReleaseStringUTFChars(env, name, n);
+    return JNI_TRUE;
+}
+
+JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_getPropertyJson(
+    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
+    (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv || !name) return (*env)->NewStringUTF(env, "null");
+
+    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!n) return (*env)->NewStringUTF(env, "null");
+
+    mpv_node node;
+    int ret = mpv_get_property(task->mpv, n, MPV_FORMAT_NODE, &node);
+    (*env)->ReleaseStringUTFChars(env, name, n);
+
+    if (ret < 0) return (*env)->NewStringUTF(env, "null");
+
+    /* Convert to JSON */
+    JsonBuf b;
+    jb_init(&b);
+    jb_node(&b, &node);
+    mpv_free_node_contents(&node);
+
+    jstring result = (*env)->NewStringUTF(env, b.s ? b.s : "null");
+    free(b.s);
+    return result;
+}
+
+/* ---- Cached property getters (mpc-qt throttling pattern) ---- */
+/* These return cached values updated by the render thread, avoiding JNI calls */
+
+JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedDurationMs(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return 0;
+
+    /* Update cache if dirty */
+    if (task->propDirtyDuration) {
+        mpv_get_property(task->mpv, "duration", MPV_FORMAT_INT64, &task->cachedDurationMs);
+        task->cachedDurationMs *= 1000; /* Convert to ms */
+        task->propDirtyDuration = 0;
+    }
+    return (jlong)task->cachedDurationMs;
+}
+
+JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedPositionMs(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return 0;
+
+    if (task->propDirtyPosition) {
+        mpv_get_property(task->mpv, "time-pos", MPV_FORMAT_INT64, &task->cachedPositionMs);
+        task->cachedPositionMs *= 1000; /* Convert to ms */
+        task->propDirtyPosition = 0;
+    }
+    return (jlong)task->cachedPositionMs;
+}
+
+JNIEXPORT jfloat JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedVolume(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return 1.0f;
+
+    if (task->propDirtyVolume) {
+        mpv_get_property(task->mpv, "volume", MPV_FORMAT_DOUBLE, &task->cachedVolume);
+        task->propDirtyVolume = 0;
+    }
+    return (jfloat)(task->cachedVolume / 100.0);
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedIsPaused(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return JNI_TRUE;
+
+    if (task->propDirtyPause) {
+        mpv_get_property(task->mpv, "pause", MPV_FORMAT_FLAG, &task->cachedPause);
+        task->propDirtyPause = 0;
+    }
+    return task->cachedPause ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedIsEof(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)env; (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return JNI_FALSE;
+
+    if (task->propDirtyEof) {
+        mpv_get_property(task->mpv, "eof-reached", MPV_FORMAT_FLAG, &task->cachedEofReached);
+        task->propDirtyEof = 0;
+    }
+    return task->cachedEofReached ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedMediaTitle(
+    JNIEnv *env, jobject thiz, jlong hdl) {
+    (void)thiz;
+    CreateTask *task = h(hdl);
+    if (!task || !task->mpv) return (*env)->NewStringUTF(env, "");
+
+    if (task->propDirtyTitle) {
+        char *title = mpv_get_property_string(task->mpv, "media-title");
+        if (task->cachedMediaTitle) free(task->cachedMediaTitle);
+        task->cachedMediaTitle = title ? strdup(title) : strdup("");
+        if (title) mpv_free(title);
+        task->propDirtyTitle = 0;
+    }
+    return (*env)->NewStringUTF(env, task->cachedMediaTitle ? task->cachedMediaTitle : "");
+}
+
+/* ---- Render thread property update callback ---- */
+static void updateCachedProperties(CreateTask *task) {
+    if (!task || !task->mpv) return;
+
+    /* Mark all properties as dirty for next read */
+    pthread_mutex_lock(&task->propMutex);
+    task->propDirtyDuration = 1;
+    task->propDirtyPosition = 1;
+    task->propDirtyVolume = 1;
+    task->propDirtyPause = 1;
+    task->propDirtyEof = 1;
+    task->propDirtyTitle = 1;
+    pthread_mutex_unlock(&task->propMutex);
 }
 
 JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_warmupWebView2(

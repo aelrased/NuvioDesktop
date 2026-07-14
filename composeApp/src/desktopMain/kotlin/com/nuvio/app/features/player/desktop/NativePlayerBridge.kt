@@ -105,6 +105,19 @@ internal object NativePlayerBridge {
     external fun isWaylandSession(): Boolean
     external fun setProperty(handle: Long, name: String, value: String)
 
+    // Property observation (mpc-qt pattern)
+    external fun observeProperty(handle: Long, name: String): Boolean
+    external fun unobserveProperty(handle: Long, name: String): Boolean
+    external fun getPropertyJson(handle: Long, name: String): String
+
+    // Cached property getters (mpc-qt throttling pattern)
+    external fun cachedDurationMs(handle: Long): Long
+    external fun cachedPositionMs(handle: Long): Long
+    external fun cachedVolume(handle: Long): Float
+    external fun cachedIsPaused(handle: Long): Boolean
+    external fun cachedIsEof(handle: Long): Boolean
+    external fun cachedMediaTitle(handle: Long): String
+
     val controlsPageUrl: String by lazy { controlsPageAssets.url }
     private val controlsPageAssets: ControlsPageAssets by lazy { exportControlsPageAssets() }
 

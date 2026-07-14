@@ -979,19 +979,31 @@ val generateLinuxPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexT
 val torrserverOutputDir = layout.buildDirectory.dir("native/torrserver")
 
 val downloadTorrserver = tasks.register("downloadTorrserver") {
-    enabled = isLinuxHost
+    val sourceBinary = project.file("src/desktopMain/torrserver/linux-amd64/TorrServer")
     val outputFile = torrserverOutputDir.get().file("torrserver").asFile
+    inputs.file(sourceBinary)
     outputs.file(outputFile)
     doLast {
         outputFile.parentFile.mkdirs()
-        val url = URL("https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64")
-        logger.lifecycle("Downloading TorrServer for Linux from $url")
+        sourceBinary.copyTo(outputFile, overwrite = true)
+        outputFile.setExecutable(true)
+        logger.lifecycle("Copied TorrServer for Linux from ${sourceBinary.absolutePath} to ${outputFile.absolutePath}")
+    }
+}
+
+val downloadTorrserverWindows = tasks.register("downloadTorrserverWindows") {
+    enabled = isWindowsHost
+    val outputFile = torrserverOutputDir.get().file("torrserver.exe").asFile
+    outputs.file(outputFile)
+    doLast {
+        outputFile.parentFile.mkdirs()
+        val url = URL("https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-windows-amd64.exe")
+        logger.lifecycle("Downloading TorrServer for Windows from $url")
         url.openStream().use { input ->
             outputFile.outputStream().use { output ->
                 input.copyTo(output)
             }
         }
-        outputFile.setExecutable(true)
         logger.lifecycle("TorrServer downloaded to ${outputFile.absolutePath}")
     }
 }
@@ -1022,12 +1034,15 @@ tasks.withType<Jar>().configureEach {
         }
     }
     if (isWindowsHost && name == "desktopJar") {
-        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
+        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex, downloadTorrserverWindows)
         from(windowsPlayerBridgeOutput) {
             into("native/windows")
         }
         from(windowsPlayerRuntimeOutput) {
             into("native/windows")
+        }
+        from(torrserverOutputDir) {
+            into("native/torrserver")
         }
     }
     if (isLinuxHost && name == "desktopJar") {
@@ -1082,7 +1097,7 @@ tasks.withType<ProcessResources>().matching { it.name == "desktopProcessResource
 }
 if (isWindowsHost) {
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
-        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
+        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex, downloadTorrserverWindows)
     }
 }
 if (isLinuxHost) {
