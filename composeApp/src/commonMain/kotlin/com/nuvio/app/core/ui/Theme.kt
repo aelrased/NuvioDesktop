@@ -27,6 +27,10 @@ import org.jetbrains.compose.resources.Font
 
 val LocalAppTheme = staticCompositionLocalOf { AppTheme.WHITE }
 
+internal val LocalNuvioPlatformDensity = staticCompositionLocalOf<Density> {
+    error("Platform density is unavailable outside NuvioTheme")
+}
+
 val MaterialTheme.appTheme: AppTheme
     @Composable
     @ReadOnlyComposable
@@ -221,6 +225,7 @@ fun NuvioTheme(
         NuvioDesktopMinUiScale
     }
     CompositionLocalProvider(
+        LocalNuvioPlatformDensity provides density,
         LocalDensity provides Density(
             density = density.density * effectiveDesktopUiScale,
             fontScale = if (isDesktop) NuvioDesktopFontScale else 1f,

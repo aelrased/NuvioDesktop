@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
@@ -26,7 +27,10 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.platform.LocalDensity
+
 import androidx.compose.ui.unit.dp
+import com.nuvio.app.core.ui.LocalNuvioPlatformDensity
 import com.nuvio.app.features.player.desktop.DesktopHostOs
 import com.nuvio.app.features.player.desktop.DesktopPlayerLaunchShield
 import com.nuvio.app.features.player.desktop.NativePlayerController
@@ -303,6 +307,7 @@ private fun NativePlayerSurface(
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
 ) {
+    val platformDensity = LocalNuvioPlatformDensity.current
     val host = remember { NativePlayerHost() }
     val controller = remember(host) { NativePlayerController(host) }
     val hostFirstPaintComplete = remember { mutableStateOf(false) }
@@ -407,17 +412,21 @@ private fun NativePlayerSurface(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        SwingPanel(
-            factory = { host },
-            modifier = if (hostFirstPaintComplete.value) {
-                Modifier.fillMaxSize()
-            } else {
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .requiredSize(1.dp)
-            },
-            background = Color.Black,
-        )
+        CompositionLocalProvider(LocalDensity provides platformDensity) {
+            SwingPanel(
+                factory = {
+                    host
+                },
+                modifier = if (hostFirstPaintComplete.value) {
+                    Modifier.fillMaxSize()
+                } else {
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .requiredSize(1.dp)
+                },
+                background = Color.Black,
+            )
+        }
     }
 }
 
