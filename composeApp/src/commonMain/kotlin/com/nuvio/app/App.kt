@@ -2081,7 +2081,10 @@ private fun MainAppContent(
                                         onCloudFilePlay = { item, file ->
                                             coroutineScope.launch {
                                                 val resumeItem = WatchProgressRepository
-                                                    .progressForVideo(item.playbackVideoId(file))
+                                                    .progressForVideo(
+                                                        videoId = item.playbackVideoId(file),
+                                                        parentMetaId = item.id,
+                                                    )
                                                     ?.takeIf { it.isResumable }
                                                     ?.toContinueWatchingItem()
                                                 if (
