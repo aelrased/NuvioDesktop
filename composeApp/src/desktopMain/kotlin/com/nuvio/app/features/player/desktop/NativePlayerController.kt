@@ -121,7 +121,7 @@ internal class NativePlayerController(
     private fun attachPending() {
         val pending = pendingSource ?: return
         SwingUtilities.invokeLater {
-            if (!host.isDisplayable) {
+            if ((host as? java.awt.Component)?.isDisplayable != true) {
                 return@invokeLater
             }
             disposePlayerHandle()
@@ -137,7 +137,7 @@ internal class NativePlayerController(
             Thread({
                 runCatching { teardown.join(TEARDOWN_WAIT_MS) }
                 SwingUtilities.invokeLater {
-                    if (host.isDisplayable && pendingSource === pending) {
+                    if ((host as? java.awt.Component)?.isDisplayable == true && pendingSource === pending) {
                         createPlayer(pending)
                     }
                 }
@@ -150,7 +150,7 @@ internal class NativePlayerController(
 
     private fun createPlayer(pending: PendingSource) {
         // Resolving the AWT peer must happen on the EDT; everything after it must not.
-        val hostViewPtr = runCatching { AwtNativeViewResolver.resolveNativeViewPointer(host) }
+        val hostViewPtr = runCatching { AwtNativeViewResolver.resolveNativeViewPointer(host as java.awt.Component) }
             .getOrElse { error ->
                 log.w(error) { "attach failed to resolve host source=${pending.sourceUrl.toPlaybackLogKey()}" }
                 pending.onError(error.message)
@@ -185,7 +185,7 @@ internal class NativePlayerController(
                 ).also { if (it == 0L) error("Native player did not return a handle.") }
             }.onSuccess { created ->
                 SwingUtilities.invokeLater {
-                    if (pendingSource !== pending || !host.isDisplayable) {
+                    if (pendingSource !== pending || (host as? java.awt.Component)?.isDisplayable != true) {
                         // Superseded while we were initialising; drop it rather than leak it.
                         Thread({ runCatching { NativePlayerBridge.dispose(created) } }, "nuvio-player-dispose")
                             .apply { isDaemon = true }.start()

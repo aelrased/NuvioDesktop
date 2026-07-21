@@ -12,6 +12,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
 import java.awt.image.BufferedImage
+import javax.swing.SwingUtilities
 import javax.swing.Timer
 
 private val usesSoftwareRendering: Boolean
@@ -102,6 +103,30 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
                 noteCursorActivity()
             }
         })
+        if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+            addComponentListener(object : ComponentAdapter() {
+                override fun componentResized(event: ComponentEvent) {
+                    notifyReadyIfSized()
+                }
+
+                override fun componentShown(event: ComponentEvent) {
+                    notifyReadyIfSized()
+                }
+            })
+        }
+    }
+
+    private fun notifyReadyIfSized() {
+        if (firstFullSizePaintNotified || width <= 1 || height <= 1) return
+        SwingUtilities.invokeLater {
+            if (!isDisplayable || firstFullSizePaintNotified || width <= 1 || height <= 1) return@invokeLater
+            if (!firstPaintNotified) {
+                firstPaintNotified = true
+                onFirstPaint?.invoke()
+            }
+            firstFullSizePaintNotified = true
+            onFirstFullSizePaint?.invoke()
+        }
     }
 
     override fun setControlsVisible(visible: Boolean) {
@@ -204,6 +229,14 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
         onDisplayableChanged?.invoke(true)
         repaint()
         onPeerReady?.invoke()
+        if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+            SwingUtilities.invokeLater {
+                if (!isDisplayable || firstPaintNotified) return@invokeLater
+                firstPaintNotified = true
+                onFirstPaint?.invoke()
+                notifyReadyIfSized()
+            }
+        }
     }
 
     override fun removeNotify() {

@@ -877,41 +877,6 @@ val buildWindowsPlayerBridge = tasks.register<Exec>("buildWindowsPlayerBridge") 
 
 val linuxPlayerRuntimeSource = layout.projectDirectory.dir("src/desktopMain/native/linux/live")
 val linuxPlayerRuntimeOutput = layout.buildDirectory.dir("native/linux-runtime")
-val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
-val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
-if (isLinuxHost) {
-    linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
-}
-val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
-val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
-    notCompatibleWithConfigurationCache("Builds a host-local player bridge for Linux.")
-    enabled = isLinuxHost
-    inputs.file(linuxPlayerBridgeSource)
-    outputs.file(linuxPlayerBridgeOutput)
-    doFirst {
-        val javaHome = linuxPlayerBridgeJavaHome
-        val javaIncludes = "-I${javaHome}/include -I${javaHome}/include/linux"
-        val linuxCc = providers.gradleProperty("linuxCc").getOrElse("gcc")
-        val extraCflags = providers.gradleProperty("linuxCflags").getOrElse("")
-        val mpvInclude = providers.gradleProperty("mpvInclude").getOrElse("/usr/include")
-        val sourceFile = linuxPlayerBridgeSource.asFile
-        val outputFile = linuxPlayerBridgeOutput.get().asFile
-        commandLine(
-            linuxCc, "-shared", "-fPIC",
-            "-Wl,-rpath,'\$ORIGIN'",
-            "-o", outputFile.absolutePath,
-            sourceFile.absolutePath,
-            *javaIncludes.split(" ").filter { it.isNotBlank() }.toTypedArray(),
-            *extraCflags.split(" ").filter { it.isNotBlank() }.toTypedArray(),
-            "-I${mpvInclude}",
-            "-include", "stddef.h",
-            "-lm", "-lpthread", "-ldl",
-            "-lmpv",
-            "-lEGL", "-lGL", "-lgbm", "-lX11", "-lGLX",
-            "-lwayland-client", "-lwayland-egl",
-        )
-    }
-}
 
 val prepareWindowsPlayerRuntime = tasks.register<Sync>("prepareWindowsPlayerRuntime") {
     enabled = isWindowsHost
@@ -940,6 +905,44 @@ val generateWindowsPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeInde
     dependsOn(prepareWindowsPlayerRuntime)
     runtimeDir.set(windowsPlayerRuntimeOutput)
     indexFile.set(windowsPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
+}
+
+val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
+val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
+val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
+val linuxPlayerBridgePkgConfigLibs = listOf("mpv", "x11", "gtk+-3.0", "webkit2gtk-4.1", "epoxy")
+if (isLinuxHost) {
+    linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
+}
+val linuxPlayerBridgeCommand = run {
+    val sourceFile = linuxPlayerBridgeSource.asFile
+    val outputFile = linuxPlayerBridgeOutput.get().asFile
+    listOf(
+        "/bin/sh",
+        "-c",
+        """
+        set -eu
+        if ! pkg-config --exists ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")}; then
+          echo "Linux desktop player bridge requires libmpv, libX11, gtk+-3.0, webkit2gtk-4.1 and epoxy development packages discoverable via pkg-config (e.g. libmpv-dev, libgtk-3-dev, libwebkit2gtk-4.1-dev, libepoxy-dev)." >&2
+          exit 1
+        fi
+        PKG_CFLAGS="${'$'}(pkg-config --cflags ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")})"
+        PKG_LIBS="${'$'}(pkg-config --libs ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")})"
+        exec gcc -shared -fPIC \
+          ${shellQuote(sourceFile.absolutePath)} \
+          -o ${shellQuote(outputFile.absolutePath)} \
+          -I${shellQuote("$linuxPlayerBridgeJavaHome/include")} \
+          -I${shellQuote("$linuxPlayerBridgeJavaHome/include/linux")} \
+          ${'$'}PKG_CFLAGS ${'$'}PKG_LIBS
+        """.trimIndent(),
+    )
+}
+val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
+    notCompatibleWithConfigurationCache("Builds a host-local player bridge against system libmpv/GTK/WebKitGTK for Linux.")
+    enabled = isLinuxHost
+    inputs.file(linuxPlayerBridgeSource)
+    outputs.file(linuxPlayerBridgeOutput)
+    commandLine(linuxPlayerBridgeCommand)
 }
 
 abstract class GenerateNativeRuntimeIndexTask : DefaultTask() {
@@ -1105,6 +1108,32 @@ if (isWindowsHost) {
 if (isLinuxHost) {
     tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
         dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex, downloadTorrserver)
+    }
+}
+
+if (isLinuxHost) {
+    val desktopNativePlayerTasks = setOf(
+        "run",
+        "runRelease",
+        "desktopRun",
+        "runDistributable",
+        "runReleaseDistributable",
+        "desktopRunHot",
+        "hotRunDesktop",
+        "hotRunDesktopAsync",
+        "hotDevDesktop",
+        "hotDevDesktopAsync",
+        "createDistributable",
+        "createReleaseDistributable",
+        "createRuntimeImage",
+        "package",
+        "packageDistributionForCurrentOS",
+        "packageUberJarForCurrentOS",
+        "packageReleaseDistributionForCurrentOS",
+        "packageReleaseUberJarForCurrentOS",
+    )
+    tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
+        dependsOn(buildLinuxPlayerBridge)
     }
 }
 
@@ -1297,6 +1326,7 @@ compose.desktop {
             "--add-opens=java.desktop/sun.lwawt.macosx=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
             smokePlayerUrl?.takeIf { it.isNotBlank() }?.let { "-Dnuvio.desktop.smokePlayerUrl=$it" },
             // ── Memory management ──
             "-Xms256m",

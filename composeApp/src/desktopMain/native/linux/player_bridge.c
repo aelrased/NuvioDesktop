@@ -1,712 +1,554 @@
 #define _GNU_SOURCE
 #include <jni.h>
 #include <mpv/client.h>
-#include <mpv/render.h>
+#include <mpv/render_gl.h>
+#include <gtk/gtk.h>
+#include <gdk/gdkx.h>
+#include <webkit2/webkit2.h>
+#include <X11/Xlib.h>
+#include <GL/glx.h>
+#include <EGL/egl.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <inttypes.h>
-#include <pthread.h>
-#include <math.h>
 #include <locale.h>
 #include <unistd.h>
-#include <stdarg.h>
+#include <stdint.h>
+#include <math.h>
+#include <limits.h>
+#include <errno.h>
+#include <time.h>
 
-/* ------------------------------------------------------------------ */
-/*  Debug logging                                                      */
-/* ------------------------------------------------------------------ */
-#define DBG(...)  do { \
-    fprintf(stderr, "[player_bridge] " __VA_ARGS__); \
-    fflush(stderr); \
-} while (0)
+static pthread_once_t gGtkThreadOnce = PTHREAD_ONCE_INIT;
 
-__attribute__((constructor))
-static void on_load(void) {
-    fprintf(stderr, "[player_bridge] CONSTRUCTOR: .so loaded (built %s %s)\n",
-            __DATE__, __TIME__);
+static void *gtkThreadMain(void *arg) {
+    (void)arg;
+    setenv("GDK_BACKEND", "x11", 1);
+    setenv("GDK_DEBUG", "no-vsync", 1);
+    int argc = 0;
+    gtk_init(&argc, NULL);
+    gtk_main();
+    return NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/*  EGL / GBM / OpenGL ES includes for Wayland GPU rendering           */
-/* ------------------------------------------------------------------ */
-#include <EGL/egl.h>
-#include <EGL/eglplatform.h>
-#include <EGL/eglext.h>
-#include <GLES2/gl2.h>
-#include <GLES2/gl2ext.h>
-#include <GLES3/gl3.h>
-#include <GLES3/gl31.h>
-#include <mpv/render_gl.h>
-#include <gbm.h>
-#include <fcntl.h>
-
-/* ------------------------------------------------------------------ */
-/*  Wayland detection (improved - mpc-qt pattern)                       */
-/* ------------------------------------------------------------------ */
-static int detect_wayland(void) {
-    /* Primary: check XDG_SESSION_TYPE (most reliable) */
-    const char *session_type = getenv("XDG_SESSION_TYPE");
-    if (session_type && strstr(session_type, "wayland")) {
-        return 1;
+static void startGtkThreadOnce(void) {
+    XInitThreads();
+    pthread_t thread;
+    pthread_create(&thread, NULL, gtkThreadMain, NULL);
+    pthread_detach(thread);
+    while (!gtk_init_check(NULL, NULL) && gdk_display_get_default() == NULL) {
+        usleep(2000);
     }
-    /* Secondary: check WAYLAND_DISPLAY (set by compositor) */
-    const char *display = getenv("WAYLAND_DISPLAY");
-    if (display && display[0] != '\0') {
-        return 1;
-    }
-    /* Tertiary: check WAYLAND_SOCKET (used by some compositors) */
-    const char *socket = getenv("WAYLAND_SOCKET");
-    if (socket && socket[0] != '\0') {
-        return 1;
-    }
-    /* Fallback: check if wayland-utils is available */
-    return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Auto-detect best GPU rendering mode (mpc-qt pattern)               */
-/* ------------------------------------------------------------------ */
-static int detect_best_gpu_mode(void) {
-    if (detect_wayland()) {
-        /* Wayland: prefer EGL FBO path (gpuMode=2) if DRI render node exists */
-        if (access("/dev/dri/renderD128", R_OK) == 0 ||
-            access("/dev/dri/renderD129", R_OK) == 0) {
-            return 2;
-        }
-        return 0; /* Fallback to SW */
+static void ensureGtkThread(void) {
+    pthread_once(&gGtkThreadOnce, startGtkThreadOnce);
+    while (gdk_display_get_default() == NULL) {
+        usleep(2000);
     }
-    /* X11: prefer gpu-next with wid (gpuMode=1) if X11 display available */
-    const char *x11_display = getenv("DISPLAY");
-    if (x11_display && x11_display[0] != '\0') {
-        return 1;
-    }
-    return 0; /* Fallback to SW */
 }
 
-/* ------------------------------------------------------------------ */
-/*  Per-instance state                                                 */
-/* ------------------------------------------------------------------ */
+typedef struct {
+    void (*fn)(void *arg);
+    void *arg;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int done;
+    int abandoned;
+} GtkSyncTask;
+
+static gboolean gtkSyncTaskTrampoline(gpointer data) {
+    GtkSyncTask *task = (GtkSyncTask *)data;
+    pthread_mutex_lock(&task->mutex);
+    if (task->abandoned) {
+        pthread_mutex_unlock(&task->mutex);
+        pthread_mutex_destroy(&task->mutex);
+        pthread_cond_destroy(&task->cond);
+        free(task);
+        return G_SOURCE_REMOVE;
+    }
+    pthread_mutex_unlock(&task->mutex);
+
+    task->fn(task->arg);
+
+    pthread_mutex_lock(&task->mutex);
+    task->done = 1;
+    pthread_cond_signal(&task->cond);
+    pthread_mutex_unlock(&task->mutex);
+    return G_SOURCE_REMOVE;
+}
+
+static int runOnGtkThreadSyncTimeout(void (*fn)(void *arg), void *arg, int timeoutMs) {
+    GtkSyncTask *task = malloc(sizeof(GtkSyncTask));
+    task->fn = fn;
+    task->arg = arg;
+    task->done = 0;
+    task->abandoned = 0;
+    pthread_mutex_init(&task->mutex, NULL);
+    pthread_cond_init(&task->cond, NULL);
+    g_idle_add(gtkSyncTaskTrampoline, task);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeoutMs / 1000;
+    ts.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+
+    pthread_mutex_lock(&task->mutex);
+    int result = 0;
+    while (!task->done) {
+        int rc = pthread_cond_timedwait(&task->cond, &task->mutex, &ts);
+        if (rc == ETIMEDOUT) break;
+    }
+    result = task->done;
+    if (!result) task->abandoned = 1;
+    pthread_mutex_unlock(&task->mutex);
+
+    if (result) {
+        pthread_mutex_destroy(&task->mutex);
+        pthread_cond_destroy(&task->cond);
+        free(task);
+    }
+    return result;
+}
+
+static void runOnGtkThreadSync(void (*fn)(void *arg), void *arg) {
+    runOnGtkThreadSyncTimeout(fn, arg, 10000);
+}
+
+typedef struct {
+    void (*fn)(void *arg);
+    void *arg;
+} GtkAsyncTask;
+
+static gboolean gtkAsyncTaskTrampoline(gpointer data) {
+    GtkAsyncTask *task = (GtkAsyncTask *)data;
+    task->fn(task->arg);
+    free(task);
+    return G_SOURCE_REMOVE;
+}
+
+static void runOnGtkThreadAsync(void (*fn)(void *arg), void *arg) {
+    GtkAsyncTask *task = malloc(sizeof(GtkAsyncTask));
+    task->fn = fn;
+    task->arg = arg;
+    g_idle_add(gtkAsyncTaskTrampoline, task);
+}
+
+static void runOnGtkThreadAsyncPriority(void (*fn)(void *arg), void *arg, gint priority) {
+    GtkAsyncTask *task = malloc(sizeof(GtkAsyncTask));
+    task->fn = fn;
+    task->arg = arg;
+    g_idle_add_full(priority, gtkAsyncTaskTrampoline, task, NULL);
+}
+
 typedef struct {
     JavaVM *jvm;
     jobject eventSink;
     jmethodID eventMethod;
+
     mpv_handle *mpv;
     mpv_render_context *renderCtx;
-    char *sourceUrl;
-    char **headers;
-    int nheaders;
-    volatile int alive;
-    int gpuMode; /* 0 = SW rendering, 1 = vo=gpu-next with X11 wid, 2 = Wayland GPU (EGL FBO + PBO) */
+    atomic_int alive;
+    pthread_t eventThread;
+    pthread_t resizeThread;
 
-    /* only used in SW mode */
-    pthread_t renderThread;
-    pthread_mutex_t frameMutex;
-    int frameW;
-    int frameH;
-    int frameStride;
-    char *frameData;
-    volatile int frameReady;
+    Window hostXid;
+    GtkWidget *window;
+    GtkWidget *glArea;
+    WebKitWebView *webView;
+    atomic_int controlsWebReady;
 
-    /* EGL / FBO / PBO state for Wayland GPU path (gpuMode==2) */
-    int eglInitialized;
-    struct gbm_device *gbmDev;
-    EGLDisplay eglDisplay;
-    EGLContext eglContext;
-    EGLSurface eglSurface;
-    GLuint fbo;
-    GLuint glTexture;
-    int fboTexW;
-    int fboTexH;
+    pthread_mutex_t controlsMutex;
+    char *pendingControlsJson;
+} LinuxPlayer;
 
-    /* PBO triple-buffer for async glReadPixels (mpc-qt pattern) */
-    GLuint pbo[3];
-    int pboIdx;
-    int pboSize;
+static LinuxPlayer *gPlayer = NULL;
+static pthread_mutex_t gPlayerMutex = PTHREAD_MUTEX_INITIALIZER;
 
-    /* DRM fd tracking (fix resource leak) */
-    int drmFd;
-
-    /* Property observation throttling (mpc-qt pattern) */
-    pthread_mutex_t propMutex;
-    int64_t cachedDurationMs;
-    int64_t cachedPositionMs;
-    double cachedVolume;
-    int cachedPause;
-    int cachedEofReached;
-    char *cachedMediaTitle;
-    int propDirtyDuration;
-    int propDirtyPosition;
-    int propDirtyVolume;
-    int propDirtyPause;
-    int propDirtyEof;
-    int propDirtyTitle;
-
-    /* Direct buffer write pointer (from JNI GetDirectBufferAddress) */
-    unsigned char *directDst;
-    int directDstW;
-    int directDstH;
-
-} CreateTask;
-
-/* Forward declarations */
-static void letterbox_scale_rgba_to_bgra(
-    unsigned char *src, int srcW, int srcH, int srcStride,
-    unsigned char *dst, int dstW, int dstH);
-
-static void updateCachedProperties(CreateTask *task);
-
-static void callEventSink(JNIEnv *env, JavaVM *jvm,
-    jobject eventSink, jmethodID eventMethod,
-    const char *type, double value) {
-    if (!eventSink || !eventMethod) return;
+static void callEventSink(LinuxPlayer *player, const char *type, double value) {
+    if (!player->eventSink || !player->eventMethod) return;
+    JNIEnv *env = NULL;
     int detach = 0;
-    if (!env) {
-        jint ret = (*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6);
-        if (ret == JNI_EDETACHED) {
-            (*jvm)->AttachCurrentThread(jvm, (void**)&env, NULL);
-            detach = 1;
-        }
+    jint ret = (*player->jvm)->GetEnv(player->jvm, (void **)&env, JNI_VERSION_1_6);
+    if (ret == JNI_EDETACHED) {
+        (*player->jvm)->AttachCurrentThread(player->jvm, (void **)&env, NULL);
+        detach = 1;
     }
     if (env) {
         jstring jType = (*env)->NewStringUTF(env, type);
-        (*env)->CallVoidMethod(env, eventSink, eventMethod, jType, value);
+        (*env)->CallVoidMethod(env, player->eventSink, player->eventMethod, jType, value);
         (*env)->DeleteLocalRef(env, jType);
     }
-    if (detach) {
-        (*jvm)->DetachCurrentThread(jvm);
+    if (detach) (*player->jvm)->DetachCurrentThread(player->jvm);
+}
+
+static char *base64Encode(const char *data, size_t len) {
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t outLen = 4 * ((len + 2) / 3);
+    char *out = malloc(outLen + 1);
+    size_t i = 0, j = 0;
+    while (i + 2 < len) {
+        uint32_t chunk = ((unsigned char)data[i] << 16) | ((unsigned char)data[i + 1] << 8) | (unsigned char)data[i + 2];
+        out[j++] = table[(chunk >> 18) & 0x3F];
+        out[j++] = table[(chunk >> 12) & 0x3F];
+        out[j++] = table[(chunk >> 6) & 0x3F];
+        out[j++] = table[chunk & 0x3F];
+        i += 3;
+    }
+    size_t remaining = len - i;
+    if (remaining == 1) {
+        uint32_t chunk = (unsigned char)data[i] << 16;
+        out[j++] = table[(chunk >> 18) & 0x3F];
+        out[j++] = table[(chunk >> 12) & 0x3F];
+        out[j++] = '=';
+        out[j++] = '=';
+    } else if (remaining == 2) {
+        uint32_t chunk = ((unsigned char)data[i] << 16) | ((unsigned char)data[i + 1] << 8);
+        out[j++] = table[(chunk >> 18) & 0x3F];
+        out[j++] = table[(chunk >> 12) & 0x3F];
+        out[j++] = table[(chunk >> 6) & 0x3F];
+        out[j++] = '=';
+    }
+    out[j] = '\0';
+    return out;
+}
+
+static void flushPendingControlsJsonTask(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    if (!player->webView || !atomic_load(&player->controlsWebReady)) return;
+
+    pthread_mutex_lock(&player->controlsMutex);
+    char *json = player->pendingControlsJson;
+    player->pendingControlsJson = NULL;
+    pthread_mutex_unlock(&player->controlsMutex);
+    if (!json) return;
+
+    char *encoded = base64Encode(json, strlen(json));
+    free(json);
+
+    size_t scriptLen = strlen(encoded) + 128;
+    char *script = malloc(scriptLen);
+    snprintf(script, scriptLen,
+        "(function(){if(!window.playerControls)return;window.playerControls(JSON.parse(atob(\"%s\")));})()",
+        encoded);
+    free(encoded);
+
+    webkit_web_view_evaluate_javascript(player->webView, script, -1, NULL, NULL, NULL, NULL, NULL);
+    free(script);
+    gtk_widget_queue_draw(GTK_WIDGET(player->webView));
+}
+
+static void updateControlsInternal(LinuxPlayer *player, const char *json) {
+    pthread_mutex_lock(&player->controlsMutex);
+    free(player->pendingControlsJson);
+    player->pendingControlsJson = strdup(json);
+    pthread_mutex_unlock(&player->controlsMutex);
+    runOnGtkThreadAsyncPriority(flushPendingControlsJsonTask, player, G_PRIORITY_HIGH_IDLE);
+}
+
+static void selectAudioTrackIdInternal(LinuxPlayer *player, int trackId);
+static void selectSubtitleTrackIdInternal(LinuxPlayer *player, int trackId);
+static void onControlsWindowDestroyed(GtkWidget *widget, gpointer userData);
+static void reattachWindowTask(void *arg);
+static void detachWindowTask(void *arg);
+
+static void onScriptMessage(WebKitUserContentManager *manager, WebKitJavascriptResult *jsResult, gpointer userData) {
+    (void)manager;
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    JSCValue *value = webkit_javascript_result_get_js_value(jsResult);
+    if (!value || !jsc_value_is_object(value)) return;
+
+    JSCValue *typeValue = jsc_value_object_get_property(value, "type");
+    if (!typeValue || jsc_value_is_undefined(typeValue) || jsc_value_is_null(typeValue)) return;
+    char *type = jsc_value_to_string(typeValue);
+
+    JSCValue *rawValue = jsc_value_object_get_property(value, "value");
+    int hasValue = rawValue && !jsc_value_is_undefined(rawValue) && !jsc_value_is_null(rawValue);
+    double numericValue = hasValue ? jsc_value_to_double(rawValue) : 0.0;
+
+    if (strcmp(type, "controlsReady") == 0) {
+        atomic_store(&player->controlsWebReady, 1);
+        flushPendingControlsJsonTask(player);
+    } else if (strcmp(type, "selectAudioTrack") == 0 && hasValue) {
+        selectAudioTrackIdInternal(player, (int)llround(numericValue));
+    } else if (strcmp(type, "selectSubtitleTrack") == 0 && hasValue) {
+        selectSubtitleTrackIdInternal(player, (int)llround(numericValue));
+    } else {
+        callEventSink(player, type, numericValue);
+    }
+    free(type);
+}
+
+static gboolean onWebViewMotion(GtkWidget *widget, GdkEventMotion *event, gpointer userData) {
+    (void)widget;
+    (void)event;
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    callEventSink(player, "cursorActivity", 0.0);
+    return GDK_EVENT_PROPAGATE;
+}
+
+static void *glGetProcAddressWrapper(void *ctx, const char *name) {
+    (void)ctx;
+    void *addr = (void *)eglGetProcAddress(name);
+    if (!addr) addr = (void *)glXGetProcAddressARB((const GLubyte *)name);
+    return addr;
+}
+
+static void queueGLAreaRenderTask(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    if (player->glArea && GTK_IS_GL_AREA(player->glArea)) {
+        gtk_gl_area_queue_render(GTK_GL_AREA(player->glArea));
     }
 }
 
-static void ensure_egl_init(CreateTask *task) {
-    if (task->eglInitialized) return;
-
-    /* Try render nodes in order (mpc-qt pattern: auto-detect) */
-    const char *renderNodes[] = {
-        "/dev/dri/renderD128",
-        "/dev/dri/renderD129",
-        "/dev/dri/renderD130",
-        "/dev/dri/renderD131",
-        NULL
-    };
-    int drmFd = -1;
-    for (int i = 0; renderNodes[i]; i++) {
-        drmFd = open(renderNodes[i], O_RDWR | O_CLOEXEC);
-        if (drmFd >= 0) {
-            DBG("ensure_egl_init: opened %s\n", renderNodes[i]);
-            break;
-        }
-    }
-    if (drmFd < 0) {
-        DBG("ensure_egl_init: cannot open any DRI render node\n");
-        return;
-    }
-
-    /* Store DRM fd for proper cleanup (fix resource leak) */
-    task->drmFd = drmFd;
-
-    task->gbmDev = gbm_create_device(drmFd);
-    if (!task->gbmDev) {
-        DBG("ensure_egl_init: gbm_create_device failed\n");
-        close(drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    task->eglDisplay = eglGetPlatformDisplay(EGL_PLATFORM_GBM_MESA, task->gbmDev, NULL);
-    if (task->eglDisplay == EGL_NO_DISPLAY) {
-        DBG("ensure_egl_init: eglGetPlatformDisplay failed\n");
-        gbm_device_destroy(task->gbmDev);
-        task->gbmDev = NULL;
-        close(task->drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    EGLint major, minor;
-    if (!eglInitialize(task->eglDisplay, &major, &minor)) {
-        DBG("ensure_egl_init: eglInitialize failed\n");
-        eglTerminate(task->eglDisplay);
-        task->eglDisplay = EGL_NO_DISPLAY;
-        gbm_device_destroy(task->gbmDev);
-        task->gbmDev = NULL;
-        close(task->drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    /* Choose any config (surfaceless rendering doesn't need Pbuffer support) */
-    EGLConfig config;
-    EGLint numConfigs;
-    static const EGLint configAttribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-        EGL_NONE
-    };
-    if (!eglChooseConfig(task->eglDisplay, configAttribs, &config, 1, &numConfigs) || numConfigs == 0) {
-        DBG("ensure_egl_init: eglChooseConfig ES3 failed (numConfigs=%d), trying any\n", numConfigs);
-        static const EGLint anyAttribs[] = { EGL_NONE };
-        eglChooseConfig(task->eglDisplay, anyAttribs, &config, 1, &numConfigs);
-    }
-    if (numConfigs == 0) {
-        DBG("ensure_egl_init: eglChooseConfig failed completely\n");
-        eglTerminate(task->eglDisplay);
-        task->eglDisplay = EGL_NO_DISPLAY;
-        gbm_device_destroy(task->gbmDev);
-        task->gbmDev = NULL;
-        close(task->drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    /* Create ES3 context */
-    static const EGLint ctxAttribs[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 3,
-        EGL_NONE
-    };
-    task->eglContext = eglCreateContext(task->eglDisplay, config, EGL_NO_CONTEXT, ctxAttribs);
-    if (task->eglContext == EGL_NO_CONTEXT) {
-        DBG("ensure_egl_init: eglCreateContext ES3 failed, trying ES2\n");
-        static const EGLint ctx2Attribs[] = {
-            EGL_CONTEXT_CLIENT_VERSION, 2,
-            EGL_NONE
-        };
-        task->eglContext = eglCreateContext(task->eglDisplay, config, EGL_NO_CONTEXT, ctx2Attribs);
-    }
-    if (task->eglContext == EGL_NO_CONTEXT) {
-        DBG("ensure_egl_init: eglCreateContext failed\n");
-        eglTerminate(task->eglDisplay);
-        task->eglDisplay = EGL_NO_DISPLAY;
-        gbm_device_destroy(task->gbmDev);
-        task->gbmDev = NULL;
-        close(task->drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    /* Surfaceless: make current without any surface */
-    if (!eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, task->eglContext)) {
-        DBG("ensure_egl_init: eglMakeCurrent(NO_SURFACE) failed\n");
-        eglDestroyContext(task->eglDisplay, task->eglContext);
-        eglTerminate(task->eglDisplay);
-        task->eglDisplay = EGL_NO_DISPLAY;
-        gbm_device_destroy(task->gbmDev);
-        task->gbmDev = NULL;
-        close(task->drmFd);
-        task->drmFd = -1;
-        return;
-    }
-
-    DBG("ensure_egl_init: EGL initialized surfaceless (display=%p context=%p)\n",
-        (void*)task->eglDisplay, (void*)task->eglContext);
-
-    /* Create FBO + texture for mpv to render into */
-    glGenFramebuffers(1, &task->fbo);
-    glGenTextures(1, &task->glTexture);
-    glBindFramebuffer(GL_FRAMEBUFFER, task->fbo);
-    glBindTexture(GL_TEXTURE_2D, task->glTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, task->glTexture, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    /* PBO triple-buffer for async readback (mpc-qt pattern: reduces GPU stalling) */
-    glGenBuffers(3, task->pbo);
-    task->pboIdx = 0;
-    task->pboSize = 0;
-
-    task->eglInitialized = 1;
-    /* DRM fd is kept alive by GBM device - will be closed on dispose */
+static void mpvRenderUpdateCallback(void *cbCtx) {
+    LinuxPlayer *player = (LinuxPlayer *)cbCtx;
+    runOnGtkThreadAsync(queueGLAreaRenderTask, player);
 }
 
-static void ensure_fbo_size(CreateTask *task, int w, int h) {
-    if (task->fboTexW == w && task->fboTexH == h) return;
-    task->fboTexW = w;
-    task->fboTexH = h;
-
-    glBindTexture(GL_TEXTURE_2D, task->glTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    DBG("ensure_fbo_size: resized to %dx%d\n", w, h);
-}
-
-static void renderFrameToBuffer(CreateTask *task) {
-    if (!task->renderCtx) return;
-
-    int flags = mpv_render_context_update(task->renderCtx);
-    if (!(flags & MPV_RENDER_UPDATE_FRAME)) return;
-
-    int64_t w = 0, h = 0;
-    mpv_get_property(task->mpv, "dwidth", MPV_FORMAT_INT64, &w);
-    mpv_get_property(task->mpv, "dheight", MPV_FORMAT_INT64, &h);
-    if (w <= 0 || h <= 0) return;
-
-    int render_w = (int)w;
-    int render_h = (int)h;
-
-    /* ---- Wayland GPU path: EGL FBO + PBO ---- */
-    if (task->gpuMode == 2 && task->renderCtx) {
-        if (!task->eglInitialized) {
-            DBG("renderFrameToBuffer: EGL not initialized\n");
-            goto sw_path;
-        }
-
-        /* Ensure EGL context is current on this thread (render thread) */
-        if (!eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, task->eglContext)) {
-            DBG("renderFrameToBuffer: eglMakeCurrent failed\n");
-            goto sw_path;
-        }
-
-        ensure_fbo_size(task, render_w, render_h);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, task->fbo);
-
-        /* Render mpv frame into our FBO */
-        struct mpv_opengl_fbo mpvFbo = { task->fbo, render_w, render_h, GL_RGBA };
-        int advanced = 1;
-        mpv_render_param params[] = {
-            {MPV_RENDER_PARAM_API_TYPE, (char *)MPV_RENDER_API_TYPE_OPENGL},
-            {MPV_RENDER_PARAM_OPENGL_FBO, &mpvFbo},
-            {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
-            {0}
-        };
-        mpv_render_context_render(task->renderCtx, params);
-
-        /* PBO triple-buffer: start async readback of current frame (mpc-qt pattern) */
-        int curIdx = task->pboIdx;
-        int nextIdx = (curIdx + 1) % 3;
-        int oldestIdx = (curIdx + 2) % 3;
-        int bufSize = render_w * render_h * 4;
-
-        if (task->pboSize != bufSize) {
-            for (int i = 0; i < 3; i++) {
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[i]);
-                glBufferData(GL_PIXEL_PACK_BUFFER, bufSize, NULL, GL_STREAM_READ);
-            }
-            task->pboSize = bufSize;
-        }
-
-        /* Start DMA read of current frame into pbo[curIdx] */
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[curIdx]);
-        glReadPixels(0, 0, render_w, render_h, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-
-        /* Check if the OLDEST frame's PBO has completed (triple-buffer latency) */
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, task->pbo[oldestIdx]);
-        GLubyte *pboPtr = (GLubyte *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bufSize, GL_MAP_READ_BIT);
-
-        if (pboPtr) {
-            /* Oldest frame is ready — copy to frameData with BGRA swizzle */
-            pthread_mutex_lock(&task->frameMutex);
-            int stride = render_w * 4;
-            char *newBuf = realloc(task->frameData, stride * render_h);
-            if (newBuf) {
-                task->frameData = newBuf;
-                task->frameW = render_w;
-                task->frameH = render_h;
-                task->frameStride = stride;
-
-                /* Copy from PBO (RGBA) to frameData (BGRA) — simple swizzle, no scaling needed */
-                letterbox_scale_rgba_to_bgra(
-                    pboPtr, render_w, render_h, render_w * 4,
-                    (unsigned char *)task->frameData, render_w, render_h);
-                task->frameReady = 1;
-            }
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-            pthread_mutex_unlock(&task->frameMutex);
-        }
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        task->pboIdx = nextIdx;
+static void onGLAreaRealize(GtkWidget *widget, gpointer userData) {
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    GtkGLArea *area = GTK_GL_AREA(widget);
+    gtk_gl_area_make_current(area);
+    if (gtk_gl_area_get_error(area) != NULL) {
         return;
     }
 
-sw_path:
-    /* ---- SW path (original) ---- */
-    pthread_mutex_lock(&task->frameMutex);
-
-    int stride = render_w * 4;
-    if (render_w != task->frameW || render_h != task->frameH) {
-        char *newBuf = realloc(task->frameData, stride * render_h);
-        if (!newBuf) { pthread_mutex_unlock(&task->frameMutex); return; }
-        task->frameData = newBuf;
-        task->frameW = render_w;
-        task->frameH = render_h;
-        task->frameStride = stride;
-    }
-
-    void *render_ptr = task->frameData;
-
+    mpv_opengl_init_params glInit = {
+        .get_proc_address = glGetProcAddressWrapper,
+        .get_proc_address_ctx = NULL,
+    };
+    int advanced = 1;
     mpv_render_param params[] = {
-        {MPV_RENDER_PARAM_SW_SIZE, &(int[2]){render_w, render_h}},
-        {MPV_RENDER_PARAM_SW_FORMAT, (char *)"rgb0"},
-        {MPV_RENDER_PARAM_SW_STRIDE, &stride},
-        {MPV_RENDER_PARAM_SW_POINTER, render_ptr},
+        {MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_OPENGL},
+        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &glInit},
+        {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
         {0}
     };
-    if (mpv_render_context_render(task->renderCtx, params) < 0) {
-        DBG("renderFrameToBuffer: mpv_render_context_render failed\n");
+    if (mpv_render_context_create(&player->renderCtx, player->mpv, params) < 0) {
+        return;
+    }
+    mpv_render_context_set_update_callback(player->renderCtx, mpvRenderUpdateCallback, player);
+}
+
+static void onGLAreaUnrealize(GtkWidget *widget, gpointer userData) {
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    gtk_gl_area_make_current(GTK_GL_AREA(widget));
+    if (player->renderCtx) {
+        mpv_render_context_set_update_callback(player->renderCtx, NULL, NULL);
+        mpv_render_context_free(player->renderCtx);
+        player->renderCtx = NULL;
+    }
+}
+
+static gboolean onGLAreaRender(GtkGLArea *area, GdkGLContext *context, gpointer userData) {
+    (void)context;
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    if (!player->renderCtx) {
+        return TRUE;
     }
 
-    task->frameReady = 1;
-    pthread_mutex_unlock(&task->frameMutex);
+    GLint fbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(area));
+    int width = gtk_widget_get_allocated_width(GTK_WIDGET(area)) * scale;
+    int height = gtk_widget_get_allocated_height(GTK_WIDGET(area)) * scale;
+    if (width <= 0 || height <= 0) return TRUE;
+
+    mpv_opengl_fbo mpFbo = {.fbo = (int)fbo, .w = width, .h = height, .internal_format = 0};
+    int flipY = 1;
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_OPENGL_FBO, &mpFbo},
+        {MPV_RENDER_PARAM_FLIP_Y, &flipY},
+        {0}
+    };
+    mpv_render_context_render(player->renderCtx, params);
+    return TRUE;
 }
 
-static void mpvWakeupCallback(void *data) {
-    /* mpc-qt pattern: signal render thread that new frames are available */
-    (void)data;
-    /* The render thread polls continuously, but this callback
-       can be used to wake it up for faster response */
+typedef struct {
+    LinuxPlayer *player;
+    char *controlsPageUrl;
+} CreateWebViewArgs;
+
+static void createWebViewTask(void *rawArgs) {
+    CreateWebViewArgs *args = (CreateWebViewArgs *)rawArgs;
+    LinuxPlayer *player = args->player;
+
+    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+    gtk_widget_set_size_request(window, 16, 16);
+    g_signal_connect(window, "destroy", G_CALLBACK(onControlsWindowDestroyed), player);
+
+    GdkScreen *screen = gtk_widget_get_screen(window);
+    GdkVisual *visual = gdk_screen_get_rgba_visual(screen);
+    if (visual) gtk_widget_set_visual(window, visual);
+    gtk_widget_set_app_paintable(window, TRUE);
+
+    GtkCssProvider *cssProvider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(
+        cssProvider,
+        "window, webkitwebview { background-color: transparent; background-image: none; }",
+        -1, NULL);
+    gtk_style_context_add_provider(
+        gtk_widget_get_style_context(window),
+        GTK_STYLE_PROVIDER(cssProvider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(cssProvider);
+
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(window), overlay);
+
+    GtkWidget *glArea = gtk_gl_area_new();
+    gtk_gl_area_set_has_alpha(GTK_GL_AREA(glArea), FALSE);
+    gtk_gl_area_set_auto_render(GTK_GL_AREA(glArea), FALSE);
+    g_signal_connect(glArea, "realize", G_CALLBACK(onGLAreaRealize), player);
+    g_signal_connect(glArea, "unrealize", G_CALLBACK(onGLAreaUnrealize), player);
+    g_signal_connect(glArea, "render", G_CALLBACK(onGLAreaRender), player);
+    gtk_container_add(GTK_CONTAINER(overlay), glArea);
+
+    WebKitUserContentManager *contentManager = webkit_user_content_manager_new();
+    webkit_user_content_manager_register_script_message_handler(contentManager, "player");
+    g_signal_connect(contentManager, "script-message-received::player", G_CALLBACK(onScriptMessage), player);
+
+    GtkWidget *webView = webkit_web_view_new_with_user_content_manager(contentManager);
+    gtk_widget_set_app_paintable(webView, TRUE);
+    GdkRGBA transparent = {0, 0, 0, 0};
+    webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(webView), &transparent);
+    gtk_widget_add_events(webView, GDK_POINTER_MOTION_MASK);
+    g_signal_connect(webView, "motion-notify-event", G_CALLBACK(onWebViewMotion), player);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), webView);
+
+    gtk_widget_show_all(window);
+
+    gtk_widget_realize(window);
+    GdkWindow *gdkWindow = gtk_widget_get_window(window);
+    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
+
+    Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
+    XReparentWindow(display, ownXid, player->hostXid, 0, 0);
+
+    Window rootReturn;
+    int xReturn, yReturn;
+    unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
+    if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
+                      &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
+        gtk_window_resize(GTK_WINDOW(window), (int)widthReturn, (int)heightReturn);
+    }
+
+    XMapWindow(display, ownXid);
+    XFlush(display);
+
+    player->window = window;
+    player->glArea = glArea;
+    player->webView = WEBKIT_WEB_VIEW(webView);
+
+    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(webView), args->controlsPageUrl);
+
+    free(args->controlsPageUrl);
+    free(args);
 }
 
-static void *mpv_get_proc_address(void *ctx, const char *name) {
-    (void)ctx;
-    return (void *)eglGetProcAddress(name);
+typedef struct {
+    LinuxPlayer *player;
+    int width;
+    int height;
+} TrackControlsGeometryArgs;
+
+static void trackControlsGeometryTask(void *rawArgs) {
+    TrackControlsGeometryArgs *args = (TrackControlsGeometryArgs *)rawArgs;
+    LinuxPlayer *player = args->player;
+    if (player->window && GTK_IS_WINDOW(player->window)) {
+        gtk_window_resize(GTK_WINDOW(player->window), args->width, args->height);
+    }
+    free(args);
 }
 
-static void *renderThreadFunc(void *data) {
-    CreateTask *task = (CreateTask *)data;
-    int eventCounter = 0;
+static void *resizeWatcherThreadFunc(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    Display *display = XOpenDisplay(NULL);
+    if (!display) return NULL;
 
-    while (task->alive) {
-        if (task->mpv) {
-            while (1) {
-                mpv_event *event = mpv_wait_event(task->mpv, 0.016);
-                if (event->event_id == MPV_EVENT_NONE) break;
-                switch (event->event_id) {
-                    case MPV_EVENT_START_FILE:
-                        DBG("[mpv] start-file\n");
-                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "loading", 0);
-                        break;
-                    case MPV_EVENT_END_FILE:
-                        DBG("[mpv] end-file (reason=%d)\n",
-                            ((struct mpv_event_end_file*)event->data)->reason);
-                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "ended", 0);
-                        break;
-                    case MPV_EVENT_FILE_LOADED:
-                        DBG("[mpv] file-loaded\n");
-                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "loaded", 0);
-                        break;
-                    case MPV_EVENT_PLAYBACK_RESTART:
-                        DBG("[mpv] playback-restart\n");
-                        break;
-                    case MPV_EVENT_VIDEO_RECONFIG: {
-                        DBG("[mpv] video-reconfig\n");
-                        int64_t w = 0, h = 0;
-                        mpv_get_property(task->mpv, "dwidth", MPV_FORMAT_INT64, &w);
-                        mpv_get_property(task->mpv, "dheight", MPV_FORMAT_INT64, &h);
-                        callEventSink(NULL, task->jvm, task->eventSink, task->eventMethod, "video-size", (double)(w * 10000 + h));
-                        break;
-                    }
-                    case MPV_EVENT_AUDIO_RECONFIG:
-                        DBG("[mpv] audio-reconfig\n");
-                        break;
-                    case MPV_EVENT_PROPERTY_CHANGE:
-                        /* Property change - mark dirty for cached reads */
-                        break;
-                    default:
-                        break;
-                }
+    Window lastHostXid = 0;
+    int lastW = -1, lastH = -1;
+    while (atomic_load(&player->alive)) {
+        if (player->hostXid != lastHostXid) {
+            lastHostXid = player->hostXid;
+            lastW = -1;
+            lastH = -1;
+            XSelectInput(display, lastHostXid, StructureNotifyMask);
+            XFlush(display);
+        }
+
+        while (XPending(display) > 0) {
+            XEvent event;
+            XNextEvent(display, &event);
+            (void)event;
+        }
+
+        Window rootReturn;
+        int xReturn, yReturn;
+        unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
+        if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
+                          &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
+            if ((int)widthReturn != lastW || (int)heightReturn != lastH) {
+                lastW = (int)widthReturn;
+                lastH = (int)heightReturn;
+                TrackControlsGeometryArgs *args = malloc(sizeof(TrackControlsGeometryArgs));
+                args->player = player;
+                args->width = (int)widthReturn;
+                args->height = (int)heightReturn;
+                runOnGtkThreadAsync(trackControlsGeometryTask, args);
             }
         }
-
-        if (!task->alive) break;
-
-        /* Update cached properties every ~12 frames (mpc-qt throttling pattern) */
-        eventCounter++;
-        if (eventCounter >= 12) {
-            updateCachedProperties(task);
-            eventCounter = 0;
-        }
-
-        renderFrameToBuffer(task);
+        usleep(33000);
     }
 
+    XCloseDisplay(display);
     return NULL;
 }
 
+static void *mpvEventThreadFunc(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    while (atomic_load(&player->alive)) {
+        mpv_event *event = mpv_wait_event(player->mpv, 0.25);
+        if (event->event_id == MPV_EVENT_SHUTDOWN) break;
+    }
+    return NULL;
+}
+
+static char *headerLinesToMpvString(char **headers, int count) {
+    if (count <= 0 || !headers) return NULL;
+    size_t len = 0;
+    for (int i = 0; i < count; i++) {
+        if (headers[i]) len += strlen(headers[i]) * 2 + 2;
+    }
+    if (len == 0) return NULL;
+    char *out = malloc(len + 1);
+    out[0] = '\0';
+    for (int i = 0; i < count; i++) {
+        if (!headers[i]) continue;
+        if (out[0] != '\0') strcat(out, ",");
+        const char *src = headers[i];
+        char *dst = out + strlen(out);
+        while (*src) {
+            if (*src == '\\' || *src == ',') *dst++ = '\\';
+            *dst++ = *src++;
+        }
+        *dst = '\0';
+    }
+    return out;
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
+    (void)jvm;
     (void)reserved;
     setlocale(LC_NUMERIC, "C");
+    XInitThreads();
     return JNI_VERSION_1_6;
-}
-
-/* ---- simple growable string buffer ---- */
-typedef struct {
-    char *s;
-    size_t len;
-    size_t cap;
-} JsonBuf;
-
-static void jb_init(JsonBuf *b) { b->s = NULL; b->len = 0; b->cap = 0; }
-
-static void jb_grow(JsonBuf *b, size_t need) {
-    if (b->len + need + 1 <= b->cap) return;
-    size_t newCap = b->cap ? b->cap : 64;
-    while (b->len + need + 1 > newCap) newCap *= 2;
-    char *p = realloc(b->s, newCap);
-    if (!p) return;
-    b->s = p;
-    b->cap = newCap;
-}
-
-static void jb_append(JsonBuf *b, const char *str) {
-    if (!str) return;
-    size_t n = strlen(str);
-    jb_grow(b, n);
-    memcpy(b->s + b->len, str, n);
-    b->len += n;
-    b->s[b->len] = '\0';
-}
-
-static void jb_append_c(JsonBuf *b, char c) {
-    jb_grow(b, 1);
-    b->s[b->len++] = c;
-    b->s[b->len] = '\0';
-}
-
-__attribute__((__format__ (__printf__, 2, 3)))
-static void jb_append_f(JsonBuf *b, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    if (n <= 0) return;
-    jb_grow(b, (size_t)n);
-    va_start(ap, fmt);
-    vsnprintf(b->s + b->len, (size_t)n + 1, fmt, ap);
-    va_end(ap);
-    b->len += (size_t)n;
-}
-
-static void jb_escape(JsonBuf *b, const char *str) {
-    if (!str) { jb_append(b, "null"); return; }
-    jb_append_c(b, '"');
-    for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
-        switch (*p) {
-            case '\\': jb_append(b, "\\\\"); break;
-            case '"':  jb_append(b, "\\\""); break;
-            case '\n': jb_append(b, "\\n"); break;
-            case '\r': jb_append(b, "\\r"); break;
-            case '\t': jb_append(b, "\\t"); break;
-            default:
-                if (*p < 0x20) { char buf[8]; snprintf(buf, sizeof buf, "\\u%04x", *p); jb_append(b, buf); }
-                else jb_append_c(b, (char)*p);
-        }
-    }
-    jb_append_c(b, '"');
-}
-
-static void jb_node(JsonBuf *b, const mpv_node *node) {
-    switch (node->format) {
-        case MPV_FORMAT_STRING:
-            jb_escape(b, node->u.string);
-            return;
-        case MPV_FORMAT_INT64:
-            jb_append_f(b, "%" PRId64, node->u.int64);
-            return;
-        case MPV_FORMAT_DOUBLE:
-            if (isnan(node->u.double_) || isinf(node->u.double_))
-                jb_append(b, "0");
-            else
-                jb_append_f(b, "%g", node->u.double_);
-            return;
-        case MPV_FORMAT_FLAG:
-            jb_append(b, node->u.flag ? "true" : "false");
-            return;
-        case MPV_FORMAT_NODE_MAP:
-            if (!node->u.list) { jb_append(b, "{}"); return; }
-            jb_append_c(b, '{');
-            for (int i = 0; i < node->u.list->num; i++) {
-                if (i > 0) jb_append_c(b, ',');
-                jb_escape(b, node->u.list->keys[i]);
-                jb_append_c(b, ':');
-                jb_node(b, &node->u.list->values[i]);
-            }
-            jb_append_c(b, '}');
-            return;
-        case MPV_FORMAT_NODE_ARRAY:
-            if (!node->u.list) { jb_append(b, "[]"); return; }
-            jb_append_c(b, '[');
-            for (int i = 0; i < node->u.list->num; i++) {
-                if (i > 0) jb_append_c(b, ',');
-                jb_node(b, &node->u.list->values[i]);
-            }
-            jb_append_c(b, ']');
-            return;
-        default:
-            jb_append(b, "null");
-    }
-}
-
-static char *tracks_to_json(mpv_handle *mpv) {
-    mpv_node tracks;
-    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &tracks) < 0)
-        return strdup("[]");
-    JsonBuf b;
-    jb_init(&b);
-    jb_node(&b, &tracks);
-    mpv_free_node_contents(&tracks);
-    return b.s ? b.s : strdup("[]");
-}
-
-static char *tracks_json_for_type(mpv_handle *mpv, const char *type) {
-    mpv_node tracks;
-    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &tracks) < 0)
-        return strdup("[]");
-
-    JsonBuf b;
-    jb_init(&b);
-    jb_append_c(&b, '[');
-
-    if (tracks.format == MPV_FORMAT_NODE_ARRAY && tracks.u.list) {
-        int first = 1;
-        for (int i = 0; i < tracks.u.list->num; i++) {
-            mpv_node *node = &tracks.u.list->values[i];
-            if (node->format != MPV_FORMAT_NODE_MAP || !node->u.list) continue;
-
-            const char *node_type = NULL;
-            int track_id = 0;
-            int selected = 0;
-            const char *lang = NULL;
-            const char *label = NULL;
-
-            for (int j = 0; j < node->u.list->num; j++) {
-                const char *key = node->u.list->keys[j];
-                mpv_node *val = &node->u.list->values[j];
-                if (strcmp(key, "type") == 0 && val->format == MPV_FORMAT_STRING)
-                    node_type = val->u.string;
-                else if (strcmp(key, "id") == 0 && val->format == MPV_FORMAT_INT64)
-                    track_id = (int)val->u.int64;
-                else if (strcmp(key, "selected") == 0 && val->format == MPV_FORMAT_STRING)
-                    selected = (strcmp(val->u.string, "yes") == 0) ? 1 : 0;
-                else if (strcmp(key, "lang") == 0 && val->format == MPV_FORMAT_STRING)
-                    lang = val->u.string;
-                else if (strcmp(key, "title") == 0 && val->format == MPV_FORMAT_STRING)
-                    label = val->u.string;
-                else if (strcmp(key, "decoder-desc") == 0 && val->format == MPV_FORMAT_STRING)
-                    { /* available but prefer lang/title for label */ }
-            }
-
-            if (!node_type || strcmp(node_type, type) != 0) continue;
-
-            if (!first) jb_append_c(&b, ',');
-            first = 0;
-
-            jb_append_c(&b, '{');
-            jb_append_f(&b, "\"id\":\"%d\"", track_id);
-            jb_append_f(&b, ",\"index\":%d", track_id - 1);
-            jb_append_c(&b, ','); jb_escape(&b, "label"); jb_append_c(&b, ':');
-            jb_escape(&b, label ? label : (lang ? lang : "Track"));
-            jb_append_c(&b, ','); jb_escape(&b, "language"); jb_append_c(&b, ':');
-            jb_escape(&b, lang ? lang : "");
-            jb_append_c(&b, ','); jb_escape(&b, "selected"); jb_append_c(&b, ':');
-            jb_append(&b, selected ? "true" : "false");
-            jb_append_c(&b, '}');
-        }
-    }
-
-    jb_append_c(&b, ']');
-    mpv_free_node_contents(&tracks);
-    return b.s ? b.s : strdup("[]");
 }
 
 JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
@@ -718,1039 +560,718 @@ JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerB
     jint decoderPriority, jboolean nvidiaRtxSuperResolutionEnabled,
     jobject eventSink) {
     (void)thiz;
-    (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
+    (void)nvidiaRtxSuperResolutionEnabled;
 
-    int isGpuMode = (hostViewPtr != 0);
+    ensureGtkThread();
 
-    DBG("create() called (%s mode)\n", isGpuMode ? "GPU (gpu-next + wid)" : "SW (libmpv)");
+    pthread_mutex_lock(&gPlayerMutex);
 
-    CreateTask *task = calloc(1, sizeof(CreateTask));
-    if (!task) { DBG("create: calloc failed\n"); return 0; }
+    LinuxPlayer *player = gPlayer;
+    int isNew = (player == NULL);
 
-    (*env)->GetJavaVM(env, &task->jvm);
-    task->alive = 1;
-    task->gpuMode = isGpuMode;
-
-    if (!isGpuMode) {
-        pthread_mutex_init(&task->frameMutex, NULL);
+    if (isNew) {
+        player = calloc(1, sizeof(LinuxPlayer));
+        (*env)->GetJavaVM(env, &player->jvm);
+        pthread_mutex_init(&player->controlsMutex, NULL);
+        atomic_store(&player->alive, 1);
     }
 
+    player->hostXid = (Window)(uintptr_t)hostViewPtr;
+
+    if (player->eventSink) {
+        (*env)->DeleteGlobalRef(env, player->eventSink);
+        player->eventSink = NULL;
+        player->eventMethod = NULL;
+    }
     if (eventSink) {
-        task->eventSink = (*env)->NewGlobalRef(env, eventSink);
+        player->eventSink = (*env)->NewGlobalRef(env, eventSink);
         jclass cls = (*env)->GetObjectClass(env, eventSink);
-        task->eventMethod = (*env)->GetMethodID(env, cls,
-            "onPlayerEvent", "(Ljava/lang/String;D)V");
+        player->eventMethod = (*env)->GetMethodID(env, cls, "onPlayerEvent", "(Ljava/lang/String;D)V");
         (*env)->DeleteLocalRef(env, cls);
     }
 
-    {
-        const char *src = sourceUrl
-            ? (*env)->GetStringUTFChars(env, sourceUrl, NULL) : NULL;
-        if (src) { task->sourceUrl = strdup(src); (*env)->ReleaseStringUTFChars(env, sourceUrl, src); }
+    if (isNew) {
+        setlocale(LC_NUMERIC, "C");
+        player->mpv = mpv_create();
+        if (!player->mpv) {
+            free(player);
+            pthread_mutex_unlock(&gPlayerMutex);
+            return 0;
+        }
+
+        mpv_set_option_string(player->mpv, "config", "no");
+        mpv_set_option_string(player->mpv, "osc", "no");
+        mpv_set_option_string(player->mpv, "input-default-bindings", "yes");
+        mpv_set_option_string(player->mpv, "input-vo-keyboard", "no");
+        mpv_set_option_string(player->mpv, "keep-open", "yes");
+        mpv_set_option_string(player->mpv, "vo", "libmpv");
+        mpv_set_option_string(player->mpv, "hwdec", "auto");
+        mpv_set_option_string(player->mpv, "hwdec-codecs", "all");
+        mpv_set_option_string(player->mpv, "target-colorspace-hint", "yes");
+        mpv_set_option_string(player->mpv, "vd-lavc-threads", "4");
+        mpv_set_option_string(player->mpv, "tone-mapping", "auto");
+        mpv_set_option_string(player->mpv, "dither-depth", "auto");
+        mpv_set_option_string(player->mpv, "deband", "yes");
+        mpv_set_option_string(player->mpv, "scale", "spline36");
+        mpv_set_option_string(player->mpv, "cscale", "spline36");
+        mpv_set_option_string(player->mpv, "demuxer-max-bytes", "512MiB");
+        mpv_set_option_string(player->mpv, "demuxer-max-back-bytes", "256MiB");
+        mpv_set_option_string(player->mpv, "demuxer-seekable-cache", "yes");
+        mpv_set_option_string(player->mpv, "cache-secs", "36000");
+        mpv_set_option_string(player->mpv, "hr-seek", "no");
     }
 
-    (void)controlsPageUrl;
+    if (decoderPriority == 0) {
+        mpv_set_option_string(player->mpv, "vd-lavc-software-fallback", "no");
+        mpv_set_option_string(player->mpv, "hwdec", "auto");
+    } else if (decoderPriority == 2) {
+        mpv_set_option_string(player->mpv, "hwdec", "no");
+        mpv_set_option_string(player->mpv, "vd-lavc-software-fallback", "yes");
+    } else {
+        mpv_set_option_string(player->mpv, "hwdec", "auto");
+        mpv_set_option_string(player->mpv, "vd-lavc-software-fallback", "yes");
+    }
 
-    jsize nh = headerLines ? (*env)->GetArrayLength(env, headerLines) : 0;
-    task->nheaders = nh;
-    if (nh > 0) {
-        task->headers = calloc(nh, sizeof(char *));
-        for (jsize i = 0; i < nh; i++) {
+    jsize headerCount = headerLines ? (*env)->GetArrayLength(env, headerLines) : 0;
+    if (headerCount > 0) {
+        char **headers = calloc(headerCount, sizeof(char *));
+        for (jsize i = 0; i < headerCount; i++) {
             jstring s = (jstring)(*env)->GetObjectArrayElement(env, headerLines, i);
             const char *h = (*env)->GetStringUTFChars(env, s, NULL);
-            if (h) { task->headers[i] = strdup(h); (*env)->ReleaseStringUTFChars(env, s, h); }
+            if (h) headers[i] = strdup(h);
+            (*env)->ReleaseStringUTFChars(env, s, h);
             (*env)->DeleteLocalRef(env, s);
         }
-    }
-
-    setlocale(LC_NUMERIC, "C");
-    task->mpv = mpv_create();
-    if (!task->mpv) {
-        DBG("create: mpv_create failed\n");
-        callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 5.0);
-        free(task->sourceUrl);
-        if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
-        if (task->eventSink && task->jvm) (*env)->DeleteGlobalRef(env, task->eventSink);
-        if (!isGpuMode) pthread_mutex_destroy(&task->frameMutex);
-        free(task);
-        return 0;
-    }
-
-    /* -- Auto-detect best GPU mode (mpc-qt pattern) -- */
-    int detectedMode = detect_best_gpu_mode();
-    if (isGpuMode && detectedMode != 1) {
-        /* X11 GPU mode requested but no X11 display available */
-        DBG("create: X11 GPU mode requested but no X11 display, using detected mode %d\n", detectedMode);
-        isGpuMode = 0;
-        task->gpuMode = detectedMode;
-    } else if (isGpuMode) {
-        task->gpuMode = 1;
+        char *headerString = headerLinesToMpvString(headers, headerCount);
+        mpv_set_option_string(player->mpv, "http-header-fields", headerString ? headerString : "");
+        free(headerString);
+        for (jsize i = 0; i < headerCount; i++) free(headers[i]);
+        free(headers);
     } else {
-        task->gpuMode = detectedMode;
+        mpv_set_option_string(player->mpv, "http-header-fields", "");
     }
 
-    /* -- GPU mode: render via X11 window -- */
-    if (task->gpuMode == 1) {
-        mpv_set_option_string(task->mpv, "vo", "gpu-next");
-        mpv_set_option_string(task->mpv, "gpu-api", "opengl");
-        mpv_set_option_string(task->mpv, "wid", "");
-        int64_t wid = (int64_t)hostViewPtr;
-        mpv_set_option(task->mpv, "wid", MPV_FORMAT_INT64, &wid);
-    } else if (task->gpuMode == 2) {
-        /* -- Wayland GPU mode: render via EGL FBO -- */
-        mpv_set_option_string(task->mpv, "vo", "libmpv");
-        mpv_set_option_string(task->mpv, "gpu-context", "wayland");
-        mpv_set_option_string(task->mpv, "gpu-api", "opengl");
+    if (isNew) {
+        if (mpv_initialize(player->mpv) < 0) {
+            mpv_terminate_destroy(player->mpv);
+            free(player);
+            pthread_mutex_unlock(&gPlayerMutex);
+            return 0;
+        }
+
+        const char *controlsUrlChars = (*env)->GetStringUTFChars(env, controlsPageUrl, NULL);
+        CreateWebViewArgs *webViewArgs = malloc(sizeof(CreateWebViewArgs));
+        webViewArgs->player = player;
+        webViewArgs->controlsPageUrl = strdup(controlsUrlChars);
+        (*env)->ReleaseStringUTFChars(env, controlsPageUrl, controlsUrlChars);
+        runOnGtkThreadSync(createWebViewTask, webViewArgs);
+
+        pthread_create(&player->resizeThread, NULL, resizeWatcherThreadFunc, player);
+        pthread_create(&player->eventThread, NULL, mpvEventThreadFunc, player);
+
+        gPlayer = player;
     } else {
-        /* -- SW mode: render via libmpv into CPU buffers -- */
-        mpv_set_option_string(task->mpv, "vo", "libmpv");
-    }
-
-    /* -- Common options (mpc-qt optimized patterns) -- */
-    mpv_set_option_string(task->mpv, "cache", "yes");
-    mpv_set_option_string(task->mpv, "cache-secs", "3");
-    mpv_set_option_string(task->mpv, "demuxer-max-bytes", "50M");
-    mpv_set_option_string(task->mpv, "demuxer-max-back-bytes", "25M");
-    mpv_set_option_string(task->mpv, "audio-file-auto", "no");
-    mpv_set_option_string(task->mpv, "sub-auto", "no");
-    mpv_set_option_string(task->mpv, "config", "yes");
-    mpv_set_option_string(task->mpv, "terminal", "no");
-    mpv_set_option_string(task->mpv, "msg-level", "all=no");
-
-    /* Hardware decoding: use auto for Wayland GPU, auto-copy for SW/X11 */
-    if (task->gpuMode == 2) {
-        mpv_set_option_string(task->mpv, "hwdec", "auto");  /* True GPU decode on Wayland */
-    } else {
-        mpv_set_option_string(task->mpv, "hwdec", "auto-copy");  /* Safe copy for SW/X11 */
-    }
-
-    mpv_set_option_string(task->mpv, "vd-lavc-dr", "no");
-    mpv_set_option_string(task->mpv, "vd-lavc-fast", "yes");
-    mpv_set_option_string(task->mpv, "video-latency-hacks", "yes");
-    mpv_set_option_string(task->mpv, "video-reversal-buffer", "no");
-    mpv_set_option_string(task->mpv, "keep-open", "no");
-    mpv_set_option_string(task->mpv, "vd-queue-enable", "no");
-
-    /* Color management (mpc-qt pattern) */
-    mpv_set_option_string(task->mpv, "icc-profile-auto", "yes");
-    mpv_set_option_string(task->mpv, "target-prim", "auto");
-    mpv_set_option_string(task->mpv, "target-trc", "auto");
-    mpv_set_option_string(task->mpv, "tone-mapping", "bt.2390");
-    mpv_set_option_string(task->mpv, "deband", "yes");
-    mpv_set_option_string(task->mpv, "dither-depth", "auto");
-    mpv_set_option_string(task->mpv, "scale", "spline36");
-    mpv_set_option_string(task->mpv, "cscale", "spline36");
-    mpv_set_option_string(task->mpv, "video-output-levels", "auto");
-    mpv_set_option_string(task->mpv, "gamma-factor", "1.0");
-
-    /* Audio rendering (mpc-qt pattern) */
-    mpv_set_option_string(task->mpv, "audio-channels", "stereo");
-    mpv_set_option_string(task->mpv, "audio-pitch-correction", "yes");
-
-    if (task->nheaders > 0 && task->headers) {
-        size_t len = 0;
-        for (int i = 0; i < task->nheaders; i++)
-            if (task->headers[i]) len += strlen(task->headers[i]) + 1;
-        if (len > 0) {
-            char *hdr = malloc(len + 1);
-            hdr[0] = '\0';
-            for (int i = 0; i < task->nheaders; i++) {
-                if (i > 0 && task->headers[i]) strcat(hdr, "\n");
-                if (task->headers[i]) strcat(hdr, task->headers[i]);
-            }
-            mpv_set_option_string(task->mpv, "http-header-fields", hdr);
-            free(hdr);
+        runOnGtkThreadSync(reattachWindowTask, player);
+        if (player->renderCtx) {
+            mpv_render_context_set_update_callback(player->renderCtx, mpvRenderUpdateCallback, player);
         }
     }
 
-    if (mpv_initialize(task->mpv) < 0) {
-        DBG("create: mpv_initialize failed\n");
-        mpv_terminate_destroy(task->mpv);
-        callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 6.0);
-        free(task->sourceUrl);
-        if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
-        if (task->eventSink && task->jvm) (*env)->DeleteGlobalRef(env, task->eventSink);
-        if (!isGpuMode) pthread_mutex_destroy(&task->frameMutex);
-        free(task);
-        return 0;
-    }
-
-    /* -- GPU mode: rendering handled by mpv directly -- */
-    if (task->gpuMode == 1) {
-        DBG("create: GPU mode active, mpv renders directly to X11 window 0x%lx\n", (unsigned long)hostViewPtr);
-    } else {
-        /* -- SW / Wayland mode: create render context + thread -- */
-        mpv_set_property_string(task->mpv, "vo", "libmpv");
-
-        int advanced = 1;
-
-        if (task->gpuMode == 2) {
-            /* Wayland: use OpenGL API — mpv renders into our FBO, we read via PBO */
-            /* First init EGL so mpv can use our GL context */
-            ensure_egl_init(task);
-            if (!task->eglInitialized) {
-                DBG("create: EGL init failed, falling back to SW\n");
-                task->gpuMode = 0;
-            }
+    const char *src = sourceUrl ? (*env)->GetStringUTFChars(env, sourceUrl, NULL) : NULL;
+    if (src) {
+        if (initialPositionMs > 0) {
+            char startOpt[80];
+            snprintf(startOpt, sizeof(startOpt), "start=%.3f", (double)initialPositionMs / 1000.0);
+            const char *cmd[] = {"loadfile", src, "replace", "-1", startOpt, NULL};
+            mpv_command_async(player->mpv, 0, cmd);
+        } else {
+            const char *cmd[] = {"loadfile", src, "replace", NULL};
+            mpv_command_async(player->mpv, 0, cmd);
         }
-
-        if (task->gpuMode == 2) {
-            mpv_opengl_init_params gl_init = {
-                .get_proc_address = mpv_get_proc_address,
-                .get_proc_address_ctx = NULL,
-            };
-            mpv_render_param render_params[] = {
-                {MPV_RENDER_PARAM_API_TYPE, (char *)MPV_RENDER_API_TYPE_OPENGL},
-                {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init},
-                {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
-                {0}
-            };
-            if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
-                DBG("create: mpv_render_context_create (OpenGL) failed, falling back to SW\n");
-                task->gpuMode = 0;
-            }
-        }
-
-        if (task->gpuMode != 2) {
-            mpv_render_param render_params[] = {
-                {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW},
-                {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
-                {0}
-            };
-            if (mpv_render_context_create(&task->renderCtx, task->mpv, render_params) < 0) {
-                DBG("create: mpv_render_context_create (SW) failed\n");
-                mpv_terminate_destroy(task->mpv);
-                callEventSink(env, task->jvm, task->eventSink, task->eventMethod, "error", 7.0);
-                free(task->sourceUrl);
-                if (task->headers) { for (int i = 0; i < task->nheaders; i++) free(task->headers[i]); free(task->headers); }
-                if (task->eventSink && task->jvm) (*env)->DeleteGlobalRef(env, task->eventSink);
-                pthread_mutex_destroy(&task->frameMutex);
-                free(task);
-                return 0;
-            }
-        }
-
-        mpv_render_context_set_update_callback(task->renderCtx, mpvWakeupCallback, task);
-
-        /* Initialize property observation mutex (mpc-qt pattern) */
-        pthread_mutex_init(&task->propMutex, NULL);
-
-        DBG("create: %s mode active, starting render thread\n",
-            task->gpuMode == 2 ? "Wayland GPU" : "SW");
+        (*env)->ReleaseStringUTFChars(env, sourceUrl, src);
     }
 
-    DBG("create: mpv initialized, loading source...\n");
+    int muteFlag = 0;
+    mpv_set_property(player->mpv, "mute", MPV_FORMAT_FLAG, &muteFlag);
+    int pauseFlag = playWhenReady ? 0 : 1;
+    mpv_set_property(player->mpv, "pause", MPV_FORMAT_FLAG, &pauseFlag);
 
-    if (task->sourceUrl) {
-        const char *cmd[] = {"loadfile", task->sourceUrl, NULL};
-        mpv_command_async(task->mpv, 0, cmd);
-        DBG("create: loadfile sent (async)\n");
+    pthread_mutex_unlock(&gPlayerMutex);
+    return (jlong)(intptr_t)player;
+}
+
+static void onControlsWindowDestroyed(GtkWidget *widget, gpointer userData) {
+    (void)widget;
+    LinuxPlayer *player = (LinuxPlayer *)userData;
+    player->window = NULL;
+    player->glArea = NULL;
+    player->webView = NULL;
+}
+
+static void reattachWindowTask(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    if (!player->window || !GTK_IS_WIDGET(player->window)) return;
+    GdkWindow *gdkWindow = gtk_widget_get_window(player->window);
+    if (!gdkWindow) return;
+
+    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
+    Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
+    XReparentWindow(display, ownXid, player->hostXid, 0, 0);
+
+    Window rootReturn;
+    int xReturn, yReturn;
+    unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
+    if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
+                      &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
+        gtk_window_resize(GTK_WINDOW(player->window), (int)widthReturn, (int)heightReturn);
     }
 
-    if (!playWhenReady) {
-        mpv_set_property_string(task->mpv, "pause", "yes");
+    XMapWindow(display, ownXid);
+    gtk_widget_show(player->window);
+    if (player->glArea && GTK_IS_GL_AREA(player->glArea)) {
+        gtk_gl_area_set_auto_render(GTK_GL_AREA(player->glArea), TRUE);
+        gtk_gl_area_queue_render(GTK_GL_AREA(player->glArea));
     }
-    if (initialPositionMs > 0) {
-        double pos = (double)initialPositionMs / 1000.0;
-        char posStr[64];
-        snprintf(posStr, sizeof(posStr), "%f", pos);
-        mpv_set_property_string(task->mpv, "time-pos", posStr);
-    }
-
-    if (!isGpuMode) {
-        pthread_create(&task->renderThread, NULL, renderThreadFunc, task);
-    }
-
-    DBG("create: returning handle\n");
-    return (jlong)(intptr_t)task;
+    XFlush(display);
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_dispose(
     JNIEnv *env, jobject thiz, jlong handle) {
-    (void)env; (void)thiz;
+    (void)env;
+    (void)thiz;
     if (!handle) return;
-    CreateTask *task = (CreateTask *)(intptr_t)handle;
+    LinuxPlayer *player = (LinuxPlayer *)(intptr_t)handle;
 
-    task->alive = 0;
-
-    if (task->gpuMode == 1) {
-        if (task->mpv) mpv_wakeup(task->mpv);
-    } else {
-        if (task->mpv) mpv_wakeup(task->mpv);
-        if (task->renderThread) {
-            pthread_join(task->renderThread, NULL);
-        }
-        if (task->renderCtx) {
-            mpv_render_context_free(task->renderCtx);
-            task->renderCtx = NULL;
-        }
+    if (player->renderCtx) {
+        mpv_render_context_set_update_callback(player->renderCtx, NULL, NULL);
     }
 
-    /* Clean up EGL / FBO / PBO resources (Wayland GPU path) */
-    if (task->eglInitialized) {
-        if (task->eglDisplay != EGL_NO_DISPLAY) {
-            eglMakeCurrent(task->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-            if (task->fbo) { glDeleteFramebuffers(1, &task->fbo); task->fbo = 0; }
-            if (task->glTexture) { glDeleteTextures(1, &task->glTexture); task->glTexture = 0; }
-            if (task->pbo[0]) { glDeleteBuffers(3, task->pbo); task->pbo[0] = 0; task->pbo[1] = 0; task->pbo[2] = 0; }
-            if (task->eglContext != EGL_NO_CONTEXT) {
-                eglDestroyContext(task->eglDisplay, task->eglContext);
-            }
-            eglTerminate(task->eglDisplay);
-        }
-        if (task->gbmDev) {
-            gbm_device_destroy(task->gbmDev);
-            task->gbmDev = NULL;
-        }
-        /* Close DRM fd properly (fix resource leak) */
-        if (task->drmFd >= 0) {
-            close(task->drmFd);
-            task->drmFd = -1;
-        }
-        task->eglInitialized = 0;
+    if (player->mpv) {
+        int muteFlag = 1;
+        mpv_set_property(player->mpv, "mute", MPV_FORMAT_FLAG, &muteFlag);
+        int pauseFlag = 1;
+        mpv_set_property(player->mpv, "pause", MPV_FORMAT_FLAG, &pauseFlag);
+        const char *cmd[] = {"stop", NULL};
+        mpv_command_async(player->mpv, 0, cmd);
     }
 
-    /* Clean up property observation (mpc-qt pattern) */
-    pthread_mutex_destroy(&task->propMutex);
-    if (task->cachedMediaTitle) {
-        free(task->cachedMediaTitle);
-        task->cachedMediaTitle = NULL;
-    }
-
-    if (task->mpv) {
-        mpv_terminate_destroy(task->mpv);
-        task->mpv = NULL;
-    }
-
-    if (task->eventSink && task->jvm) {
-        JavaVM *jvm = task->jvm;
-        JNIEnv *e = NULL; int detach = 0;
-        jint ret = (*jvm)->GetEnv(jvm, (void**)&e, JNI_VERSION_1_6);
-        if (ret == JNI_EDETACHED) { (*jvm)->AttachCurrentThread(jvm, (void**)&e, NULL); detach = 1; }
-        if (e) (*e)->DeleteGlobalRef(e, task->eventSink);
-        if (detach) (*jvm)->DetachCurrentThread(jvm);
-    }
-    task->eventSink = NULL;
-    task->eventMethod = NULL;
-
-    if (task->gpuMode != 1) {
-        pthread_mutex_lock(&task->frameMutex);
-        free(task->frameData);
-        task->frameData = NULL;
-        task->frameW = 0;
-        task->frameH = 0;
-        task->frameReady = 0;
-        pthread_mutex_unlock(&task->frameMutex);
-    }
-
-    free(task->sourceUrl);
-    task->sourceUrl = NULL;
-    if (task->headers) {
-        for (int i = 0; i < task->nheaders; i++) free(task->headers[i]);
-        free(task->headers);
-        task->headers = NULL;
-    }
+    runOnGtkThreadSync(detachWindowTask, player);
 }
 
-/* ---- Wayland session detection ---- */
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isWaylandSession(
-    JNIEnv *env, jobject thiz) {
-    (void)env; (void)thiz;
-    return detect_wayland() ? JNI_TRUE : JNI_FALSE;
+static void detachWindowTask(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    if (!player->window || !GTK_IS_WIDGET(player->window)) return;
+    GdkWindow *gdkWindow = gtk_widget_get_window(player->window);
+    if (!gdkWindow) return;
+
+    Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
+    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
+    Window root = DefaultRootWindow(display);
+
+    XUnmapWindow(display, ownXid);
+    XReparentWindow(display, ownXid, root, 0, 0);
+    XFlush(display);
 }
 
-static CreateTask *h(jlong handle) {
-    return handle ? (CreateTask *)(intptr_t)handle : NULL;
+static LinuxPlayer *getPlayer(jlong handle) {
+    return handle ? (LinuxPlayer *)(intptr_t)handle : NULL;
 }
-
-static void letterbox_scale_rgba_to_argb(
-    unsigned char *src, int srcW, int srcH, int srcStride,
-    jint *dst, int dstW, int dstH)
-{
-    double aspect = (double)srcW / srcH;
-    double dstAspect = (double)dstW / dstH;
-    int drawW, drawH, offX, offY;
-    if (dstAspect > aspect) {
-        drawH = dstH;
-        drawW = (int)(dstH * aspect + 0.5);
-        offX = (dstW - drawW) / 2;
-        offY = 0;
-    } else {
-        drawW = dstW;
-        drawH = (int)(dstW / aspect + 0.5);
-        offX = 0;
-        offY = (dstH - drawH) / 2;
-    }
-    if (drawW > dstW) drawW = dstW;
-    if (drawH > dstH) drawH = dstH;
-    if (offX < 0) offX = 0;
-    if (offY < 0) offY = 0;
-
-    for (int y = 0; y < drawH; y++) {
-        int srcY = y * srcH / drawH;
-        unsigned char *row = (unsigned char *)(src + srcY * srcStride);
-        for (int x = 0; x < drawW; x++) {
-            int srcX = x * srcW / drawW;
-            unsigned char r = row[srcX * 4 + 0];
-            unsigned char g = row[srcX * 4 + 1];
-            unsigned char b = row[srcX * 4 + 2];
-            dst[(y + offY) * dstW + (x + offX)] = (0xFF << 24) | (r << 16) | (g << 8) | b;
-        }
-    }
-}
-
-static void letterbox_scale_rgba_to_bgra(
-    unsigned char *src, int srcW, int srcH, int srcStride,
-    unsigned char *dst, int dstW, int dstH)
-{
-    double aspect = (double)srcW / srcH;
-    double dstAspect = (double)dstW / dstH;
-    int drawW, drawH, offX, offY;
-    if (dstAspect > aspect) {
-        drawH = dstH;
-        drawW = (int)(dstH * aspect + 0.5);
-        offX = (dstW - drawW) / 2;
-        offY = 0;
-    } else {
-        drawW = dstW;
-        drawH = (int)(dstW / aspect + 0.5);
-        offX = 0;
-        offY = (dstH - drawH) / 2;
-    }
-    if (drawW > dstW) drawW = dstW;
-    if (drawH > dstH) drawH = dstH;
-    if (offX < 0) offX = 0;
-    if (offY < 0) offY = 0;
-
-    memset(dst, 0, (size_t)dstW * dstH * 4);
-    for (int y = 0; y < drawH; y++) {
-        int srcY = y * srcH / drawH;
-        unsigned char *sRow = (unsigned char *)(src + srcY * srcStride);
-        unsigned char *dRow = (unsigned char *)(dst + ((y + offY) * dstW + offX) * 4);
-        for (int x = 0; x < drawW; x++) {
-            int srcX = x * srcW / drawW;
-            dRow[x * 4 + 0] = sRow[srcX * 4 + 2]; /* B */
-            dRow[x * 4 + 1] = sRow[srcX * 4 + 1]; /* G */
-            dRow[x * 4 + 2] = sRow[srcX * 4 + 0]; /* R */
-            dRow[x * 4 + 3] = 0xFF;                 /* A */
-        }
-    }
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrame(
-    JNIEnv *env, jobject thiz, jlong handle,
-    jintArray dstPixels, jint dstW, jint dstH) {
-    (void)thiz;
-    CreateTask *task = h(handle);
-    if (!task || !task->alive) return JNI_FALSE;
-    if (task->gpuMode == 1) return JNI_FALSE;
-    if (!task->frameData) return JNI_FALSE;
-
-    pthread_mutex_lock(&task->frameMutex);
-
-    int srcW = task->frameW;
-    int srcH = task->frameH;
-    int srcStride = task->frameStride;
-    char *src = task->frameData;
-
-    if (!task->frameReady || srcW <= 0 || srcH <= 0) {
-        pthread_mutex_unlock(&task->frameMutex);
-        return JNI_FALSE;
-    }
-    task->frameReady = 0;
-
-    jint *dst = (*env)->GetIntArrayElements(env, dstPixels, NULL);
-    if (!dst) { pthread_mutex_unlock(&task->frameMutex); return JNI_FALSE; }
-
-    letterbox_scale_rgba_to_argb(
-        (unsigned char *)src, srcW, srcH, srcStride,
-        dst, dstW, dstH);
-
-    (*env)->ReleaseIntArrayElements(env, dstPixels, dst, 0);
-    pthread_mutex_unlock(&task->frameMutex);
-    return JNI_TRUE;
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrameBytes(
-    JNIEnv *env, jobject thiz, jlong handle,
-    jbyteArray dstBytes, jint dstW, jint dstH) {
-    (void)thiz;
-    CreateTask *task = h(handle);
-    if (!task || !task->alive) return JNI_FALSE;
-    if (task->gpuMode == 1) return JNI_FALSE;
-    if (!task->frameData) return JNI_FALSE;
-
-    pthread_mutex_lock(&task->frameMutex);
-
-    int srcW = task->frameW;
-    int srcH = task->frameH;
-    int srcStride = task->frameStride;
-    char *src = task->frameData;
-
-    if (!task->frameReady || srcW <= 0 || srcH <= 0) {
-        pthread_mutex_unlock(&task->frameMutex);
-        return JNI_FALSE;
-    }
-    task->frameReady = 0;
-
-    jbyte *dst = (*env)->GetByteArrayElements(env, dstBytes, NULL);
-    if (!dst) { pthread_mutex_unlock(&task->frameMutex); return JNI_FALSE; }
-
-    jsize dstLen = (*env)->GetArrayLength(env, dstBytes);
-    if (dstLen < (jsize)(dstW * dstH * 4)) {
-        (*env)->ReleaseByteArrayElements(env, dstBytes, dst, JNI_ABORT);
-        pthread_mutex_unlock(&task->frameMutex);
-        return JNI_FALSE;
-    }
-
-    letterbox_scale_rgba_to_bgra(
-        (unsigned char *)src, srcW, srcH, srcStride,
-        (unsigned char *)dst, dstW, dstH);
-
-    (*env)->ReleaseByteArrayElements(env, dstBytes, dst, 0);
-    pthread_mutex_unlock(&task->frameMutex);
-    return JNI_TRUE;
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setDirectBufferDst(
-    JNIEnv *env, jobject thiz, jlong handle,
-    jobject dstBuffer, jint dstW, jint dstH) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(handle);
-    if (!task) return;
-    if (dstBuffer) {
-        task->directDst = (unsigned char *)(*env)->GetDirectBufferAddress(env, dstBuffer);
-        task->directDstW = dstW;
-        task->directDstH = dstH;
-    } else {
-        task->directDst = NULL;
-        task->directDstW = 0;
-        task->directDstH = 0;
-    }
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrameDirect(
-    JNIEnv *env, jobject thiz, jlong handle,
-    jobject dstBuffer, jint dstW, jint dstH) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(handle);
-    if (!task || !task->alive) return JNI_FALSE;
-    if (task->gpuMode == 1) return JNI_FALSE;
-
-    unsigned char *dst = (unsigned char *)(*env)->GetDirectBufferAddress(env, dstBuffer);
-    if (!dst) return JNI_FALSE;
-
-    pthread_mutex_lock(&task->frameMutex);
-
-    int srcW = task->frameW;
-    int srcH = task->frameH;
-    int srcStride = task->frameStride;
-    char *src = task->frameData;
-
-    if (!task->frameReady || srcW <= 0 || srcH <= 0) {
-        pthread_mutex_unlock(&task->frameMutex);
-        return JNI_FALSE;
-    }
-    task->frameReady = 0;
-
-    letterbox_scale_rgba_to_bgra(
-        (unsigned char *)src, srcW, srcH, srcStride,
-        dst, dstW, dstH);
-
-    pthread_mutex_unlock(&task->frameMutex);
-    return JNI_TRUE;
-}
-
-/* ---- remaining JNI stubs ---- */
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_updateControls(
     JNIEnv *env, jobject thiz, jlong handle, jstring json) {
-    (void)env; (void)thiz; (void)handle; (void)json;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return;
+    const char *chars = (*env)->GetStringUTFChars(env, json, NULL);
+    if (chars) updateControlsInternal(player, chars);
+    (*env)->ReleaseStringUTFChars(env, json, chars);
+}
+
+static void grabFocusTask(void *arg) {
+    LinuxPlayer *player = (LinuxPlayer *)arg;
+    if (player->webView) gtk_widget_grab_focus(GTK_WIDGET(player->webView));
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return;
+    runOnGtkThreadAsync(grabFocusTask, player);
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setPaused(
-    JNIEnv *env, jobject thiz, jlong hdl, jboolean paused) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    mpv_set_property_string(task->mpv, "pause", paused == JNI_TRUE ? "yes" : "no");
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_seekTo(
-    JNIEnv *env, jobject thiz, jlong hdl, jlong posMs) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%f", (double)posMs / 1000.0);
-    mpv_set_property_string(task->mpv, "time-pos", buf);
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_seekBy(
-    JNIEnv *env, jobject thiz, jlong hdl, jlong offMs) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%ld", (long)(offMs / 1000));
-    const char *cmd[] = {"seek", buf, "relative", NULL};
-    mpv_command_async(task->mpv, 0, cmd);
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSpeed(
-    JNIEnv *env, jobject thiz, jlong hdl, jfloat speed) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%f", (double)speed);
-    mpv_set_property_string(task->mpv, "speed", buf);
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_adjustVolume(
-    JNIEnv *env, jobject thiz, jlong hdl, jfloat delta) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    double vol = 100.0;
-    mpv_get_property(task->mpv, "volume", MPV_FORMAT_DOUBLE, &vol);
-    vol += (double)delta;
-    if (vol < 0) vol = 0;
-    if (vol > 200) vol = 200;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%f", vol);
-    mpv_set_property_string(task->mpv, "volume", buf);
-}
-
-JNIEXPORT jfloat JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_volume(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0.0f;
-    double vol = 100.0;
-    mpv_get_property(task->mpv, "volume", MPV_FORMAT_DOUBLE, &vol);
-    if (vol < 0) vol = 0;
-    if (vol > 200) vol = 200;
-    return (jfloat)(vol / 100.0);
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setVolume(
-    JNIEnv *env, jobject thiz, jlong hdl, jfloat level) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    double vol = (double)level * 100.0;
-    if (vol < 0) vol = 0;
-    if (vol > 200) vol = 200;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%f", vol);
-    mpv_set_property_string(task->mpv, "volume", buf);
-}
-
-JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_durationMs(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0;
-    int64_t d = 0;
-    mpv_get_property(task->mpv, "duration", MPV_FORMAT_INT64, &d);
-    return (jlong)d * 1000;
-}
-
-JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_positionMs(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0;
-    int64_t pos = 0;
-    mpv_get_property(task->mpv, "time-pos", MPV_FORMAT_INT64, &pos);
-    return (jlong)pos * 1000;
-}
-
-JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_bufferedPositionMs(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0;
-    int64_t pos = 0;
-    mpv_get_property(task->mpv, "demuxer-cached-time", MPV_FORMAT_INT64, &pos);
-    return (jlong)pos * 1000;
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isLoading(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return JNI_FALSE;
-
-    int idle = 1;
-    mpv_get_property(task->mpv, "idle-active", MPV_FORMAT_FLAG, &idle);
-    if (idle) return JNI_FALSE;
-
-    int64_t cacheState = 0;
-    mpv_get_property(task->mpv, "cache-buffering-state", MPV_FORMAT_INT64, &cacheState);
-    if (cacheState > 0 && cacheState < 100) return JNI_TRUE;
-
-    int paused = 0;
-    mpv_get_property(task->mpv, "pause", MPV_FORMAT_FLAG, &paused);
-    int coreIdle = 1;
-    mpv_get_property(task->mpv, "core-idle", MPV_FORMAT_FLAG, &coreIdle);
-    if (coreIdle && !paused) return JNI_TRUE;
-
-    return JNI_FALSE;
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isEnded(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return JNI_FALSE;
-    int eof = 0;
-    mpv_get_property(task->mpv, "eof-reached", MPV_FORMAT_FLAG, &eof);
-    return eof ? JNI_TRUE : JNI_FALSE;
+    JNIEnv *env, jobject thiz, jlong handle, jboolean paused) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    int flag = paused ? 1 : 0;
+    mpv_set_property(player->mpv, "pause", MPV_FORMAT_FLAG, &flag);
 }
 
 JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isPaused(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return JNI_TRUE;
-    int paused = 1;
-    mpv_get_property(task->mpv, "pause", MPV_FORMAT_FLAG, &paused);
-    return paused ? JNI_TRUE : JNI_FALSE;
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return JNI_TRUE;
+    int flag = 1;
+    mpv_get_property(player->mpv, "pause", MPV_FORMAT_FLAG, &flag);
+    return flag ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_seekTo(
+    JNIEnv *env, jobject thiz, jlong handle, jlong posMs) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%f", (double)posMs / 1000.0);
+    const char *cmd[] = {"seek", buf, "absolute+keyframes", NULL};
+    mpv_command_async(player->mpv, 0, cmd);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_seekBy(
+    JNIEnv *env, jobject thiz, jlong handle, jlong offMs) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%f", (double)offMs / 1000.0);
+    const char *cmd[] = {"seek", buf, "relative+keyframes", NULL};
+    mpv_command_async(player->mpv, 0, cmd);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSpeed(
+    JNIEnv *env, jobject thiz, jlong handle, jfloat speed) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    double clamped = speed < 0.25 ? 0.25 : (speed > 4.0 ? 4.0 : speed);
+    mpv_set_property(player->mpv, "speed", MPV_FORMAT_DOUBLE, &clamped);
 }
 
 JNIEXPORT jfloat JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_speed(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 1.0f;
-    char *s = mpv_get_property_string(task->mpv, "speed");
-    float v = s ? (float)atof(s) : 1.0f;
-    mpv_free(s);
-    return v;
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return 1.0f;
+    double v = 1.0;
+    mpv_get_property(player->mpv, "speed", MPV_FORMAT_DOUBLE, &v);
+    return (jfloat)v;
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_adjustVolume(
+    JNIEnv *env, jobject thiz, jlong handle, jfloat delta) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    double current = 100.0;
+    mpv_get_property(player->mpv, "volume", MPV_FORMAT_DOUBLE, &current);
+    double next = current + delta;
+    if (next < 0.0) next = 0.0;
+    if (next > 100.0) next = 100.0;
+    mpv_set_property(player->mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setVolume(
+    JNIEnv *env, jobject thiz, jlong handle, jfloat level) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    double next = (double)level * 100.0;
+    if (next < 0.0) next = 0.0;
+    if (next > 100.0) next = 100.0;
+    mpv_set_property(player->mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+}
+
+JNIEXPORT jfloat JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_volume(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return 1.0f;
+    double v = 100.0;
+    mpv_get_property(player->mpv, "volume", MPV_FORMAT_DOUBLE, &v);
+    if (v < 0.0) v = 0.0;
+    if (v > 100.0) v = 100.0;
+    return (jfloat)(v / 100.0);
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setResizeMode(
-    JNIEnv *env, jobject thiz, jlong hdl, jint mode) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    const char *v = (mode == 1) ? "1.0" : (mode == 2) ? "-1.0" : "0.0";
-    mpv_set_property_string(task->mpv, "panscan", v);
-}
-
-JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_audioTracksJson(
-    JNIEnv *env, jobject thiz, jlong hdl) {
+    JNIEnv *env, jobject thiz, jlong handle, jint mode) {
+    (void)env;
     (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return (*env)->NewStringUTF(env, "[]");
-    char *json = tracks_json_for_type(task->mpv, "audio");
-    jstring r = (*env)->NewStringUTF(env, json ? json : "[]");
-    free(json);
-    return r;
-}
-
-JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_subtitleTracksJson(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return (*env)->NewStringUTF(env, "[]");
-    char *json = tracks_json_for_type(task->mpv, "sub");
-    jstring r = (*env)->NewStringUTF(env, json ? json : "[]");
-    free(json);
-    return r;
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_selectAudioTrack(
-    JNIEnv *env, jobject thiz, jlong hdl, jint id) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d", id);
-    mpv_set_property_string(task->mpv, "aid", buf);
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_selectSubtitleTrack(
-    JNIEnv *env, jobject thiz, jlong hdl, jint id) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    if (id < 0) {
-        mpv_set_property_string(task->mpv, "sid", "no");
-    } else {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", id);
-        mpv_set_property_string(task->mpv, "sid", buf);
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    switch (mode) {
+    case 1:
+    case 2:
+        mpv_set_option_string(player->mpv, "keepaspect", "yes");
+        mpv_set_option_string(player->mpv, "panscan", "1.0");
+        mpv_set_option_string(player->mpv, "video-unscaled", "no");
+        break;
+    case 3:
+        mpv_set_option_string(player->mpv, "keepaspect", "no");
+        mpv_set_option_string(player->mpv, "panscan", "0.0");
+        mpv_set_option_string(player->mpv, "video-unscaled", "no");
+        break;
+    default:
+        mpv_set_option_string(player->mpv, "keepaspect", "yes");
+        mpv_set_option_string(player->mpv, "panscan", "0.0");
+        mpv_set_option_string(player->mpv, "video-unscaled", "no");
+        break;
     }
 }
 
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_addSubtitleUrl(
-    JNIEnv *env, jobject thiz, jlong hdl, jstring url) {
+static double doubleProperty(LinuxPlayer *player, const char *name, double fallback) {
+    double v = fallback;
+    if (player->mpv) mpv_get_property(player->mpv, name, MPV_FORMAT_DOUBLE, &v);
+    return v;
+}
+
+static int64_t int64Property(LinuxPlayer *player, const char *name, int64_t fallback) {
+    int64_t v = fallback;
+    if (player->mpv) mpv_get_property(player->mpv, name, MPV_FORMAT_INT64, &v);
+    return v;
+}
+
+static int flagProperty(LinuxPlayer *player, const char *name, int fallback) {
+    int v = fallback;
+    if (player->mpv) mpv_get_property(player->mpv, name, MPV_FORMAT_FLAG, &v);
+    return v;
+}
+
+static char *stringProperty(LinuxPlayer *player, const char *name) {
+    char *v = NULL;
+    if (player->mpv) mpv_get_property(player->mpv, name, MPV_FORMAT_STRING, &v);
+    return v;
+}
+
+JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_durationMs(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
     (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    const char *u = (*env)->GetStringUTFChars(env, url, NULL);
-    if (u) {
-        const char *cmd[] = {"sub-add", u, "select", NULL};
-        int ret = mpv_command_async(task->mpv, 0, cmd);
-        if (ret < 0) {
-            DBG("addSubtitleUrl: mpv_command_async failed: %s\n", mpv_error_string(ret));
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return 0;
+    return (jlong)llround(doubleProperty(player, "duration", 0.0) * 1000.0);
+}
+
+JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_positionMs(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return 0;
+    return (jlong)llround(doubleProperty(player, "time-pos", 0.0) * 1000.0);
+}
+
+JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_bufferedPositionMs(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return 0;
+    double pos = doubleProperty(player, "time-pos", 0.0);
+    double cache = doubleProperty(player, "demuxer-cache-duration", 0.0);
+    double buffered = pos + cache;
+    if (buffered < 0.0) buffered = 0.0;
+    return (jlong)llround(buffered * 1000.0);
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isLoading(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return JNI_TRUE;
+    int paused = flagProperty(player, "pause", 1);
+    int eof = flagProperty(player, "eof-reached", 0);
+    int idle = flagProperty(player, "core-idle", 1);
+    int bufferingCache = flagProperty(player, "paused-for-cache", 0);
+    double duration = doubleProperty(player, "duration", 0.0);
+    int64_t trackCount = int64Property(player, "track-list/count", 0);
+    int fileReady = duration > 0.0 || trackCount > 0;
+    int notReady = idle && !eof && (!paused || !fileReady);
+    return (notReady || bufferingCache) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_isEnded(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return JNI_FALSE;
+    return flagProperty(player, "eof-reached", 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+static void appendJsonEscaped(char **buf, size_t *len, size_t *cap, const char *str) {
+    if (!str) return;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
+        const char *rep = NULL;
+        char single[8];
+        switch (*p) {
+        case '\\': rep = "\\\\"; break;
+        case '"': rep = "\\\""; break;
+        case '\n': rep = "\\n"; break;
+        case '\r': rep = "\\r"; break;
+        case '\t': rep = "\\t"; break;
+        default:
+            if (*p < 0x20) {
+                snprintf(single, sizeof(single), "\\u%04x", *p);
+                rep = single;
+            }
         }
-        (*env)->ReleaseStringUTFChars(env, url, u);
+        if (rep) {
+            size_t repLen = strlen(rep);
+            if (*len + repLen + 1 > *cap) {
+                *cap = (*len + repLen + 1) * 2;
+                *buf = realloc(*buf, *cap);
+            }
+            memcpy(*buf + *len, rep, repLen);
+            *len += repLen;
+            (*buf)[*len] = '\0';
+        } else {
+            if (*len + 2 > *cap) {
+                *cap *= 2;
+                *buf = realloc(*buf, *cap);
+            }
+            (*buf)[(*len)++] = (char)*p;
+            (*buf)[*len] = '\0';
+        }
+    }
+}
+
+static char *tracksJsonForType(LinuxPlayer *player, const char *wantedType) {
+    size_t cap = 256;
+    size_t len = 0;
+    char *out = malloc(cap);
+    out[0] = '\0';
+#define APPEND(s) do { \
+        size_t sLen = strlen(s); \
+        if (len + sLen + 1 > cap) { cap = (len + sLen + 1) * 2; out = realloc(out, cap); } \
+        memcpy(out + len, s, sLen); len += sLen; out[len] = '\0'; \
+    } while (0)
+
+    APPEND("[");
+    int64_t count = int64Property(player, "track-list/count", 0);
+    int logicalIndex = 0;
+    int first = 1;
+    for (int64_t i = 0; i < count; i++) {
+        char prop[96];
+        snprintf(prop, sizeof(prop), "track-list/%lld/type", (long long)i);
+        char *type = stringProperty(player, prop);
+        if (!type || strcmp(type, wantedType) != 0) {
+            mpv_free(type);
+            continue;
+        }
+        mpv_free(type);
+
+        snprintf(prop, sizeof(prop), "track-list/%lld/id", (long long)i);
+        int64_t trackId = int64Property(player, prop, logicalIndex + 1);
+        snprintf(prop, sizeof(prop), "track-list/%lld/title", (long long)i);
+        char *title = stringProperty(player, prop);
+        snprintf(prop, sizeof(prop), "track-list/%lld/lang", (long long)i);
+        char *lang = stringProperty(player, prop);
+        snprintf(prop, sizeof(prop), "track-list/%lld/selected", (long long)i);
+        int selected = flagProperty(player, prop, 0);
+        snprintf(prop, sizeof(prop), "track-list/%lld/forced", (long long)i);
+        int forced = flagProperty(player, prop, 0);
+
+        char idStr[32];
+        snprintf(idStr, sizeof(idStr), "%lld", (long long)trackId);
+        char fallbackLabel[32];
+        snprintf(fallbackLabel, sizeof(fallbackLabel), "%s %d", strcmp(wantedType, "sub") == 0 ? "Subtitle" : "Track", logicalIndex + 1);
+        const char *label = (title && title[0]) ? title : ((lang && lang[0]) ? lang : fallbackLabel);
+
+        if (!first) APPEND(",");
+        first = 0;
+        APPEND("{\"index\":");
+        char numBuf[32];
+        snprintf(numBuf, sizeof(numBuf), "%d", logicalIndex);
+        APPEND(numBuf);
+        APPEND(",\"id\":\"");
+        appendJsonEscaped(&out, &len, &cap, idStr);
+        APPEND("\",\"label\":\"");
+        appendJsonEscaped(&out, &len, &cap, label);
+        APPEND("\",\"language\":\"");
+        appendJsonEscaped(&out, &len, &cap, lang ? lang : "");
+        APPEND("\",\"selected\":");
+        APPEND(selected ? "true" : "false");
+        APPEND(",\"forced\":");
+        APPEND(forced ? "true" : "false");
+        APPEND("}");
+
+        mpv_free(title);
+        mpv_free(lang);
+        logicalIndex++;
+    }
+    APPEND("]");
+#undef APPEND
+    return out;
+}
+
+JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_audioTracksJson(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return (*env)->NewStringUTF(env, "[]");
+    char *json = tracksJsonForType(player, "audio");
+    jstring result = (*env)->NewStringUTF(env, json);
+    free(json);
+    return result;
+}
+
+JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_subtitleTracksJson(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return (*env)->NewStringUTF(env, "[]");
+    char *json = tracksJsonForType(player, "sub");
+    jstring result = (*env)->NewStringUTF(env, json);
+    free(json);
+    return result;
+}
+
+static void selectAudioTrackIdInternal(LinuxPlayer *player, int trackId) {
+    if (!player->mpv) return;
+    int64_t id = trackId;
+    mpv_set_property(player->mpv, "aid", MPV_FORMAT_INT64, &id);
+}
+
+static void selectSubtitleTrackIdInternal(LinuxPlayer *player, int trackId) {
+    if (!player->mpv) return;
+    if (trackId < 0) {
+        mpv_set_option_string(player->mpv, "sid", "no");
+        return;
+    }
+    int64_t id = trackId;
+    mpv_set_property(player->mpv, "sid", MPV_FORMAT_INT64, &id);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_selectAudioTrack(
+    JNIEnv *env, jobject thiz, jlong handle, jint trackId) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (player) selectAudioTrackIdInternal(player, trackId);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_selectSubtitleTrack(
+    JNIEnv *env, jobject thiz, jlong handle, jint trackId) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (player) selectSubtitleTrackIdInternal(player, trackId);
+}
+
+JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_addSubtitleUrl(
+    JNIEnv *env, jobject thiz, jlong handle, jstring url) {
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    const char *chars = (*env)->GetStringUTFChars(env, url, NULL);
+    if (chars && chars[0]) {
+        const char *cmd[] = {"sub-add", chars, "select", NULL};
+        mpv_command_async(player->mpv, 0, cmd);
+    }
+    (*env)->ReleaseStringUTFChars(env, url, chars);
+}
+
+static void removeExternalSubtitleTracks(LinuxPlayer *player) {
+    if (!player->mpv) return;
+    int64_t count = int64Property(player, "track-list/count", 0);
+    for (int64_t i = count - 1; i >= 0; i--) {
+        char prop[96];
+        snprintf(prop, sizeof(prop), "track-list/%lld/type", (long long)i);
+        char *type = stringProperty(player, prop);
+        snprintf(prop, sizeof(prop), "track-list/%lld/external", (long long)i);
+        int external = flagProperty(player, prop, 0);
+        if (type && strcmp(type, "sub") == 0 && external) {
+            snprintf(prop, sizeof(prop), "track-list/%lld/id", (long long)i);
+            int64_t trackId = int64Property(player, prop, -1);
+            if (trackId >= 0) {
+                char idStr[32];
+                snprintf(idStr, sizeof(idStr), "%lld", (long long)trackId);
+                const char *cmd[] = {"sub-remove", idStr, NULL};
+                mpv_command(player->mpv, cmd);
+            }
+        }
+        mpv_free(type);
     }
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_clearExternalSubtitles(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    const char *cmd[] = {"sub-remove", NULL};
-    mpv_command_async(task->mpv, 0, cmd);
+    JNIEnv *env, jobject thiz, jlong handle) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return;
+    removeExternalSubtitleTracks(player);
+    if (player->mpv) mpv_set_option_string(player->mpv, "sid", "no");
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_clearExternalSubtitlesAndSelect(
-    JNIEnv *env, jobject thiz, jlong hdl, jint id) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    const char *cmd[] = {"sub-remove", NULL};
-    mpv_command_async(task->mpv, 0, cmd);
-    if (id < 0) { mpv_set_property_string(task->mpv, "sid", "no"); }
-    else { char buf[16]; snprintf(buf, sizeof(buf), "%d", id); mpv_set_property_string(task->mpv, "sid", buf); }
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applyWindowChrome(
-    JNIEnv *env, jobject thiz, jlong wnd, jboolean dark, jint cap, jint border, jint txt) {
-    (void)env; (void)thiz; (void)wnd; (void)dark; (void)cap; (void)border; (void)txt;
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowBorderlessFullscreen(
-    JNIEnv *env, jobject thiz, jlong hwnd, jboolean fs, jint x, jint y, jint w, jint h) {
-    (void)env; (void)thiz; (void)hwnd; (void)fs; (void)x; (void)y; (void)w; (void)h;
+    JNIEnv *env, jobject thiz, jlong handle, jint trackId) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player) return;
+    removeExternalSubtitleTracks(player);
+    if (trackId >= 0) {
+        selectSubtitleTrackIdInternal(player, trackId);
+    } else if (player->mpv) {
+        mpv_set_option_string(player->mpv, "sid", "no");
+    }
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSubtitleDelayMs(
-    JNIEnv *env, jobject thiz, jlong hdl, jint ms) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    char buf[16]; snprintf(buf, sizeof(buf), "%d", ms);
-    mpv_set_property_string(task->mpv, "sub-delay", buf);
+    JNIEnv *env, jobject thiz, jlong handle, jint delayMs) {
+    (void)env;
+    (void)thiz;
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
+    int clamped = delayMs < -60000 ? -60000 : (delayMs > 60000 ? 60000 : delayMs);
+    double seconds = (double)clamped / 1000.0;
+    mpv_set_property(player->mpv, "sub-delay", MPV_FORMAT_DOUBLE, &seconds);
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applySubtitleStyle(
-    JNIEnv *env, jobject thiz, jlong hdl,
+    JNIEnv *env, jobject thiz, jlong handle,
     jstring textColor, jstring backgroundColor, jstring outlineColor,
     jfloat outlineSize, jboolean bold, jfloat fontSize, jint subPos) {
     (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return;
-    const char *tc = (*env)->GetStringUTFChars(env, textColor, NULL);
-    const char *bc = (*env)->GetStringUTFChars(env, backgroundColor, NULL);
-    const char *oc = (*env)->GetStringUTFChars(env, outlineColor, NULL);
-    char sz[16], os[16], ps[16];
-    snprintf(sz, sizeof(sz), "%f", fontSize);
-    snprintf(os, sizeof(os), "%f", outlineSize);
-    snprintf(ps, sizeof(ps), "%d", subPos);
-    mpv_set_property_string(task->mpv, "sub-color", tc);
-    mpv_set_property_string(task->mpv, "sub-back-color", bc);
-    mpv_set_property_string(task->mpv, "sub-border-color", oc);
-    mpv_set_property_string(task->mpv, "sub-border-size", os);
-    mpv_set_property_string(task->mpv, "sub-font-size", sz);
-    mpv_set_property_string(task->mpv, "sub-bold", bold ? "yes" : "no");
-    mpv_set_property_string(task->mpv, "sub-pos", ps);
-    (*env)->ReleaseStringUTFChars(env, textColor, tc);
-    (*env)->ReleaseStringUTFChars(env, backgroundColor, bc);
-    (*env)->ReleaseStringUTFChars(env, outlineColor, oc);
-}
+    LinuxPlayer *player = getPlayer(handle);
+    if (!player || !player->mpv) return;
 
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setProperty(
-    JNIEnv *env, jobject thiz, jlong hdl, jstring name, jstring value) {
-    (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv || !name || !value) return;
-    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
-    const char *v = (*env)->GetStringUTFChars(env, value, NULL);
-    if (n && v) {
-        DBG("setProperty: %s = %s\n", n, v);
-        mpv_set_property_string(task->mpv, n, v);
-    }
-    if (n) (*env)->ReleaseStringUTFChars(env, name, n);
-    if (v) (*env)->ReleaseStringUTFChars(env, value, v);
-}
+    const char *text = (*env)->GetStringUTFChars(env, textColor, NULL);
+    const char *background = (*env)->GetStringUTFChars(env, backgroundColor, NULL);
+    const char *outline = (*env)->GetStringUTFChars(env, outlineColor, NULL);
 
-/* ---- Property observation (mpc-qt pattern) ---- */
-/* These functions allow the Kotlin layer to poll cached properties
-   without blocking the render thread, reducing JNI overhead */
+    mpv_set_option_string(player->mpv, "sub-ass-override", "force");
+    mpv_set_option_string(player->mpv, "sub-color", (text && text[0]) ? text : "#FFFFFFFF");
+    mpv_set_option_string(player->mpv, "sub-back-color", (background && background[0]) ? background : "#00000000");
+    mpv_set_option_string(player->mpv, "sub-outline-color", (outline && outline[0]) ? outline : "#FF000000");
+    mpv_set_option_string(player->mpv, "sub-border-style",
+        (background && strncmp(background, "#00", 3) == 0) ? "outline-and-shadow" : "opaque-box");
+    mpv_set_option_string(player->mpv, "sub-bold", bold ? "yes" : "no");
 
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_observeProperty(
-    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv || !name) return JNI_FALSE;
-    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
-    if (!n) return JNI_FALSE;
+    double outlineD = outlineSize < 0.0f ? 0.0 : (outlineSize > 8.0f ? 8.0 : outlineSize);
+    double sizeD = fontSize < 18.0f ? 18.0 : (fontSize > 96.0f ? 96.0 : fontSize);
+    int64_t posD = subPos < 0 ? 0 : (subPos > 150 ? 150 : subPos);
+    mpv_set_property(player->mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outlineD);
+    mpv_set_property(player->mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &sizeD);
+    mpv_set_property(player->mpv, "sub-pos", MPV_FORMAT_INT64, &posD);
 
-    /* Observe property for change notifications */
-    int ret = mpv_observe_property(task->mpv, 0, n, MPV_FORMAT_NODE);
-    (*env)->ReleaseStringUTFChars(env, name, n);
-
-    return (ret >= 0) ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_unobserveProperty(
-    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv || !name) return JNI_FALSE;
-    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
-    if (!n) return JNI_FALSE;
-
-    /* Note: mpv_unobserve_property requires the same userData used in observe */
-    (*env)->ReleaseStringUTFChars(env, name, n);
-    return JNI_TRUE;
-}
-
-JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_getPropertyJson(
-    JNIEnv *env, jobject thiz, jlong hdl, jstring name) {
-    (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv || !name) return (*env)->NewStringUTF(env, "null");
-
-    const char *n = (*env)->GetStringUTFChars(env, name, NULL);
-    if (!n) return (*env)->NewStringUTF(env, "null");
-
-    mpv_node node;
-    int ret = mpv_get_property(task->mpv, n, MPV_FORMAT_NODE, &node);
-    (*env)->ReleaseStringUTFChars(env, name, n);
-
-    if (ret < 0) return (*env)->NewStringUTF(env, "null");
-
-    /* Convert to JSON */
-    JsonBuf b;
-    jb_init(&b);
-    jb_node(&b, &node);
-    mpv_free_node_contents(&node);
-
-    jstring result = (*env)->NewStringUTF(env, b.s ? b.s : "null");
-    free(b.s);
-    return result;
-}
-
-/* ---- Cached property getters (mpc-qt throttling pattern) ---- */
-/* These return cached values updated by the render thread, avoiding JNI calls */
-
-JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedDurationMs(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0;
-
-    /* Update cache if dirty */
-    if (task->propDirtyDuration) {
-        mpv_get_property(task->mpv, "duration", MPV_FORMAT_INT64, &task->cachedDurationMs);
-        task->cachedDurationMs *= 1000; /* Convert to ms */
-        task->propDirtyDuration = 0;
-    }
-    return (jlong)task->cachedDurationMs;
-}
-
-JNIEXPORT jlong JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedPositionMs(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 0;
-
-    if (task->propDirtyPosition) {
-        mpv_get_property(task->mpv, "time-pos", MPV_FORMAT_INT64, &task->cachedPositionMs);
-        task->cachedPositionMs *= 1000; /* Convert to ms */
-        task->propDirtyPosition = 0;
-    }
-    return (jlong)task->cachedPositionMs;
-}
-
-JNIEXPORT jfloat JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedVolume(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return 1.0f;
-
-    if (task->propDirtyVolume) {
-        mpv_get_property(task->mpv, "volume", MPV_FORMAT_DOUBLE, &task->cachedVolume);
-        task->propDirtyVolume = 0;
-    }
-    return (jfloat)(task->cachedVolume / 100.0);
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedIsPaused(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return JNI_TRUE;
-
-    if (task->propDirtyPause) {
-        mpv_get_property(task->mpv, "pause", MPV_FORMAT_FLAG, &task->cachedPause);
-        task->propDirtyPause = 0;
-    }
-    return task->cachedPause ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedIsEof(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)env; (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return JNI_FALSE;
-
-    if (task->propDirtyEof) {
-        mpv_get_property(task->mpv, "eof-reached", MPV_FORMAT_FLAG, &task->cachedEofReached);
-        task->propDirtyEof = 0;
-    }
-    return task->cachedEofReached ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jstring JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_cachedMediaTitle(
-    JNIEnv *env, jobject thiz, jlong hdl) {
-    (void)thiz;
-    CreateTask *task = h(hdl);
-    if (!task || !task->mpv) return (*env)->NewStringUTF(env, "");
-
-    if (task->propDirtyTitle) {
-        char *title = mpv_get_property_string(task->mpv, "media-title");
-        if (task->cachedMediaTitle) free(task->cachedMediaTitle);
-        task->cachedMediaTitle = title ? strdup(title) : strdup("");
-        if (title) mpv_free(title);
-        task->propDirtyTitle = 0;
-    }
-    return (*env)->NewStringUTF(env, task->cachedMediaTitle ? task->cachedMediaTitle : "");
-}
-
-/* ---- Render thread property update callback ---- */
-static void updateCachedProperties(CreateTask *task) {
-    if (!task || !task->mpv) return;
-
-    /* Mark all properties as dirty for next read */
-    pthread_mutex_lock(&task->propMutex);
-    task->propDirtyDuration = 1;
-    task->propDirtyPosition = 1;
-    task->propDirtyVolume = 1;
-    task->propDirtyPause = 1;
-    task->propDirtyEof = 1;
-    task->propDirtyTitle = 1;
-    pthread_mutex_unlock(&task->propMutex);
-}
-
-JNIEXPORT jboolean JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_warmupWebView2(
-    JNIEnv *env, jobject thiz, jstring ctrl) {
-    (void)env; (void)thiz; (void)ctrl; return JNI_FALSE;
-}
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_shutdownWebView2Warmup(
-    JNIEnv *env, jobject thiz) { (void)env; (void)thiz; }
-
-JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_resizeNativeView(
-    JNIEnv *env, jobject thiz, jlong hdl, jint newW, jint newH) {
-    (void)env; (void)thiz; (void)hdl; (void)newW; (void)newH;
+    (*env)->ReleaseStringUTFChars(env, textColor, text);
+    (*env)->ReleaseStringUTFChars(env, backgroundColor, background);
+    (*env)->ReleaseStringUTFChars(env, outlineColor, outline);
 }

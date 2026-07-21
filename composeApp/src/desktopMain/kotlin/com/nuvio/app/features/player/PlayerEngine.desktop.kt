@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.LocalNuvioPlatformDensity
 import com.nuvio.app.features.player.desktop.DesktopHostOs
+import com.nuvio.app.features.player.desktop.DesktopPlayerLaunchShield
 import com.nuvio.app.features.player.desktop.NativePlayerController
 import com.nuvio.app.features.player.desktop.NativePlayerHost
 import com.nuvio.app.features.player.desktop.WaylandPlayerHost
@@ -69,26 +70,10 @@ actual fun PlatformPlayerSurface(
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
 ) {
-    if (DesktopHostOs.current == DesktopHostOs.LINUX && DesktopHostOs.isWayland) {
-        // Wayland: no wid support, must use SW rendering with Compose Canvas overlay
-        LinuxWaylandPlayerSurface(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            modifier = modifier,
-            playWhenReady = playWhenReady,
-            resizeMode = resizeMode,
-            initialPositionMs = initialPositionMs,
-            playerControlsState = playerControlsState,
-            onPlayerControlsAction = onPlayerControlsAction,
-            onPlayerControlsEvent = onPlayerControlsEvent,
-            onPlayerControlsScrubChange = onPlayerControlsScrubChange,
-            onPlayerControlsScrubFinished = onPlayerControlsScrubFinished,
-            onControllerReady = onControllerReady,
-            onSnapshot = onSnapshot,
-            onError = onError,
-        )
-    } else if (DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS || DesktopHostOs.current == DesktopHostOs.LINUX) {
-        // macOS, Windows, and Linux X11: GPU-direct rendering via native view pointer
+    if (DesktopHostOs.current == DesktopHostOs.MACOS ||
+        DesktopHostOs.current == DesktopHostOs.WINDOWS ||
+        DesktopHostOs.current == DesktopHostOs.LINUX
+    ) {
         NativePlayerSurface(
             sourceUrl = sourceUrl,
             sourceHeaders = sourceHeaders,
@@ -110,6 +95,8 @@ actual fun PlatformPlayerSurface(
     } else {
         DesktopStubPlayerSurface(
             modifier = modifier,
+            initialPositionRequestKey = initialPositionRequestKey,
+            onInitialPositionHandled = onInitialPositionHandled,
             onControllerReady = onControllerReady,
             onSnapshot = onSnapshot,
         )
@@ -337,6 +324,9 @@ private fun NativePlayerSurface(
             if (!displayable) {
                 hostFirstPaintComplete.value = false
                 hostFirstFullSizePaintComplete.value = false
+                if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+                    controller.dispose()
+                }
             }
         }
         host.onFirstPaint = {

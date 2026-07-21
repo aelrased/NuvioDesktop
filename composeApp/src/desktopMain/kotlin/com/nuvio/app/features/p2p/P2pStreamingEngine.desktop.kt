@@ -1,5 +1,6 @@
 package com.nuvio.app.features.p2p
 
+import co.touchlab.kermit.Logger
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.timeout
@@ -37,6 +38,7 @@ import java.net.URL
 import java.net.HttpURLConnection
 
 private val TAG = "P2pStreamingEngine"
+private val log = Logger.withTag(TAG)
 private val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "avi", "webm", "ts", "m4v", "mov", "wmv", "flv")
 
 actual object P2pStreamingEngine {
