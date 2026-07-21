@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,8 +60,11 @@ import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.isFullscreenActionSupported
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
+import com.nuvio.app.core.ui.heroStretchHeight
+import com.nuvio.app.core.ui.heroStretchZoom
 import com.nuvio.app.features.home.MetaPreview
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
@@ -77,6 +81,7 @@ private const val HERO_SCROLL_UP_SCALE_MULTIPLIER = 0.002f
 private const val HERO_SCROLL_MAX_SCALE = 1.3f
 private const val HERO_SWIPE_THRESHOLD_FRACTION = 0.16f
 private const val HERO_SWIPE_VELOCITY_THRESHOLD = 300f
+private const val HERO_AUTO_SCROLL_INTERVAL_MS = 8_000L
 private const val MOBILE_HERO_VIEWPORT_RATIO = 0.82f
 private const val MOBILE_HERO_MIN_HEIGHT_DP = 360f
 private const val MOBILE_HERO_MAX_HEIGHT_DP = 760f
@@ -100,6 +105,7 @@ fun HomeHeroSection(
     mobileBelowSectionHeightHint: Dp? = null,
     sectionPadding: Dp? = null,
     listState: LazyListState? = null,
+    stretchPx: () -> Float = { 0f },
     onItemClick: ((MetaPreview) -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
@@ -107,6 +113,20 @@ fun HomeHeroSection(
     val pagerState = rememberPagerState(pageCount = { items.size })
     val coroutineScope = rememberCoroutineScope()
     var pagerDragActive by remember { mutableStateOf(false) }
+    val autoScrollPage = pagerState.currentPage
+
+    LaunchedEffect(autoScrollPage, items.size) {
+        if (items.size <= 1) return@LaunchedEffect
+        delay(HERO_AUTO_SCROLL_INTERVAL_MS)
+        while (pagerState.isScrollInProgress) {
+            delay(100L)
+        }
+
+        val nextPage = (pagerState.currentPage + 1) % items.size
+        coroutineScope.launch {
+            pagerState.animateScrollToPage(nextPage)
+        }
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -137,7 +157,7 @@ fun HomeHeroSection(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(layout.heroHeight),
+                .heroStretchHeight(layout.heroHeight, stretchPx),
         ) {
             HorizontalPager(
                 state = pagerState,
@@ -157,6 +177,7 @@ fun HomeHeroSection(
                     layout = layout,
                     heroWidthPx = heroWidthPx,
                     heroHeightPx = heroHeightPx,
+                    stretchPx = stretchPx,
                     includePagerNeighbors = pagerDragActive,
                     contentHorizontalPadding = sectionPadding ?: layout.contentHorizontalPadding,
                     coroutineScope = coroutineScope,
@@ -170,6 +191,7 @@ fun HomeHeroSection(
                     layout = layout,
                     heroWidthPx = heroWidthPx,
                     heroHeightPx = heroHeightPx,
+                    stretchPx = stretchPx,
                     includePagerNeighbors = pagerDragActive,
                     coroutineScope = coroutineScope,
                     onItemClick = onItemClick,
@@ -187,6 +209,7 @@ private fun HeroBackgroundLayers(
     layout: HomeHeroLayout,
     heroWidthPx: Float,
     heroHeightPx: Float,
+    stretchPx: () -> Float,
     includePagerNeighbors: Boolean,
     desktopFrame: Boolean = false,
 ) {
@@ -202,7 +225,9 @@ private fun HeroBackgroundLayers(
             model = item.banner ?: item.poster,
             contentDescription = item.name,
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .height(layout.heroHeight)
+                .heroStretchZoom(stretchPx)
                 .graphicsLayer {
                     val pageOffset = heroPageOffset(pagerState, page)
                     val scrollOffsetPx = heroScrollOffsetPx(listState, heroHeightPx)
@@ -335,6 +360,7 @@ private fun DefaultHomeHeroFrame(
     layout: HomeHeroLayout,
     heroWidthPx: Float,
     heroHeightPx: Float,
+    stretchPx: () -> Float,
     includePagerNeighbors: Boolean,
     coroutineScope: CoroutineScope,
     onItemClick: ((MetaPreview) -> Unit)?,
@@ -349,6 +375,7 @@ private fun DefaultHomeHeroFrame(
             layout = layout,
             heroWidthPx = heroWidthPx,
             heroHeightPx = heroHeightPx,
+            stretchPx = stretchPx,
             includePagerNeighbors = includePagerNeighbors,
         )
 
@@ -446,6 +473,7 @@ private fun DesktopHomeHeroFrame(
     layout: HomeHeroLayout,
     heroWidthPx: Float,
     heroHeightPx: Float,
+    stretchPx: () -> Float,
     includePagerNeighbors: Boolean,
     contentHorizontalPadding: Dp,
     coroutineScope: CoroutineScope,
@@ -468,6 +496,7 @@ private fun DesktopHomeHeroFrame(
             layout = layout,
             heroWidthPx = heroWidthPx,
             heroHeightPx = heroHeightPx,
+            stretchPx = stretchPx,
             includePagerNeighbors = includePagerNeighbors,
             desktopFrame = true,
         )

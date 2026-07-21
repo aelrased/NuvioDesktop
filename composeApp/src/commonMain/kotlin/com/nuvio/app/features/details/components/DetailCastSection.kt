@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,6 +37,7 @@ import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import com.nuvio.app.core.ui.NuvioCardDepthSurface
+import com.nuvio.app.core.ui.nuvioHorizontalScrollBleed
 import com.nuvio.app.core.ui.nuvioCardDepth
 import com.nuvio.app.core.ui.nuvioDesktopDragScroll
 import com.nuvio.app.features.details.MetaPerson
@@ -48,6 +51,7 @@ fun DetailCastSection(
     cast: List<MetaPerson>,
     modifier: Modifier = Modifier,
     showHeader: Boolean = true,
+    horizontalScrollPadding: Dp = 0.dp,
     onCastClick: ((MetaPerson, String?) -> Unit)? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
@@ -66,8 +70,10 @@ fun DetailCastSection(
             LazyRow(
                 state = rowState,
                 modifier = Modifier
+                    .nuvioHorizontalScrollBleed(horizontalScrollPadding)
                     .fillMaxWidth()
                     .nuvioDesktopDragScroll(rowState),
+                contentPadding = PaddingValues(horizontal = horizontalScrollPadding),
                 horizontalArrangement = Arrangement.spacedBy(sizing.avatarGap),
             ) {
                 itemsIndexed(

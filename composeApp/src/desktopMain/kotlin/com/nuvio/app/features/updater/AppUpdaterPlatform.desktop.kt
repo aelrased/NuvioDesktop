@@ -33,6 +33,7 @@ private val desktopUpdaterHttpClient: HttpClient = HttpClient.newBuilder()
 actual object AppUpdaterPlatform {
     private val currentOs: DesktopUpdaterOs = DesktopUpdaterOs.current()
     private val store = DesktopStorage.store(desktopUpdaterPreferencesName)
+    actual val isDebugBuild: Boolean = false
 
     actual val isSupported: Boolean = currentOs != DesktopUpdaterOs.UNKNOWN
 

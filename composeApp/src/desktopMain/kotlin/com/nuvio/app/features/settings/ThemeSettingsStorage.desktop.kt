@@ -17,11 +17,13 @@ internal actual object ThemeSettingsStorage {
     private const val liquidGlassNativeTabBarEnabledKey = "liquid_glass_native_tab_bar_enabled"
     private const val desktopNavigationLayoutKey = "desktop_navigation_layout"
     private const val selectedAppLanguageKey = "selected_app_language"
+    private const val navBarStyleKey = "nav_bar_style"
     private val profileScopedSyncKeys = listOf(
         selectedThemeKey,
         amoledEnabledKey,
         liquidGlassNativeTabBarEnabledKey,
         desktopNavigationLayoutKey,
+        navBarStyleKey,
     )
     private val store = DesktopStorage.store("nuvio_theme_settings")
 
@@ -65,11 +67,19 @@ internal actual object ThemeSettingsStorage {
         Locale.setDefault(Locale.forLanguageTag(languageCode))
     }
 
+    actual fun loadNavBarStyle(): String? =
+        store.getString(ProfileScopedKey.of(navBarStyleKey))
+
+    actual fun saveNavBarStyle(styleKey: String) {
+        store.putString(ProfileScopedKey.of(navBarStyleKey), styleKey)
+    }
+
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadSelectedTheme()?.let { put(selectedThemeKey, encodeSyncString(it)) }
         loadAmoledEnabled()?.let { put(amoledEnabledKey, encodeSyncBoolean(it)) }
         loadLiquidGlassNativeTabBarEnabled()?.let { put(liquidGlassNativeTabBarEnabledKey, encodeSyncBoolean(it)) }
         loadDesktopNavigationLayout()?.let { put(desktopNavigationLayoutKey, encodeSyncString(it)) }
+        loadNavBarStyle()?.let { put(navBarStyleKey, encodeSyncString(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -78,6 +88,7 @@ internal actual object ThemeSettingsStorage {
         payload.decodeSyncBoolean(amoledEnabledKey)?.let(::saveAmoledEnabled)
         payload.decodeSyncBoolean(liquidGlassNativeTabBarEnabledKey)?.let(::saveLiquidGlassNativeTabBarEnabled)
         payload.decodeSyncString(desktopNavigationLayoutKey)?.let(::saveDesktopNavigationLayout)
+        payload.decodeSyncString(navBarStyleKey)?.let(::saveNavBarStyle)
         applySelectedAppLanguage(loadSelectedAppLanguage() ?: AppLanguage.ENGLISH.code)
     }
 }

@@ -17,6 +17,7 @@ data class AppUpdateAssetSelector(
 
 expect object AppUpdaterPlatform {
     val isSupported: Boolean
+    val isDebugBuild: Boolean
 
     val releaseSource: AppUpdateReleaseSource
 

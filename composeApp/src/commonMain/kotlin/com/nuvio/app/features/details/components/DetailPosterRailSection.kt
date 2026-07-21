@@ -13,6 +13,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.isDesktop
+import com.nuvio.app.core.ui.nuvioHorizontalScrollBleed
 import com.nuvio.app.core.ui.NuvioShelfSection
 import com.nuvio.app.core.ui.nuvioShelfHoverOverdraw
 import com.nuvio.app.features.home.MetaPreview
@@ -28,6 +29,7 @@ fun DetailPosterRailSection(
     modifier: Modifier = Modifier,
     showHeader: Boolean = true,
     headerHorizontalPadding: Dp = 0.dp,
+    horizontalScrollPadding: Dp = 0.dp,
     sourceLabel: String? = null,
     onPosterClick: ((MetaPreview) -> Unit)? = null,
     onPosterLongClick: ((MetaPreview) -> Unit)? = null,
@@ -35,13 +37,15 @@ fun DetailPosterRailSection(
     if (items.isEmpty()) return
 
     val rowHoverInset = if (isDesktop) DetailRailHoverInset else 0.dp
-    val rowEdgePadding = headerHorizontalPadding + rowHoverInset
+    val rowEdgePadding = headerHorizontalPadding + horizontalScrollPadding + rowHoverInset
 
     Column(modifier = modifier.fillMaxWidth()) {
         NuvioShelfSection(
             title = if (showHeader) title else "",
             entries = items,
-            rowModifier = Modifier.nuvioShelfHoverOverdraw(rowHoverInset),
+            rowModifier = Modifier
+                .nuvioHorizontalScrollBleed(horizontalScrollPadding)
+                .nuvioShelfHoverOverdraw(rowHoverInset),
             headerHorizontalPadding = headerHorizontalPadding,
             rowContentPadding = PaddingValues(
                 start = rowEdgePadding,

@@ -39,6 +39,8 @@ private val desktopHttpClient: HttpClient = HttpClient.newBuilder()
     .followRedirects(HttpClient.Redirect.NORMAL)
     .build()
 
+private const val truncationSuffix = "\n...[truncated]"
+
 actual suspend fun httpGetText(url: String): String =
     httpGetTextWithHeaders(url, mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
 
@@ -69,6 +71,7 @@ actual suspend fun httpRequestRaw(
     headers: Map<String, String>,
     body: String,
     followRedirects: Boolean,
+    maxResponseBodyBytes: Int,
 ): RawHttpResponse = withContext(Dispatchers.IO) {
     val client = if (followRedirects) {
         desktopHttpClient
@@ -78,32 +81,83 @@ actual suspend fun httpRequestRaw(
             .followRedirects(HttpClient.Redirect.NEVER)
             .build()
     }
-    val normalizedMethod = method.trim().uppercase().ifBlank { "GET" }
-    val requestBuilder = HttpRequest.newBuilder()
-        .uri(URI(url))
-        .timeout(Duration.ofSeconds(60))
-        .method(
-            normalizedMethod,
-            if (normalizedMethod == "GET" || normalizedMethod == "HEAD") {
-                HttpRequest.BodyPublishers.noBody()
-            } else {
-                HttpRequest.BodyPublishers.ofString(body)
+    val request = buildDesktopRequest(method, url, headers, body)
+
+    client.newCall(request).execute().use { response ->
+        RawHttpResponse(
+            status = response.code,
+            statusText = response.message,
+            url = response.request.url.toString(),
+            body = readResponseBodyLimited(response.body, maxResponseBodyBytes),
+            headers = response.headers.toMultimap().mapValues { (_, values) ->
+                values.joinToString(",")
+            }.mapKeys { (name, _) ->
+                name.lowercase()
             },
         )
+    }
+}
 
-    val restrictedHeaders = setOf("connection", "content-length", "expect", "host", "upgrade")
-    headers.forEach { (key, value) ->
-        if (key.isNotBlank() && value.isNotBlank() && key.lowercase() !in restrictedHeaders) {
-            requestBuilder.header(key, value)
-        }
+private fun requestAllowsBody(method: String): Boolean =
+    when (method.uppercase()) {
+        "POST", "PUT", "PATCH", "DELETE" -> true
+        else -> false
     }
 
-    val response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString())
-    RawHttpResponse(
-        status = response.statusCode(),
-        statusText = "HTTP ${response.statusCode()}",
-        url = response.uri().toString(),
-        body = response.body(),
-        headers = response.headers().map().mapValues { (_, values) -> values.joinToString(",") },
-    )
+private fun Map<String, String>.withoutAcceptEncoding(): Map<String, String> =
+    entries
+        .filterNot { (key, _) -> key.equals("Accept-Encoding", ignoreCase = true) }
+        .associate { (key, value) -> key to value }
+
+private fun Map<String, String>.getHeaderIgnoreCase(name: String): String? =
+    entries.firstOrNull { (key, _) -> key.equals(name, ignoreCase = true) }?.value
+
+private data class LimitedReadResult(
+    val bytes: ByteArray,
+    val truncated: Boolean,
+)
+
+private fun readAtMostBytes(stream: InputStream, maxBytes: Int): LimitedReadResult {
+    val out = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
+    val buffer = ByteArray(8 * 1024)
+    var remaining = maxBytes
+    var truncated = false
+
+    while (remaining > 0) {
+        val read = stream.read(buffer, 0, minOf(buffer.size, remaining))
+        if (read <= 0) break
+        out.write(buffer, 0, read)
+        remaining -= read
+    }
+
+    if (remaining == 0) {
+        truncated = stream.read() != -1
+    }
+
+    return LimitedReadResult(out.toByteArray(), truncated)
+}
+
+private fun readResponseBodyLimited(body: ResponseBody?, maxBytes: Int): String {
+    if (body == null) return ""
+    val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+    val readResult = body.byteStream().use { stream ->
+        readAtMostBytes(stream, maxBytes.coerceAtLeast(0))
+    }
+    val decoded = runCatching {
+        String(readResult.bytes, charset)
+    }.getOrElse {
+        String(readResult.bytes, Charsets.UTF_8)
+    }
+    return if (readResult.truncated) decoded + truncationSuffix else decoded
+}
+
+private fun readResponseBody(body: ResponseBody?): String {
+    if (body == null) return ""
+    val bytes = body.bytes()
+    return runCatching {
+        val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+        String(bytes, charset)
+    }.getOrElse {
+        String(bytes, Charsets.UTF_8)
+    }
 }

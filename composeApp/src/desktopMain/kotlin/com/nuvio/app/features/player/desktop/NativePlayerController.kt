@@ -36,6 +36,9 @@ internal class NativePlayerController(
         val json = Json { ignoreUnknownKeys = true }
         val log = Logger.withTag("NativePlayerControls")
 
+        /** Cap on waiting for the previous player's teardown so a hung one cannot block playback. */
+        const val TEARDOWN_WAIT_MS = 5_000L
+
         @Volatile
         var rememberedVolumeLevel: Float = 1f
     }
@@ -43,6 +46,10 @@ internal class NativePlayerController(
     @Volatile
     private var handle: Long = 0L
     private var _volume: Float = 50f // 0..100 range
+
+    /** Native teardown of the previous player, if one is still running. */
+    @Volatile
+    private var disposeInFlight: Thread? = null
     private var pendingSource: PendingSource? = null
     private var controlsState = PlayerControlsState()
     private var pendingSubtitleDelayMs: Int? = null
@@ -113,17 +120,93 @@ internal class NativePlayerController(
 
     private fun attachPending() {
         val pending = pendingSource ?: return
-
-        if (host is NativePlayerHost) {
-            val nativeHost = host as NativePlayerHost
-            SwingUtilities.invokeLater {
-                if (!nativeHost.isDisplayable) {
-                    return@invokeLater
+        SwingUtilities.invokeLater {
+            if (!host.isDisplayable) {
+                return@invokeLater
+            }
+            disposePlayerHandle()
+            val teardown = disposeInFlight
+            if (teardown == null || !teardown.isAlive) {
+                createPlayer(pending)
+                return@invokeLater
+            }
+            // The previous player is still tearing down natively. It owns child windows of this
+            // same host, so creating the next one on top of it races its teardown and can leave the
+            // new player wedged (controls never resized, playback never starts). Wait for it, but
+            // off the EDT, because the teardown itself needs the EDT to keep pumping messages.
+            Thread({
+                runCatching { teardown.join(TEARDOWN_WAIT_MS) }
+                SwingUtilities.invokeLater {
+                    if (host.isDisplayable && pendingSource === pending) {
+                        createPlayer(pending)
+                    }
                 }
-                attachPendingAwt(pending, nativeHost)
+            }, "nuvio-player-attach").apply {
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
+    private fun createPlayer(pending: PendingSource) {
+        // Resolving the AWT peer must happen on the EDT; everything after it must not.
+        val hostViewPtr = runCatching { AwtNativeViewResolver.resolveNativeViewPointer(host) }
+            .getOrElse { error ->
+                log.w(error) { "attach failed to resolve host source=${pending.sourceUrl.toPlaybackLogKey()}" }
+                pending.onError(error.message)
+                return
+            }
+        val resolvedSource = if (pending.sourceUrl.startsWith("file:", ignoreCase = true)) {
+            runCatching { java.io.File(java.net.URI(pending.sourceUrl)).absolutePath }.getOrElse {
+                val stripped = pending.sourceUrl.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
+                runCatching { java.net.URLDecoder.decode(stripped, "UTF-8") }.getOrDefault(stripped)
             }
         } else {
-            attachPendingDirect(pending)
+            pending.sourceUrl
+        }
+
+        // Native create blocks until the player's own UI thread finishes initialising, and that
+        // thread creates child windows of the AWT host, which needs the EDT to keep pumping
+        // messages. Creating on the EDT is therefore the same circular wait that the teardown had:
+        // the app stops responding and Windows closes it as "stopped interacting" (Hang 1002).
+        // Create off the EDT and come back to it for the parts that touch Swing state.
+        Thread({
+            runCatching {
+                NativePlayerBridge.create(
+                    hostViewPtr = hostViewPtr,
+                    sourceUrl = resolvedSource,
+                    headerLines = pending.headerLines.toTypedArray(),
+                    playWhenReady = pending.playWhenReady,
+                    initialPositionMs = pending.initialPositionMs,
+                    controlsPageUrl = NativePlayerBridge.controlsPageUrl,
+                    decoderPriority = pending.decoderPriority,
+                    nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
+                    eventSink = eventSink,
+                ).also { if (it == 0L) error("Native player did not return a handle.") }
+            }.onSuccess { created ->
+                SwingUtilities.invokeLater {
+                    if (pendingSource !== pending || !host.isDisplayable) {
+                        // Superseded while we were initialising; drop it rather than leak it.
+                        Thread({ runCatching { NativePlayerBridge.dispose(created) } }, "nuvio-player-dispose")
+                            .apply { isDaemon = true }.start()
+                        return@invokeLater
+                    }
+                    handle = created
+                    log.d {
+                        "attach created handle=$created source=${resolvedSource.toPlaybackLogKey()} " +
+                            "initialPositionMs=${pending.initialPositionMs}"
+                    }
+                    applyRememberedVolume()
+                    updateControls(controlsState)
+                    applyPendingSubtitleSettings()
+                }
+            }.onFailure { error ->
+                log.w(error) { "attach failed source=${pending.sourceUrl.toPlaybackLogKey()}" }
+                SwingUtilities.invokeLater { pending.onError(error.message) }
+            }
+        }, "nuvio-player-create").apply {
+            isDaemon = true
+            start()
         }
     }
 
@@ -432,13 +515,15 @@ internal class NativePlayerController(
         handle = 0L
         host.nativeHandle = 0L
         lastSentControlsStructureKey = null
-        if (current != 0L) {
-            Thread({
-                runCatching { NativePlayerBridge.dispose(current) }
-            }, "nuvio-player-dispose").apply {
-                isDaemon = true
-                start()
-            }
+        if (current == 0L) return
+        // Native shutdown blocks: it SendMessage()s the player's own UI thread and then joins it.
+        // That UI thread owns child windows of the AWT host, so tearing them down needs the EDT to
+        // keep pumping messages. Disposing on the EDT is therefore a circular wait that deadlocks
+        // the whole app (black, completely unresponsive window). Tear down off the EDT instead.
+        // Tracked so the next attach can wait for it rather than racing it on the same host.
+        disposeInFlight = Thread({ runCatching { NativePlayerBridge.dispose(current) } }, "nuvio-player-dispose").apply {
+            isDaemon = true
+            start()
         }
     }
 

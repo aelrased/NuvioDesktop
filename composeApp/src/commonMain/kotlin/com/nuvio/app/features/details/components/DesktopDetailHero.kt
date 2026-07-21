@@ -61,7 +61,7 @@ fun DesktopDetailHero(
     playButtonLabel: String,
     isSaved: Boolean,
     isWatched: Boolean,
-    scrollOffset: Int,
+    scrollOffset: () -> Int,
     onHeightChanged: (Int) -> Unit,
     heroTrailerSourceUrl: String?,
     heroTrailerSourceAudioUrl: String?,
@@ -110,7 +110,7 @@ fun DesktopDetailHero(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        translationY = scrollOffset * 0.38f
+                        translationY = scrollOffset() * 0.38f
                         scaleX = 1.04f
                         scaleY = 1.04f
                     },
@@ -133,7 +133,7 @@ fun DesktopDetailHero(
                     .fillMaxSize()
                     .graphicsLayer {
                         alpha = trailerAlpha
-                        translationY = scrollOffset * 0.38f
+                        translationY = scrollOffset() * 0.38f
                         scaleX = 1.04f
                         scaleY = 1.04f
                     },

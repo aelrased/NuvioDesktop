@@ -42,6 +42,8 @@ private val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "avi", "webm", "ts", "m4v", "
 actual object P2pStreamingEngine {
     private val _state = MutableStateFlow<P2pStreamingState>(P2pStreamingState.Idle)
     actual val state: StateFlow<P2pStreamingState> = _state.asStateFlow()
+    private val _cacheState = MutableStateFlow(P2pCacheUiState(hasMeasurement = true))
+    actual val cacheState: StateFlow<P2pCacheUiState> = _cacheState.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lifecycleLock = Any()
@@ -55,14 +57,15 @@ actual object P2pStreamingEngine {
     actual suspend fun startStream(request: P2pStreamRequest): String = withContext(Dispatchers.IO) {
         stopStreamNow(stopBinary = false)
         val generation = nextStreamGeneration()
-        _state.value = P2pStreamingState.Connecting
+        _state.value = P2pStreamingState.Connecting()
 
         try {
             binary.start()
             ensureCurrentGeneration(generation)
 
             val magnetLink = buildMagnetUri(request.infoHash, request.trackers)
-            println("$TAG: Starting stream: $magnetLink")
+            log.d { "Starting stream: $magnetLink" }
+            _state.value = P2pStreamingState.Connecting(phase = "add_magnet")
 
             val hash = api.addTorrent(magnetLink)
                 ?: throw P2pStreamingException("Failed to add torrent")
@@ -71,6 +74,7 @@ actual object P2pStreamingEngine {
                 throw CancellationException("P2P stream start was cancelled")
             }
 
+            _state.value = P2pStreamingState.Connecting(phase = "prepare_stream")
             val resolvedIdx = resolveFileIndex(
                 hash = hash,
                 requestedIdx = request.fileIdx,
@@ -102,6 +106,25 @@ actual object P2pStreamingEngine {
                 _state.value = P2pStreamingState.Error(e.message ?: "Unknown P2P error")
             }
             throw e
+        }
+    }
+
+    actual suspend fun clearCache(): P2pCacheClearResult = withContext(Dispatchers.IO) {
+        check(_state.value !is P2pStreamingState.Connecting &&
+            _state.value !is P2pStreamingState.Streaming) {
+            "Torrent cache cannot be cleared during active playback"
+        }
+        _cacheState.value = _cacheState.value.copy(isClearing = true)
+        try {
+            stopStreamNow(stopBinary = true)
+            _cacheState.value = P2pCacheUiState(hasMeasurement = true)
+            P2pCacheClearResult(
+                reclaimedBytes = 0L,
+                remainingBytes = 0L,
+                protectedBytes = 0L,
+            )
+        } finally {
+            _cacheState.value = _cacheState.value.copy(isClearing = false)
         }
     }
 
@@ -158,6 +181,7 @@ actual object P2pStreamingEngine {
                 println("$TAG: Error stopping TorrServer: ${e.message}")
             }
         }
+        _cacheState.value = P2pCacheUiState(hasMeasurement = true)
     }
 
     private fun nextStreamGeneration(): Long =
@@ -184,8 +208,7 @@ actual object P2pStreamingEngine {
 
     private fun buildMagnetUri(infoHash: String, extraTrackers: List<String>): String {
         val trackers = (DEFAULT_TRACKERS + extraTrackers).distinct()
-        val trackerParams = trackers.joinToString("") { "&tr=$it" }
-        return "magnet:?xt=urn:btih:$infoHash$trackerParams"
+        return buildP2pMagnetUri(infoHash, trackers)
     }
 
     private suspend fun resolveFileIndex(hash: String, requestedIdx: Int?, filename: String?): Int {
@@ -267,7 +290,16 @@ actual object P2pStreamingEngine {
                             uploadSpeed = stats.uploadSpeed,
                             peers = stats.peers,
                             seeds = stats.seeds,
-                            preloadedBytes = stats.preloadedBytes,
+                            bufferProgress = stats.preloadedBytes.fractionOf(stats.torrentSize),
+                            totalProgress = stats.loadedSize.fractionOf(stats.torrentSize),
+                            downloadedBytes = stats.loadedSize,
+                            verifiedBytes = stats.loadedSize,
+                            deliveredBytes = stats.preloadedBytes,
+                        )
+                        _cacheState.value = P2pCacheUiState(
+                            usedBytes = stats.loadedSize,
+                            protectedBytes = stats.preloadedBytes,
+                            hasMeasurement = true,
                         )
                     }
                 } catch (e: CancellationException) {
@@ -640,6 +672,9 @@ actual object P2pStreamingEngine {
             return "$baseUrl/stream?link=$encodedLink&index=$fileIdx&play"
         }
     }
+
+    private fun Long.fractionOf(total: Long): Float =
+        if (total > 0L) (toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
 }
 
 

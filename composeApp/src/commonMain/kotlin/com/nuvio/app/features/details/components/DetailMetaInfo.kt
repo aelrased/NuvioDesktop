@@ -37,10 +37,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.ui.nuvioDesktopDragScroll
+import com.nuvio.app.core.ui.nuvioHorizontalScrollBleed
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaExternalRating
 import com.nuvio.app.features.details.formatRuntimeForDisplay
@@ -72,6 +74,7 @@ import kotlin.math.roundToInt
 fun DetailMetaInfo(
     meta: MetaDetails,
     modifier: Modifier = Modifier,
+    horizontalScrollPadding: Dp = 0.dp,
 ) {
     Column(
         modifier = modifier
@@ -143,6 +146,7 @@ fun DetailMetaInfo(
         ) {
             DetailRatingsRow(
                 ratings = meta.externalRatings,
+                horizontalScrollPadding = horizontalScrollPadding,
             )
         }
 
@@ -201,6 +205,7 @@ fun DetailMetaInfo(
 internal fun DetailRatingsRow(
     ratings: List<MetaExternalRating>,
     modifier: Modifier = Modifier,
+    horizontalScrollPadding: Dp = 0.dp,
 ) {
     val orderedRatings = remember(ratings) {
         val bySource = ratings.associateBy { it.source }
@@ -214,9 +219,11 @@ internal fun DetailRatingsRow(
 
     Row(
         modifier = modifier
+            .nuvioHorizontalScrollBleed(horizontalScrollPadding)
             .fillMaxWidth()
             .nuvioDesktopDragScroll(scrollState)
-            .horizontalScroll(scrollState),
+            .horizontalScroll(scrollState)
+            .padding(horizontal = horizontalScrollPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {

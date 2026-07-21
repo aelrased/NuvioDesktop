@@ -499,6 +499,7 @@ val iosDistributionSourceDir = if (iosDistribution == "full") {
     "src/iosAppStore/kotlin"
 }
 val iosFrameworkBundleId = "com.nuvio.media"
+val nuvioEngineAppleFramework = rootProject.file("../nuvio-engine/platform/apple/NuvioEngine.xcframework")
 val fullCommonSourceDir = project.file("src/fullCommonMain/kotlin")
 val fullPluginSourceDir = fullCommonSourceDir.resolve("com/nuvio/app/features/plugins")
 val generatedRuntimeConfigDir = layout.buildDirectory.dir("generated/runtime-config/kotlin")
@@ -615,6 +616,7 @@ if (isMacHost && isMacosDmgBuildRequested && macosPlayerBridgeArch != macosHostJ
 }
 val macosPlayerBridgeOutput = layout.buildDirectory.file("native/macos/$macosPlayerBridgeArch/libplayer_bridge.dylib")
 val macosPlayerRuntimeOutput = layout.buildDirectory.dir("native/macos-runtime/$macosPlayerBridgeArch")
+val macosPlayerAppResourcesRoot = layout.buildDirectory.dir("generated/macos-player-app-resources")
 val macosDmgArchName = macosPlayerBridgeArch
 val isMacosDmgNotarizationRequested = requestedGradleTasks.any { taskName ->
     taskName == "notarizedmg" || taskName == "notarizereleasedmg"
@@ -1016,23 +1018,17 @@ val prepareMacosPlayerRuntime = tasks.register<Sync>("prepareMacosPlayerRuntime"
     into(macosPlayerRuntimeOutput)
 }
 
-val generateMacosPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexTask>("generateMacosPlayerRuntimeIndex") {
+val prepareMacosPlayerAppResources = tasks.register<Sync>("prepareMacosPlayerAppResources") {
     enabled = isMacHost
-    dependsOn(prepareMacosPlayerRuntime)
-    runtimeDir.set(macosPlayerRuntimeOutput)
-    indexFile.set(macosPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
+    dependsOn(buildMacosPlayerBridge, prepareMacosPlayerRuntime)
+    from(macosPlayerBridgeOutput)
+    from(macosPlayerRuntimeOutput) {
+        include("*.dylib")
+    }
+    into(macosPlayerAppResourcesRoot.map { it.dir("macos/native/macos") })
 }
 
 tasks.withType<Jar>().configureEach {
-    if (isMacHost && name == "desktopJar") {
-        dependsOn(buildMacosPlayerBridge, prepareMacosPlayerRuntime, generateMacosPlayerRuntimeIndex)
-        from(macosPlayerBridgeOutput) {
-            into("native/macos")
-        }
-        from(macosPlayerRuntimeOutput) {
-            into("native/macos")
-        }
-    }
     if (isWindowsHost && name == "desktopJar") {
         dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex, downloadTorrserverWindows)
         from(windowsPlayerBridgeOutput) {
@@ -1089,6 +1085,12 @@ val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
     "patchLinuxDebDependencies",
 )
 
+tasks.matching { it.name == "prepareAppResources" }.configureEach {
+    if (isMacHost) {
+        dependsOn(prepareMacosPlayerAppResources)
+    }
+}
+
 tasks.withType<ProcessResources>().matching { it.name == "desktopProcessResources" }.configureEach {
     if (isMacHost) {
         dependsOn(prepareMacosTorrServerResources)
@@ -1139,11 +1141,27 @@ kotlin {
     )
 
     iosTargets.forEach { iosTarget ->
+        val nuvioEngineSlice = if (iosTarget.name == "iosArm64") {
+            "ios-arm64"
+        } else {
+            "ios-arm64_x86_64-simulator"
+        }
+        val nuvioEngineSliceDirectory = nuvioEngineAppleFramework.resolve(nuvioEngineSlice)
         iosTarget.compilations.getByName("main") {
             cinterops {
                 create("commoncrypto") {
                     defFile(project.file("src/nativeInterop/cinterop/commoncrypto.def"))
                     compilerOpts("-I${project.projectDir}/src/nativeInterop/cinterop")
+                }
+                if (iosDistribution == "full") {
+                    check(nuvioEngineSliceDirectory.resolve("libCNuvioEngine.a").isFile) {
+                        "Build the local Nuvio Engine Apple XCFramework before compiling iOS Full."
+                    }
+                    create("nuvioengine") {
+                        defFile(project.file("src/nativeInterop/cinterop/nuvioengine.def"))
+                        compilerOpts("-I${nuvioEngineSliceDirectory.resolve("Headers").absolutePath}")
+                        extraOpts("-libraryPath", nuvioEngineSliceDirectory.absolutePath)
+                    }
                 }
             }
 
@@ -1164,6 +1182,14 @@ kotlin {
             baseName = "ComposeApp"
             isStatic = true
             freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId")
+            if (iosDistribution == "full") {
+                linkerOpts(
+                    "-lc++",
+                    "-framework", "Security",
+                    "-framework", "SystemConfiguration",
+                    "-framework", "CoreFoundation",
+                )
+            }
         }
     }
     
@@ -1202,6 +1228,7 @@ kotlin {
                 implementation(libs.androidx.media3.container)
                 implementation(libs.androidx.media3.extractor)
                 implementation(libs.mpv.android.lib)
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
                 implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("lib-*.aar"))))
                 if (androidDistribution == "full") {
                     implementation(files("libs/quickjs-kt-android-1.0.5-nuvio.aar"))
@@ -1289,6 +1316,9 @@ compose.desktop {
             packageName = "Nuvio"
             packageVersion = desktopReleasePackageVersion
             vendor = "Nuvio Media"
+            if (isMacHost) {
+                appResourcesRootDir.set(macosPlayerAppResourcesRoot)
+            }
             modules(
                 "java.instrument",
                 "java.management",
