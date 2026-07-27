@@ -44,6 +44,9 @@ import java.awt.event.AWTEventListener
 import java.awt.event.MouseEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import org.jetbrains.skia.Paint
+import org.jetbrains.skia.Rect
+import org.jetbrains.skia.SamplingMode
 
 @Composable
 actual fun PlatformPlayerSurface(
@@ -126,6 +129,7 @@ private fun LinuxWaylandPlayerSurface(
 ) {
     val host = remember { WaylandPlayerHost() }
     val controller = remember(host) { NativePlayerController(host) }
+    val framePaint = remember { Paint() }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var frameTick by remember { mutableIntStateOf(0) }
     var disposed by remember { mutableStateOf(false) }
@@ -186,7 +190,7 @@ private fun LinuxWaylandPlayerSurface(
     LaunchedEffect(controller) {
         try {
             while (true) {
-                delay(8)
+                delay(WaylandFrameIntervalMs)
                 if (disposed) break
                 val size = surfaceSize
                 if (host.nativeHandle != 0L && size.width > 0 && size.height > 0) {
@@ -207,6 +211,10 @@ private fun LinuxWaylandPlayerSurface(
             host.dispose()
             frameTick++
         }
+    }
+
+    DisposableEffect(framePaint) {
+        onDispose { framePaint.close() }
     }
 
     DisposableEffect(Unit) {
@@ -264,10 +272,10 @@ private fun LinuxWaylandPlayerSurface(
                 if (skiaImage != null && !skiaImage.isClosed) {
                     nativeCanvas.drawImageRect(
                         skiaImage,
-                        org.jetbrains.skia.Rect.makeWH(skiaImage.width.toFloat(), skiaImage.height.toFloat()),
-                        org.jetbrains.skia.Rect.makeWH(size.width, size.height),
-                        org.jetbrains.skia.SamplingMode.DEFAULT,
-                        org.jetbrains.skia.Paint(),
+                        Rect.makeWH(skiaImage.width.toFloat(), skiaImage.height.toFloat()),
+                        Rect.makeWH(size.width, size.height),
+                        SamplingMode.DEFAULT,
+                        framePaint,
                         false,
                     )
                 }
@@ -275,6 +283,8 @@ private fun LinuxWaylandPlayerSurface(
         }
     }
 }
+
+private const val WaylandFrameIntervalMs = 16L
 
 /**
  * macOS / Windows / Linux X11 path: uses AWT Canvas + SwingPanel.

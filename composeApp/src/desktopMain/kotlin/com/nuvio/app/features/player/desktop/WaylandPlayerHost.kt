@@ -34,6 +34,7 @@ internal class WaylandPlayerHost : PlayerHost {
     var latestImage: Image? = null
         private set
 
+    private var latestImageData: Data? = null
     private var reusedBytes: ByteArray? = null
 
     private var controlsVisible = true
@@ -50,7 +51,9 @@ internal class WaylandPlayerHost : PlayerHost {
         if (handle == 0L || width <= 0 || height <= 0) return false
 
         /* DirectBuffer SW path */
-        val byteCount = width * height * 4
+        val byteCountLong = width.toLong() * height.toLong() * BytesPerPixel
+        if (byteCountLong <= 0L || byteCountLong > Int.MAX_VALUE) return false
+        val byteCount = byteCountLong.toInt()
         val buf: ByteBuffer
         if (useBufA) {
             bufA = ensureDirectBuffer(bufA, byteCount)
@@ -66,21 +69,29 @@ internal class WaylandPlayerHost : PlayerHost {
 
         /* Create Skia Image from DirectByteBuffer (reuse byte array to avoid alloc) */
         val imageInfo = ImageInfo(width, height, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
-        val prev = latestImage
+        val prevImage = latestImage
+        val prevData = latestImageData
         if (reusedBytes == null || reusedBytes!!.size < byteCount) reusedBytes = ByteArray(byteCount)
         buf.position(0)
         buf.get(reusedBytes!!)
         buf.position(0)
         val data = Data.makeFromBytes(reusedBytes!!)
-        latestImage = Image.makeRaster(imageInfo, data, width * 4)
-        if (latestImage != null && !latestImage!!.isClosed) {
-            prev?.close()
-            lastWidth = width
-            lastHeight = height
-            return true
+        val image = Image.makeRaster(imageInfo, data, width * 4)
+        if (image.isClosed) {
+            image.close()
+            data.close()
+            latestImage = prevImage
+            latestImageData = prevData
+            return false
         }
-        latestImage = prev
-        return false
+
+        latestImage = image
+        latestImageData = data
+        prevImage?.close()
+        prevData?.close()
+        lastWidth = width
+        lastHeight = height
+        return true
     }
 
     override fun setControlsVisible(visible: Boolean) {
@@ -111,6 +122,8 @@ internal class WaylandPlayerHost : PlayerHost {
         resetCursorVisibility()
         latestImage?.close()
         latestImage = null
+        latestImageData?.close()
+        latestImageData = null
     }
 
     private fun setCursorVisible(visible: Boolean) {
@@ -143,6 +156,7 @@ internal class WaylandPlayerHost : PlayerHost {
             ?: Window.getWindows().firstOrNull { it.isVisible && it.isActive }
 
     private companion object {
+        const val BytesPerPixel = 4L
         const val CursorIdleHideDelayMs = 3_000
         val hiddenCursor: Cursor by lazy {
             val image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
