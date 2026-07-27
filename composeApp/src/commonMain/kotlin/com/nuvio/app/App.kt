@@ -100,6 +100,7 @@ import coil3.memory.MemoryCache
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.auth.DeviceSessionRegistration
 import com.nuvio.app.core.deeplink.AppDeepLink
 import com.nuvio.app.core.deeplink.AppDeepLinkRepository
 import com.nuvio.app.core.network.NetworkCondition
@@ -545,10 +546,12 @@ fun App(
             }
 
             LaunchedEffect(Unit) {
+                if (!ownsAppRuntime) return@LaunchedEffect
                 AuthRepository.initialize()
             }
 
             LaunchedEffect(Unit) {
+                if (!ownsAppRuntime) return@LaunchedEffect
                 NetworkStatusRepository.ensureStarted()
                 ProfileRepository.loadCachedProfiles()
                 AvatarRepository.fetchAvatars()
@@ -560,6 +563,11 @@ fun App(
             val networkStatusUiState by remember {
                 NetworkStatusRepository.uiState
             }.collectAsStateWithLifecycle()
+
+            LaunchedEffect(authState) {
+                if (!ownsAppRuntime) return@LaunchedEffect
+                DeviceSessionRegistration.registerIfAuthenticated(force = true)
+            }
 
             LaunchedEffect(
                 profileState.activeProfile?.profileIndex,
@@ -1141,6 +1149,7 @@ private fun MainAppContent(
         if (!ownsAppRuntime) return@LaunchedEffect
         AppForegroundMonitor.events().collect {
             NetworkStatusRepository.requestForegroundRefresh()
+            DeviceSessionRegistration.registerIfAuthenticated()
         }
     }
 

@@ -53,7 +53,6 @@ fun DetailPosterRailSection(
                 end = rowEdgePadding,
                 bottom = rowHoverInset,
             ),
-            showHeaderAccent = false,
             key = { item -> item.stableKey() },
         ) { item ->
             HomePosterCard(

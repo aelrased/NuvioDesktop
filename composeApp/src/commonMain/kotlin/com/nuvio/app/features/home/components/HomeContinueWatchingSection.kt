@@ -52,6 +52,7 @@ import com.nuvio.app.core.ui.NuvioCardDepthSurface
 import com.nuvio.app.core.ui.NuvioProgressBar
 import com.nuvio.app.core.ui.nuvioCardDepth
 import com.nuvio.app.core.ui.NuvioShelfSection
+import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.PosterLandscapeAspectRatio
 import com.nuvio.app.core.ui.desktopCatalogShelfPosterBaseWidthDp
 import com.nuvio.app.core.ui.landscapePosterHeightForWidth
@@ -61,7 +62,6 @@ import com.nuvio.app.core.ui.desktopPosterHoverScale
 import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
 import com.nuvio.app.features.cloud.CloudLibraryContentType
 import com.nuvio.app.features.cloud.cloudLibraryDisplayArtworkUrl
-import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.features.watchprogress.ContinueWatchingSectionStyle
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
@@ -74,12 +74,45 @@ private val ContinueWatchingStatusBadgeShape = RoundedCornerShape(4.dp)
 private val ContinueWatchingNewEpisodeBadgeColor = Color(0xFF1D4ED8)
 private val ContinueWatchingNewSeasonBadgeColor = Color(0xFFB45309)
 private const val ContinueWatchingLandscapeCardScale = 1.2f
+internal val HomeContinueWatchingSectionBottomPadding = 12.dp
 
 internal fun continueWatchingLandscapeCardWidth(basePosterWidthDp: Int): Dp =
     (landscapePosterWidth(basePosterWidthDp).value * ContinueWatchingLandscapeCardScale).dp
 
 internal fun continueWatchingLandscapeCardHeight(basePosterWidthDp: Int): Dp =
     landscapePosterHeightForWidth(continueWatchingLandscapeCardWidth(basePosterWidthDp))
+
+internal fun continueWatchingSectionHeightEstimate(
+    style: ContinueWatchingSectionStyle,
+    layout: ContinueWatchingLayout,
+    basePosterWidthDp: Int,
+): Dp {
+    val headerHeight = NuvioTokens.Space.s40
+    val headerToRowGap = NuvioTokens.Space.s8 + NuvioTokens.Space.s2
+    val rowHeight = when (style) {
+        ContinueWatchingSectionStyle.Card -> continueWatchingLandscapeCardHeight(basePosterWidthDp)
+        ContinueWatchingSectionStyle.Wide -> layout.wideCardHeight
+        ContinueWatchingSectionStyle.Poster -> layout.posterCardHeight + layout.posterTitleBlockHeight
+    }
+    return headerHeight + headerToRowGap + rowHeight + HomeContinueWatchingSectionBottomPadding
+}
+
+internal fun continueWatchingHeroViewportReserveHeight(
+    style: ContinueWatchingSectionStyle,
+    layout: ContinueWatchingLayout,
+    basePosterWidthDp: Int,
+): Dp {
+    val bottomNavigationClearance = when (style) {
+        ContinueWatchingSectionStyle.Card,
+        ContinueWatchingSectionStyle.Wide -> NuvioTokens.Space.s24
+        ContinueWatchingSectionStyle.Poster -> 0.dp
+    }
+    return continueWatchingSectionHeightEstimate(
+        style = style,
+        layout = layout,
+        basePosterWidthDp = basePosterWidthDp,
+    ) + bottomNavigationClearance
+}
 
 private fun continueWatchingProgressPercent(progressFraction: Float): Int =
     (progressFraction * 100f).roundToInt().coerceIn(1, 99)
@@ -250,11 +283,6 @@ private fun HomeContinueWatchingSectionContent(
     onItemClick: ((ContinueWatchingItem) -> Unit)?,
     onItemLongPress: ((ContinueWatchingItem) -> Unit)?,
 ) {
-    val homeCatalogSettings by remember {
-        HomeCatalogSettingsRepository.snapshot()
-        HomeCatalogSettingsRepository.uiState
-    }.collectAsStateWithLifecycle()
-
     val disintegration = remember { ContinueWatchingDisintegrationHolder() }
     val displayEntries = disintegration.sync(items)
 
@@ -265,7 +293,6 @@ private fun HomeContinueWatchingSectionContent(
         headerHorizontalPadding = sectionPadding,
         rowContentPadding = PaddingValues(horizontal = sectionPadding),
         itemSpacing = layout.itemGap,
-        showHeaderAccent = !homeCatalogSettings.hideCatalogUnderline,
         key = { entry -> entry.videoId },
         animatePlacement = true,
         state = listState,

@@ -20,6 +20,7 @@ internal actual object MdbListSettingsStorage {
     private const val useTraktKey = "mdblist_use_trakt"
     private const val useLetterboxdKey = "mdblist_use_letterboxd"
     private const val useAudienceKey = "mdblist_use_audience"
+    private const val useMalKey = "mdblist_use_mal"
     private val syncKeys = listOf(
         enabledKey,
         apiKey,
@@ -30,6 +31,7 @@ internal actual object MdbListSettingsStorage {
         useTraktKey,
         useLetterboxdKey,
         useAudienceKey,
+        useMalKey,
     )
     private val store = DesktopStorage.store("nuvio_mdblist_settings")
 
@@ -51,6 +53,8 @@ internal actual object MdbListSettingsStorage {
     actual fun saveUseLetterboxd(enabled: Boolean) = saveBoolean(useLetterboxdKey, enabled)
     actual fun loadUseAudience(): Boolean? = loadBoolean(useAudienceKey)
     actual fun saveUseAudience(enabled: Boolean) = saveBoolean(useAudienceKey, enabled)
+    actual fun loadUseMal(): Boolean? = loadBoolean(useMalKey)
+    actual fun saveUseMal(enabled: Boolean) = saveBoolean(useMalKey, enabled)
 
     private fun loadString(key: String): String? = store.getString(ProfileScopedKey.of(key))
     private fun saveString(key: String, value: String) = store.putString(ProfileScopedKey.of(key), value)
@@ -67,6 +71,7 @@ internal actual object MdbListSettingsStorage {
         loadUseTrakt()?.let { put(useTraktKey, encodeSyncBoolean(it)) }
         loadUseLetterboxd()?.let { put(useLetterboxdKey, encodeSyncBoolean(it)) }
         loadUseAudience()?.let { put(useAudienceKey, encodeSyncBoolean(it)) }
+        loadUseMal()?.let { put(useMalKey, encodeSyncBoolean(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -80,5 +85,6 @@ internal actual object MdbListSettingsStorage {
         payload.decodeSyncBoolean(useTraktKey)?.let(::saveUseTrakt)
         payload.decodeSyncBoolean(useLetterboxdKey)?.let(::saveUseLetterboxd)
         payload.decodeSyncBoolean(useAudienceKey)?.let(::saveUseAudience)
+        payload.decodeSyncBoolean(useMalKey)?.let(::saveUseMal)
     }
 }

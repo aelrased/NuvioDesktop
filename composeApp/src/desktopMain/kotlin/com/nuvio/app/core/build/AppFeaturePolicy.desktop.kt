@@ -13,4 +13,5 @@ actual object AppFeaturePolicy {
     actual val heroTrailerPlaybackSupported: Boolean = false
     actual val inAppUpdaterEnabled: Boolean = true
     actual val imdbRatingLogoEnabled: Boolean = true
+    actual val mediaPlaybackForegroundServiceEnabled: Boolean = false
 }
