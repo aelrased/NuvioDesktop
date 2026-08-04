@@ -104,16 +104,34 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
                 noteCursorActivity()
             }
         })
+        // On Linux/XWayland a heavyweight Canvas embedded in a Compose SwingPanel is not
+        // guaranteed an expose-driven paint() when it is first laid out, so the paint()-based
+        // first-full-size-paint signal (which unlocks the native attach) can never fire and
+        // playback silently never starts. componentResized fires reliably on layout, so use it
+        // to drive the same signal. Linux-only to keep macOS/Windows behaviour byte-identical.
         if (DesktopHostOs.current == DesktopHostOs.LINUX) {
             addComponentListener(object : ComponentAdapter() {
                 override fun componentResized(event: ComponentEvent) {
-                    notifyReadyIfSized()
+                    repaint()
+                    notifyFirstPaints()
                 }
 
                 override fun componentShown(event: ComponentEvent) {
-                    notifyReadyIfSized()
+                    repaint()
+                    notifyFirstPaints()
                 }
             })
+        }
+    }
+
+    private fun notifyFirstPaints() {
+        if (!firstPaintNotified) {
+            firstPaintNotified = true
+            onFirstPaint?.invoke()
+        }
+        if (!firstFullSizePaintNotified && width > 1 && height > 1) {
+            firstFullSizePaintNotified = true
+            onFirstFullSizePaint?.invoke()
         }
     }
 
@@ -215,14 +233,7 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
             graphics.color = Color.BLACK
             graphics.fillRect(0, 0, width, height)
         }
-        if (!firstPaintNotified) {
-            firstPaintNotified = true
-            onFirstPaint?.invoke()
-        }
-        if (!firstFullSizePaintNotified && width > 1 && height > 1) {
-            firstFullSizePaintNotified = true
-            onFirstFullSizePaint?.invoke()
-        }
+        notifyFirstPaints()
     }
 
     override fun addNotify() {

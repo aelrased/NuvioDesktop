@@ -82,6 +82,39 @@ private object MacosAwtViewResolver {
         (findMethod(target.javaClass, methodName).invoke(target) as Number).toLong()
 }
 
+private object LinuxAwtViewResolver {
+    private val componentPeerField: Field by lazy {
+        Component::class.java.getDeclaredField("peer").apply { isAccessible = true }
+    }
+
+    fun resolveNativeViewPointer(component: Component): Long {
+        val peer = componentPeerField.get(component)
+            ?: error("AWT component peer is not ready for native playback.")
+
+        // XAWT peers extend sun.awt.X11.XBaseWindow, whose getWindow()
+        // returns the native X11 window XID we hand to mpv as "wid".
+        val pointer = invokeLong(peer, "getWindow")
+        if (pointer == 0L) {
+            error("Linux AWT X11 window XID was zero.")
+        }
+        return pointer
+    }
+
+    private fun findMethod(type: Class<*>, name: String): Method {
+        var current: Class<*>? = type
+        while (current != null) {
+            runCatching {
+                return current.getDeclaredMethod(name).apply { isAccessible = true }
+            }
+            current = current.superclass
+        }
+        error("Method $name was not found on ${type.name}.")
+    }
+
+    private fun invokeLong(target: Any, methodName: String): Long =
+        (findMethod(target.javaClass, methodName).invoke(target) as Number).toLong()
+}
+
 private object WindowsAwtViewResolver {
     private val componentPeerField: Field by lazy {
         Component::class.java.getDeclaredField("peer").apply { isAccessible = true }

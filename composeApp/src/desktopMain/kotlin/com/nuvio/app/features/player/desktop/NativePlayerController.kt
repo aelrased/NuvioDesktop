@@ -286,6 +286,16 @@ internal class NativePlayerController(
         }
     }
 
+    /**
+     * Feed a keyboard shortcut command (same vocabulary as the controls webview,
+     * e.g. "keyboardToggle") through the normal event pipeline. Used on Linux,
+     * where the controls webview is redirected offscreen and never holds keyboard
+     * focus, so keys are caught on the AWT side and forwarded here instead.
+     */
+    fun handleKeyCommand(command: String) {
+        SwingUtilities.invokeLater { handlePlayerEvent(command, 0.0) }
+    }
+
     fun updateControls(state: PlayerControlsState) {
         host.setControlsVisible(state.controlsVisible)
         val currentHandle = handle

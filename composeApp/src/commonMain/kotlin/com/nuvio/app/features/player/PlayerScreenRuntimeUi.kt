@@ -858,6 +858,21 @@ private fun PlayerScreenRuntime.handlePlayerControlsEvent(type: String, value: D
                 playerController?.selectSubtitleTrack(index)
             }
         }
+        "selectAudioTrack" -> {
+            // The controls webview sends the track id (trackIdValue); map it back
+            // to the logical index that selectAudioTrack() expects (falling back to
+            // treating the value as an index if no id matches).
+            val requestedId = value.toInt()
+            val index = audioTracks.firstOrNull { it.id == requestedId.toString() }?.index
+                ?: audioTracks.firstOrNull { it.index == requestedId }?.index
+                ?: requestedId
+            playerControlsLog.d {
+                "selectAudioTrack id=$requestedId index=$index tracks=${audioTracks.size} ${playerControlLogContext()}"
+            }
+            selectedAudioIndex = index
+            persistAudioPreference(audioTracks.firstOrNull { it.index == index })
+            playerController?.selectAudioTrack(index)
+        }
         "fetchAddonSubtitles" -> fetchAddonSubtitlesForActiveItem()
         "selectAddonSubtitle" -> {
             val addon = visibleAddonSubtitles.getOrNull(value.toInt()) ?: return true

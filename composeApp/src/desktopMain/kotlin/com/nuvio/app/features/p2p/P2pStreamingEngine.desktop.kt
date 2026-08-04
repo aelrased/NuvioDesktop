@@ -31,6 +31,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.net.URLEncoder
@@ -680,3 +682,11 @@ actual object P2pStreamingEngine {
 }
 
 
+private fun JsonObject.intOrDefault(key: String, default: Int): Int =
+    this[key]?.jsonPrimitive?.intOrNull ?: default
+
+private fun JsonObject.longOrDefault(key: String, default: Long): Long =
+    this[key]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() } ?: default
+
+private fun JsonObject.arrayOrEmpty(key: String): JsonArray =
+    this[key]?.jsonArray ?: JsonArray(emptyList())

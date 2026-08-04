@@ -18,6 +18,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.collectAsState
+import java.awt.KeyEventDispatcher
+import java.awt.KeyboardFocusManager
+import java.awt.event.KeyEvent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
@@ -360,6 +363,33 @@ private fun NativePlayerSurface(
 
     DisposableEffect(controller, sourceUrl, playbackHeaders) {
         onDispose { controller.dispose() }
+    }
+
+    // Linux: the controls webview is redirected offscreen and never holds keyboard
+    // focus, so its keydown shortcuts never fire. Catch keys app-wide via AWT (which
+    // does have focus) while the player is on screen and forward them through the
+    // same command pipeline the webview uses. macOS/Windows keep using the webview.
+    if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+        DisposableEffect(controller) {
+            val kfm = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            val dispatcher = KeyEventDispatcher { event ->
+                if (event.id != KeyEvent.KEY_PRESSED) return@KeyEventDispatcher false
+                val command = when (event.keyCode) {
+                    KeyEvent.VK_SPACE, KeyEvent.VK_K -> "keyboardToggle"
+                    KeyEvent.VK_LEFT, KeyEvent.VK_J -> "keyboardSeekBack"
+                    KeyEvent.VK_RIGHT, KeyEvent.VK_L -> "keyboardSeekForward"
+                    KeyEvent.VK_UP -> "keyboardVolumeUp"
+                    KeyEvent.VK_DOWN -> "keyboardVolumeDown"
+                    KeyEvent.VK_F11 -> "toggleFullscreen"
+                    KeyEvent.VK_ESCAPE -> "back"
+                    else -> null
+                } ?: return@KeyEventDispatcher false
+                controller.handleKeyCommand(command)
+                true
+            }
+            kfm.addKeyEventDispatcher(dispatcher)
+            onDispose { kfm.removeKeyEventDispatcher(dispatcher) }
+        }
     }
 
     LaunchedEffect(

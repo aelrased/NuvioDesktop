@@ -704,6 +704,36 @@ val buildMacosPlayerBridge = tasks.register<Exec>("buildMacosPlayerBridge") {
     commandLine(macosPlayerBridgeCommand)
 }
 
+// ---- Linux player bridge (system libmpv, X11 "wid" embedding) ----
+// Compiles a single JNI .so against the system libmpv + JDK JNI headers.
+// Requires a C++ toolchain, pkg-config, and libmpv development files on the
+// build host (all provided by the Nix dev shell).
+val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
+val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.cpp")
+val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
+val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
+val linuxPlayerBridgeSourceFile = linuxPlayerBridgeSource.asFile
+val linuxPlayerBridgeOutputFile = linuxPlayerBridgeOutput.get().asFile
+val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
+    notCompatibleWithConfigurationCache("Builds a host-local player bridge against system libmpv.")
+    enabled = isLinuxHost
+    inputs.file(linuxPlayerBridgeSourceFile)
+    outputs.file(linuxPlayerBridgeOutputFile)
+    val src = linuxPlayerBridgeSourceFile.absolutePath
+    val out = linuxPlayerBridgeOutputFile.absolutePath
+    val outParent = linuxPlayerBridgeOutputFile.parentFile
+    val jni = "$linuxPlayerBridgeJavaHome/include"
+    doFirst { outParent.mkdirs() }
+    commandLine(
+        "bash", "-c",
+        "c++ -std=c++17 -shared -fPIC -O2 " +
+            "-I'$jni' -I'$jni/linux' " +
+            "$(pkg-config --cflags mpv webkit2gtk-4.1 gtk+-3.0 x11 xcomposite xext) " +
+            "'$src' -o '$out' " +
+            "$(pkg-config --libs mpv webkit2gtk-4.1 gtk+-3.0 x11 xcomposite xext) -lpthread",
+    )
+}
+
 val windowsPlayerBridgeArch = when (System.getProperty("os.arch").lowercase()) {
     "aarch64", "arm64" -> "arm64"
     "x86" -> "x86"
@@ -909,44 +939,6 @@ val generateWindowsPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeInde
     indexFile.set(windowsPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
 }
 
-val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
-val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
-val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
-val linuxPlayerBridgePkgConfigLibs = listOf("mpv", "x11", "gtk+-3.0", "webkit2gtk-4.1", "epoxy", "egl", "gl")
-if (isLinuxHost) {
-    linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
-}
-val linuxPlayerBridgeCommand = run {
-    val sourceFile = linuxPlayerBridgeSource.asFile
-    val outputFile = linuxPlayerBridgeOutput.get().asFile
-    listOf(
-        "/bin/sh",
-        "-c",
-        """
-        set -eu
-        if ! pkg-config --exists ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")}; then
-          echo "Linux desktop player bridge requires libmpv, libX11, gtk+-3.0, webkit2gtk-4.1 and epoxy development packages discoverable via pkg-config (e.g. libmpv-dev, libgtk-3-dev, libwebkit2gtk-4.1-dev, libepoxy-dev)." >&2
-          exit 1
-        fi
-        PKG_CFLAGS="${'$'}(pkg-config --cflags ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")})"
-        PKG_LIBS="${'$'}(pkg-config --libs ${linuxPlayerBridgePkgConfigLibs.joinToString(" ")})"
-        exec gcc -shared -fPIC \
-          ${shellQuote(sourceFile.absolutePath)} \
-          -o ${shellQuote(outputFile.absolutePath)} \
-          -I${shellQuote("$linuxPlayerBridgeJavaHome/include")} \
-          -I${shellQuote("$linuxPlayerBridgeJavaHome/include/linux")} \
-          ${'$'}PKG_CFLAGS ${'$'}PKG_LIBS
-        """.trimIndent(),
-    )
-}
-val buildLinuxPlayerBridge = tasks.register<Exec>("buildLinuxPlayerBridge") {
-    notCompatibleWithConfigurationCache("Builds a host-local player bridge against system libmpv/GTK/WebKitGTK for Linux.")
-    enabled = isLinuxHost
-    inputs.file(linuxPlayerBridgeSource)
-    outputs.file(linuxPlayerBridgeOutput)
-    commandLine(linuxPlayerBridgeCommand)
-}
-
 abstract class GenerateNativeRuntimeIndexTask : DefaultTask() {
     @get:InputDirectory
     abstract val runtimeDir: DirectoryProperty
@@ -1113,32 +1105,6 @@ if (isWindowsHost) {
 if (isLinuxHost) {
     tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
         dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex, downloadTorrserver)
-    }
-}
-
-if (isLinuxHost) {
-    val desktopNativePlayerTasks = setOf(
-        "run",
-        "runRelease",
-        "desktopRun",
-        "runDistributable",
-        "runReleaseDistributable",
-        "desktopRunHot",
-        "hotRunDesktop",
-        "hotRunDesktopAsync",
-        "hotDevDesktop",
-        "hotDevDesktopAsync",
-        "createDistributable",
-        "createReleaseDistributable",
-        "createRuntimeImage",
-        "package",
-        "packageDistributionForCurrentOS",
-        "packageUberJarForCurrentOS",
-        "packageReleaseDistributionForCurrentOS",
-        "packageReleaseUberJarForCurrentOS",
-    )
-    tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
-        dependsOn(buildLinuxPlayerBridge)
     }
 }
 
@@ -1325,12 +1291,14 @@ compose.desktop {
             ?: System.getenv("NUVIO_DESKTOP_SMOKE_PLAYER_URL")
         jvmArgs += listOfNotNull(
             "-Dapple.awt.application.appearance=NSAppearanceNameDarkAqua",
+            // Keep AWT from loading its own GTK (Swing L&F/file dialogs): the
+            // bridge owns the process's GTK via initGtkEarly (skoruppa's fix).
+            "-Djdk.gtk.version=0",
             "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.lwawt=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.lwawt.macosx=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED",
-            "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
             smokePlayerUrl?.takeIf { it.isNotBlank() }?.let { "-Dnuvio.desktop.smokePlayerUrl=$it" },
             // ── Memory management ──
             "-Xms256m",
