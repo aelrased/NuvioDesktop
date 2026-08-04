@@ -22,6 +22,8 @@
 #include <time.h>
 
 static pthread_once_t gGtkThreadOnce = PTHREAD_ONCE_INIT;
+static atomic_int gGtkRunning = 0;
+static pthread_t gGtkThread;
 
 static void *gtkThreadMain(void *arg) {
     (void)arg;
@@ -29,18 +31,26 @@ static void *gtkThreadMain(void *arg) {
     setenv("GDK_DEBUG", "no-vsync", 1);
     int argc = 0;
     gtk_init(&argc, NULL);
+    atomic_store(&gGtkRunning, 1);
     gtk_main();
+    atomic_store(&gGtkRunning, 0);
     return NULL;
 }
 
 static void startGtkThreadOnce(void) {
     XInitThreads();
-    pthread_t thread;
-    pthread_create(&thread, NULL, gtkThreadMain, NULL);
-    pthread_detach(thread);
-    while (!gtk_init_check(NULL, NULL) && gdk_display_get_default() == NULL) {
+    pthread_create(&gGtkThread, NULL, gtkThreadMain, NULL);
+    while (!atomic_load(&gGtkRunning) && gdk_display_get_default() == NULL) {
         usleep(2000);
     }
+}
+
+static int runOnGtkThreadSyncTimeout(void (*fn)(void *arg), void *arg, int timeoutMs);
+
+static void shutdownGtkThread(void) {
+    if (!atomic_load(&gGtkRunning)) return;
+    runOnGtkThreadSyncTimeout((void (*)(void *))gtk_main_quit, NULL, 5000);
+    pthread_join(gGtkThread, NULL);
 }
 
 static void ensureGtkThread(void) {
@@ -322,9 +332,11 @@ static void onGLAreaRealize(GtkWidget *widget, gpointer userData) {
         .get_proc_address_ctx = NULL,
     };
     int advanced = 1;
+    Display *x11Display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_OPENGL},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &glInit},
+        {MPV_RENDER_PARAM_X11_DISPLAY, x11Display},
         {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced},
         {0}
     };
@@ -380,6 +392,8 @@ static void createWebViewTask(void *rawArgs) {
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(window), TRUE);
+    gtk_window_set_accept_focus(GTK_WINDOW(window), FALSE);
     gtk_widget_set_size_request(window, 16, 16);
     g_signal_connect(window, "destroy", G_CALLBACK(onControlsWindowDestroyed), player);
 
@@ -402,14 +416,6 @@ static void createWebViewTask(void *rawArgs) {
     GtkWidget *overlay = gtk_overlay_new();
     gtk_container_add(GTK_CONTAINER(window), overlay);
 
-    GtkWidget *glArea = gtk_gl_area_new();
-    gtk_gl_area_set_has_alpha(GTK_GL_AREA(glArea), FALSE);
-    gtk_gl_area_set_auto_render(GTK_GL_AREA(glArea), FALSE);
-    g_signal_connect(glArea, "realize", G_CALLBACK(onGLAreaRealize), player);
-    g_signal_connect(glArea, "unrealize", G_CALLBACK(onGLAreaUnrealize), player);
-    g_signal_connect(glArea, "render", G_CALLBACK(onGLAreaRender), player);
-    gtk_container_add(GTK_CONTAINER(overlay), glArea);
-
     WebKitUserContentManager *contentManager = webkit_user_content_manager_new();
     webkit_user_content_manager_register_script_message_handler(contentManager, "player");
     g_signal_connect(contentManager, "script-message-received::player", G_CALLBACK(onScriptMessage), player);
@@ -420,27 +426,51 @@ static void createWebViewTask(void *rawArgs) {
     webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(webView), &transparent);
     gtk_widget_add_events(webView, GDK_POINTER_MOTION_MASK);
     g_signal_connect(webView, "motion-notify-event", G_CALLBACK(onWebViewMotion), player);
-    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), webView);
+    gtk_widget_set_hexpand(webView, TRUE);
+    gtk_widget_set_vexpand(webView, TRUE);
+    gtk_widget_set_halign(webView, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(webView, GTK_ALIGN_FILL);
+    gtk_container_add(GTK_CONTAINER(overlay), webView);
 
-    gtk_widget_show_all(window);
-
-    gtk_widget_realize(window);
-    GdkWindow *gdkWindow = gtk_widget_get_window(window);
-    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
+    GtkWidget *glArea = gtk_gl_area_new();
+    gtk_gl_area_set_has_alpha(GTK_GL_AREA(glArea), FALSE);
+    gtk_gl_area_set_auto_render(GTK_GL_AREA(glArea), FALSE);
+    gtk_widget_set_hexpand(glArea, TRUE);
+    gtk_widget_set_vexpand(glArea, TRUE);
+    gtk_widget_set_halign(glArea, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(glArea, GTK_ALIGN_FILL);
+    gtk_widget_set_events(glArea, 0);
+    g_signal_connect(glArea, "realize", G_CALLBACK(onGLAreaRealize), player);
+    g_signal_connect(glArea, "unrealize", G_CALLBACK(onGLAreaUnrealize), player);
+    g_signal_connect(glArea, "render", G_CALLBACK(onGLAreaRender), player);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), glArea);
 
     Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
-    XReparentWindow(display, ownXid, player->hostXid, 0, 0);
 
     Window rootReturn;
     int xReturn, yReturn;
     unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
+    int hostW = 800, hostH = 600;
     if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
                       &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
-        gtk_window_resize(GTK_WINDOW(window), (int)widthReturn, (int)heightReturn);
+        hostW = (int)widthReturn;
+        hostH = (int)heightReturn;
     }
 
-    XMapWindow(display, ownXid);
-    XFlush(display);
+    int hostScreenX = 0, hostScreenY = 0;
+    Window childReturn;
+    XTranslateCoordinates(display, player->hostXid, DefaultRootWindow(display),
+                          0, 0, &hostScreenX, &hostScreenY, &childReturn);
+
+    gtk_window_set_default_size(GTK_WINDOW(window), hostW, hostH);
+    gtk_window_move(GTK_WINDOW(window), hostScreenX, hostScreenY);
+
+    gtk_widget_show_all(window);
+    gtk_widget_realize(window);
+
+    gtk_window_move(GTK_WINDOW(window), hostScreenX, hostScreenY);
+    gtk_window_resize(GTK_WINDOW(window), hostW, hostH);
+    gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
 
     player->window = window;
     player->glArea = glArea;
@@ -461,7 +491,16 @@ typedef struct {
 static void trackControlsGeometryTask(void *rawArgs) {
     TrackControlsGeometryArgs *args = (TrackControlsGeometryArgs *)rawArgs;
     LinuxPlayer *player = args->player;
-    if (player->window && GTK_IS_WINDOW(player->window)) {
+    if (player->window && GDK_IS_WINDOW(gtk_widget_get_window(player->window))) {
+        Display *display = XOpenDisplay(NULL);
+        if (display) {
+            int screenX = 0, screenY = 0;
+            Window childReturn;
+            XTranslateCoordinates(display, player->hostXid, DefaultRootWindow(display),
+                                  0, 0, &screenX, &screenY, &childReturn);
+            XCloseDisplay(display);
+            gtk_window_move(GTK_WINDOW(player->window), screenX, screenY);
+        }
         gtk_window_resize(GTK_WINDOW(player->window), args->width, args->height);
     }
     free(args);
@@ -472,31 +511,24 @@ static void *resizeWatcherThreadFunc(void *arg) {
     Display *display = XOpenDisplay(NULL);
     if (!display) return NULL;
 
-    Window lastHostXid = 0;
     int lastW = -1, lastH = -1;
+    int lastX = -9999, lastY = -9999;
     while (atomic_load(&player->alive)) {
-        if (player->hostXid != lastHostXid) {
-            lastHostXid = player->hostXid;
-            lastW = -1;
-            lastH = -1;
-            XSelectInput(display, lastHostXid, StructureNotifyMask);
-            XFlush(display);
-        }
-
-        while (XPending(display) > 0) {
-            XEvent event;
-            XNextEvent(display, &event);
-            (void)event;
-        }
-
         Window rootReturn;
         int xReturn, yReturn;
         unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
         if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
                           &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
-            if ((int)widthReturn != lastW || (int)heightReturn != lastH) {
+            int screenX = 0, screenY = 0;
+            Window childReturn;
+            XTranslateCoordinates(display, player->hostXid, DefaultRootWindow(display),
+                                  0, 0, &screenX, &screenY, &childReturn);
+            if ((int)widthReturn != lastW || (int)heightReturn != lastH ||
+                screenX != lastX || screenY != lastY) {
                 lastW = (int)widthReturn;
                 lastH = (int)heightReturn;
+                lastX = screenX;
+                lastY = screenY;
                 TrackControlsGeometryArgs *args = malloc(sizeof(TrackControlsGeometryArgs));
                 args->player = player;
                 args->width = (int)widthReturn;
@@ -548,6 +580,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
     (void)reserved;
     setlocale(LC_NUMERIC, "C");
     XInitThreads();
+    atexit(shutdownGtkThread);
     return JNI_VERSION_1_6;
 }
 
@@ -711,28 +744,33 @@ static void onControlsWindowDestroyed(GtkWidget *widget, gpointer userData) {
 static void reattachWindowTask(void *arg) {
     LinuxPlayer *player = (LinuxPlayer *)arg;
     if (!player->window || !GTK_IS_WIDGET(player->window)) return;
-    GdkWindow *gdkWindow = gtk_widget_get_window(player->window);
-    if (!gdkWindow) return;
 
-    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
-    Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
-    XReparentWindow(display, ownXid, player->hostXid, 0, 0);
+    Display *display = XOpenDisplay(NULL);
+    if (display) {
+        int screenX = 0, screenY = 0;
+        Window childReturn;
+        XTranslateCoordinates(display, player->hostXid, DefaultRootWindow(display),
+                              0, 0, &screenX, &screenY, &childReturn);
 
-    Window rootReturn;
-    int xReturn, yReturn;
-    unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
-    if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
-                      &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
-        gtk_window_resize(GTK_WINDOW(player->window), (int)widthReturn, (int)heightReturn);
+        Window rootReturn;
+        int xReturn, yReturn;
+        unsigned int widthReturn, heightReturn, borderReturn, depthReturn;
+        if (XGetGeometry(display, player->hostXid, &rootReturn, &xReturn, &yReturn,
+                          &widthReturn, &heightReturn, &borderReturn, &depthReturn)) {
+            XCloseDisplay(display);
+            gtk_window_move(GTK_WINDOW(player->window), screenX, screenY);
+            gtk_window_resize(GTK_WINDOW(player->window), (int)widthReturn, (int)heightReturn);
+        } else {
+            XCloseDisplay(display);
+        }
     }
 
-    XMapWindow(display, ownXid);
-    gtk_widget_show(player->window);
+    gtk_widget_show_all(player->window);
+    gtk_window_set_keep_above(GTK_WINDOW(player->window), TRUE);
     if (player->glArea && GTK_IS_GL_AREA(player->glArea)) {
         gtk_gl_area_set_auto_render(GTK_GL_AREA(player->glArea), TRUE);
         gtk_gl_area_queue_render(GTK_GL_AREA(player->glArea));
     }
-    XFlush(display);
 }
 
 JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_dispose(
@@ -741,6 +779,8 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
     (void)thiz;
     if (!handle) return;
     LinuxPlayer *player = (LinuxPlayer *)(intptr_t)handle;
+
+    if (!atomic_compare_exchange_strong(&player->alive, &(int){1}, 0)) return;
 
     if (player->renderCtx) {
         mpv_render_context_set_update_callback(player->renderCtx, NULL, NULL);
@@ -755,22 +795,13 @@ JNIEXPORT void JNICALL Java_com_nuvio_app_features_player_desktop_NativePlayerBr
         mpv_command_async(player->mpv, 0, cmd);
     }
 
-    runOnGtkThreadSync(detachWindowTask, player);
+    runOnGtkThreadAsync(detachWindowTask, player);
 }
 
 static void detachWindowTask(void *arg) {
     LinuxPlayer *player = (LinuxPlayer *)arg;
     if (!player->window || !GTK_IS_WIDGET(player->window)) return;
-    GdkWindow *gdkWindow = gtk_widget_get_window(player->window);
-    if (!gdkWindow) return;
-
-    Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
-    Window ownXid = gdk_x11_window_get_xid(gdkWindow);
-    Window root = DefaultRootWindow(display);
-
-    XUnmapWindow(display, ownXid);
-    XReparentWindow(display, ownXid, root, 0, 0);
-    XFlush(display);
+    gtk_widget_hide(player->window);
 }
 
 static LinuxPlayer *getPlayer(jlong handle) {

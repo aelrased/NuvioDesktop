@@ -31,6 +31,7 @@ import com.nuvio.app.features.player.desktop.preloadNativePlayerBridgeAsync
 import com.nuvio.app.features.player.desktop.registerDesktopAppFullscreenToggle
 import java.awt.Desktop
 import java.awt.Color as AwtColor
+import java.awt.Toolkit
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 import javax.swing.JComponent
@@ -38,6 +39,21 @@ import javax.swing.JComponent
 private val NuvioDesktopNativeBackground = AwtColor(0x0D, 0x0D, 0x0D)
 private const val NuvioDesktopIconPath = "icons/nuvio-app-icon.png"
 private const val MacosDarkAquaAppearance = "NSAppearanceNameDarkAqua"
+
+private fun linuxDensity(): Float {
+    return System.getProperty("sun.java2d.uiScale")?.toFloatOrNull() ?: 1.0f
+}
+
+private fun centeredWindowPosition(widthDp: Float, heightDp: Float): WindowPosition {
+    val toolkit = Toolkit.getDefaultToolkit()
+    val screen = toolkit.screenSize
+    val density = linuxDensity()
+    val screenW = screen.width / density
+    val screenH = screen.height / density
+    val x = ((screenW - widthDp) / 2f).coerceAtLeast(0f)
+    val y = ((screenH - heightDp) / 2f).coerceAtLeast(0f)
+    return WindowPosition.Absolute(x.dp, y.dp)
+}
 
 private fun loadDesktopIconImages(): List<BufferedImage> {
     val classLoader = Thread.currentThread().contextClassLoader
@@ -85,11 +101,20 @@ fun main(args: Array<String>) {
             ?.takeIf { it.isNotBlank() }
         val wasFullscreenOnLastExit = remember { DesktopWindowModeStorage.loadWasFullscreen() }
         val savedGeometry = remember { DesktopWindowModeStorage.loadWindowedGeometry() }
+        val (screenW, screenH) = remember {
+            val s = Toolkit.getDefaultToolkit().screenSize
+            Pair(s.width, s.height)
+        }
+        val defaultWidth = (screenW * 0.75f)
+        val defaultHeight = (screenH * 0.88f)
         val windowState = rememberWindowState(
-            width = savedGeometry?.width?.dp ?: 1280.dp,
-            height = savedGeometry?.height?.dp ?: 820.dp,
+            width = savedGeometry?.width?.dp ?: defaultWidth.dp,
+            height = savedGeometry?.height?.dp ?: defaultHeight.dp,
             position = savedGeometry?.let { WindowPosition.Absolute(x = it.x.dp, y = it.y.dp) }
-                ?: WindowPosition.PlatformDefault,
+                ?: WindowPosition.Absolute(
+                    ((screenW - defaultWidth) / 2f).dp,
+                    ((screenH - defaultHeight) / 2f).dp,
+                ),
             // Windows fullscreen is emulated natively (see DesktopAppFullscreenController)
             // rather than driven by WindowPlacement, so it's restored separately below.
             placement = if (wasFullscreenOnLastExit && DesktopHostOs.current != DesktopHostOs.WINDOWS) {

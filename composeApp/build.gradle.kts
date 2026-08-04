@@ -912,7 +912,7 @@ val generateWindowsPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeInde
 val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.c")
 val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
 val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
-val linuxPlayerBridgePkgConfigLibs = listOf("mpv", "x11", "gtk+-3.0", "webkit2gtk-4.1", "epoxy")
+val linuxPlayerBridgePkgConfigLibs = listOf("mpv", "x11", "gtk+-3.0", "webkit2gtk-4.1", "epoxy", "egl", "gl")
 if (isLinuxHost) {
     linuxPlayerBridgeOutput.get().asFile.parentFile.mkdirs()
 }

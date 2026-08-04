@@ -320,6 +320,11 @@ private fun NativePlayerSurface(
     }
 
     DisposableEffect(host) {
+        host.onBeforeRemoveNotify = {
+            if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+                controller.dispose()
+            }
+        }
         host.onDisplayableChanged = { displayable ->
             if (!displayable) {
                 hostFirstPaintComplete.value = false
@@ -336,6 +341,7 @@ private fun NativePlayerSurface(
             hostFirstFullSizePaintComplete.value = true
         }
         onDispose {
+            host.onBeforeRemoveNotify = null
             host.onDisplayableChanged = null
             host.onFirstPaint = null
             host.onFirstFullSizePaint = null

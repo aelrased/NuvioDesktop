@@ -21,6 +21,7 @@ private val usesSoftwareRendering: Boolean
 internal class NativePlayerHost : Canvas(), PlayerHost {
     var onPeerReady: (() -> Unit)? = null
     var onDisplayableChanged: ((Boolean) -> Unit)? = null
+    var onBeforeRemoveNotify: (() -> Unit)? = null
     var onFirstPaint: (() -> Unit)? = null
     var onFirstFullSizePaint: (() -> Unit)? = null
     var onResize: ((width: Int, height: Int) -> Unit)? = null
@@ -240,10 +241,12 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
     }
 
     override fun removeNotify() {
+        onBeforeRemoveNotify?.invoke()
         onDisplayableChanged?.invoke(false)
         firstPaintNotified = false
         firstFullSizePaintNotified = false
         onPeerReady = null
+        onBeforeRemoveNotify = null
         onFirstPaint = null
         onFirstFullSizePaint = null
         stopRenderTimer()
