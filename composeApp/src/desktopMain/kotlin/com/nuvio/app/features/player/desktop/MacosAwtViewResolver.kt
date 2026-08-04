@@ -14,37 +14,6 @@ internal object AwtNativeViewResolver {
         }
 }
 
-private object LinuxAwtViewResolver {
-    private val componentPeerField: Field by lazy {
-        Component::class.java.getDeclaredField("peer").apply { isAccessible = true }
-    }
-
-    fun resolveNativeViewPointer(component: Component): Long {
-        val peer = componentPeerField.get(component)
-            ?: error("AWT component peer is not ready for native playback.")
-
-        val xid = invokeLong(peer, "getWindow")
-        if (xid == 0L) {
-            error("Linux AWT X11 window id was zero.")
-        }
-        return xid
-    }
-
-    private fun findMethod(type: Class<*>, name: String): Method {
-        var current: Class<*>? = type
-        while (current != null) {
-            runCatching {
-                return current.getDeclaredMethod(name).apply { isAccessible = true }
-            }
-            current = current.superclass
-        }
-        error("Method $name was not found on ${type.name}.")
-    }
-
-    private fun invokeLong(target: Any, methodName: String): Long =
-        (findMethod(target.javaClass, methodName).invoke(target) as Number).toLong()
-}
-
 private object MacosAwtViewResolver {
     private val componentPeerField: Field by lazy {
         Component::class.java.getDeclaredField("peer").apply { isAccessible = true }

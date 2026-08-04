@@ -708,7 +708,6 @@ val buildMacosPlayerBridge = tasks.register<Exec>("buildMacosPlayerBridge") {
 // Compiles a single JNI .so against the system libmpv + JDK JNI headers.
 // Requires a C++ toolchain, pkg-config, and libmpv development files on the
 // build host (all provided by the Nix dev shell).
-val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
 val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.cpp")
 val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
 val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
