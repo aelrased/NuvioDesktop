@@ -38,6 +38,13 @@ fun DisintegratingContainer(
     durationMillis: Int = 1500,
     content: @Composable () -> Unit,
 ) {
+    if (!disintegrating) {
+        Box(modifier = modifier) {
+            content()
+        }
+        return
+    }
+
     val graphicsLayer = rememberGraphicsLayer()
     val progress = remember { Animatable(0f) }
     var field by remember { mutableStateOf<AshField?>(null) }

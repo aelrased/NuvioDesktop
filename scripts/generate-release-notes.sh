@@ -6,10 +6,11 @@ from_ref=""
 to_ref="HEAD"
 repository="${GITHUB_REPOSITORY:-}"
 offline=false
+repository_history=false
 exclude_commits="${RELEASE_NOTES_EXCLUDE_COMMITS:-}"
 
 usage() {
-    echo "Usage: $0 --from <commit> [--to <commit>] [--repository <owner/repo>] [--exclude <hashes>] [--offline]" >&2
+    echo "Usage: $0 --from <commit> [--to <commit>] [--repository <owner/repo>] [--repository-history] [--exclude <hashes>] [--offline]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +26,10 @@ while [[ $# -gt 0 ]]; do
         --repository)
             repository="${2:-}"
             shift 2
+            ;;
+        --repository-history)
+            repository_history=true
+            shift
             ;;
         --exclude)
             exclude_commits="${exclude_commits} ${2:-}"
@@ -58,6 +63,21 @@ git cat-file -e "${to_ref}^{commit}" 2>/dev/null || {
     echo "Unknown ending commit: ${to_ref}" >&2
     exit 1
 }
+
+if [[ "$repository_history" == true && "$offline" == false ]]; then
+    if [[ -z "$repository" ]]; then
+        echo "Repository history mode requires --repository <owner/repo>." >&2
+        exit 1
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "Repository history mode requires the GitHub CLI unless --offline is used." >&2
+        exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "Repository history mode requires jq unless --offline is used." >&2
+        exit 1
+    fi
+fi
 
 is_excluded_hash() {
     local commit="$1"
@@ -115,22 +135,91 @@ resolve_username() {
     printf '%s' "${username:-unknown}"
 }
 
+resolve_pull_request() {
+    local commit="$1"
+    local response
+
+    response="$(
+        gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${repository}/commits/${commit}/pulls"
+    )" || {
+        echo "Could not resolve pull requests for ${commit} in ${repository}." >&2
+        return 1
+    }
+
+    printf '%s' "$response" \
+        | jq -r --arg repository "$repository" '
+            map(select(.base.repo.full_name == $repository and .merged_at != null))
+            | sort_by(.merged_at)
+            | last
+            | if . == null then
+                empty
+              else
+                [
+                    (.number | tostring),
+                    (.title | gsub("[\t\r\n]+"; " ")),
+                    (.user.login // "unknown")
+                ]
+                | @tsv
+              end
+        '
+}
+
 seen_subjects=$'\n'
+seen_pull_requests=$'\n'
 separator=$'\x1f'
 
-while IFS="$separator" read -r commit short_hash subject author_name author_email; do
-    [[ -n "$commit" ]] || continue
-    is_excluded_hash "$commit" && continue
-    is_release_note "$subject" || continue
+emit_release_note() {
+    local short_hash="$1"
+    local subject="$2"
+    local username="$3"
+    local suffix="${4:-}"
+    local normalized_subject
+    local display_subject
 
+    is_release_note "$subject" || return 0
     normalized_subject="$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]' | sed -E 's/[[:space:]]+/ /g; s/[[:space:].]+$//')"
-    [[ "$seen_subjects" != *$'\n'"$normalized_subject"$'\n'* ]] || continue
+    [[ "$seen_subjects" != *$'\n'"$normalized_subject"$'\n'* ]] || return 0
     seen_subjects+="${normalized_subject}"$'\n'
 
     display_subject="$(printf '%s' "$subject" | sed -E 's/[[:space:]]+$//; s/\.$//')"
-    username="$(resolve_username "$commit" "$author_name" "$author_email")"
-    printf '%s %s @%s  \n' "$short_hash" "$display_subject" "$username"
-done < <(
-    git log "${from_ref}..${to_ref}" --no-merges \
-        --format="%H${separator}%h${separator}%s${separator}%an${separator}%ae"
-)
+    printf '%s %s%s @%s  \n' "$short_hash" "$display_subject" "$suffix" "$username"
+}
+
+if [[ "$repository_history" == true ]]; then
+    while IFS="$separator" read -r commit short_hash subject author_name author_email parents; do
+        [[ -n "$commit" ]] || continue
+        is_excluded_hash "$commit" && continue
+
+        pull_request=""
+        if [[ "$offline" == false ]]; then
+            pull_request="$(resolve_pull_request "$commit")"
+        fi
+
+        if [[ -n "$pull_request" ]]; then
+            IFS=$'\t' read -r pull_number pull_title pull_author <<< "$pull_request"
+            [[ "$seen_pull_requests" != *$'\n'"$pull_number"$'\n'* ]] || continue
+            seen_pull_requests+="${pull_number}"$'\n'
+            emit_release_note "$short_hash" "$pull_title" "$pull_author" " (#${pull_number})"
+            continue
+        fi
+
+        [[ "$parents" != *" "* ]] || continue
+        username="$(resolve_username "$commit" "$author_name" "$author_email")"
+        emit_release_note "$short_hash" "$subject" "$username"
+    done < <(
+        git log "${from_ref}..${to_ref}" --first-parent \
+            --format="%H${separator}%h${separator}%s${separator}%an${separator}%ae${separator}%P"
+    )
+else
+    while IFS="$separator" read -r commit short_hash subject author_name author_email; do
+        [[ -n "$commit" ]] || continue
+        is_excluded_hash "$commit" && continue
+        username="$(resolve_username "$commit" "$author_name" "$author_email")"
+        emit_release_note "$short_hash" "$subject" "$username"
+    done < <(
+        git log "${from_ref}..${to_ref}" --no-merges \
+            --format="%H${separator}%h${separator}%s${separator}%an${separator}%ae"
+    )
+fi
