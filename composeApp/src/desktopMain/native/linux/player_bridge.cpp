@@ -99,6 +99,11 @@ struct Player {
     // also what restores the page after a web-process crash/reload.
     std::string pendingControlsJson;
     std::atomic<bool> firstFrameShown{false};  // gates the loading-screen composite
+    // X input focus owner before the overlay grabbed it (teardown restores it;
+    // 0 = nothing saved). The overlay holds real X focus while the player is
+    // attached — WKWebView/WebView2 parity — so the page's own keydown
+    // shortcuts work instead of a Kotlin-side reimplementation.
+    Window savedFocusXid = 0;
 };
 
 // ---- Player liveness -----------------------------------------------------
@@ -377,6 +382,40 @@ void setOverlayCursorHidden(Player *player, bool hidden) {
     if (gw) gdk_display_flush(gdk_window_get_display(gw));
     player->cursorIsHidden = hidden;
     NUVIO_LOG("overlay cursor %s", hidden ? "hidden" : "shown");
+}
+
+// Give the overlay window real X input focus so the page's keydown handlers
+// run — the same position WKWebView (first responder) and WebView2 (SetFocus/
+// MoveFocus) hold on macOS/Windows. The overlay is composite-redirected but
+// still a viewable X window, so it can own the keyboard; error-trapped because
+// a not-yet-viewable window makes XSetInputFocus throw BadMatch.
+void focusOverlay(Player *player) {
+    if (!player->gtkWindow || !player->overlayXid) return;
+    GdkWindow *gw = gtk_widget_get_window(player->gtkWindow);
+    if (!gw) return;
+    Display *dpy = GDK_WINDOW_XDISPLAY(gw);
+    // Remember the previous focus owner (normally the AWT toplevel) so
+    // teardown can hand the keyboard back. Only on the first grab: re-grabs
+    // (fullscreen toggles, window refocus) must not save our own overlay.
+    if (!player->savedFocusXid) {
+        Window cur = 0;
+        int revert = 0;
+        XGetInputFocus(dpy, &cur, &revert);
+        if (cur != player->overlayXid && cur != None && cur != PointerRoot) {
+            player->savedFocusXid = cur;
+        }
+    }
+    // Route GTK-side key delivery to the webkit widget once the X events arrive.
+    if (player->webview) gtk_widget_grab_focus(GTK_WIDGET(player->webview));
+    GdkDisplay *gdpy = gdk_window_get_display(gw);
+    gdk_x11_display_error_trap_push(gdpy);
+    XSetInputFocus(dpy, player->overlayXid, RevertToParent, CurrentTime);
+    XFlush(dpy);
+    if (gdk_x11_display_error_trap_pop(gdpy)) {
+        NUVIO_ERR("XSetInputFocus overlay 0x%lx failed", player->overlayXid);
+    } else {
+        NUVIO_LOG("input focus -> overlay 0x%lx", player->overlayXid);
+    }
 }
 
 // JS -> native: forward {type, value} to NativePlayerEventSink.onPlayerEvent.
@@ -902,7 +941,8 @@ gboolean createWebviewOnGtk(gpointer data) {
                           GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK |
                           GDK_BUTTON_RELEASE_MASK | GDK_SCROLL_MASK |
                           GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
-                          GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK);
+                          GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK |
+                          GDK_FOCUS_CHANGE_MASK);
     gtk_widget_realize(win);
     GdkWindow *gdkWin = gtk_widget_get_window(win);
     Display *dpy = GDK_WINDOW_XDISPLAY(gdkWin);
@@ -978,6 +1018,11 @@ gboolean createWebviewOnGtk(gpointer data) {
     player->updateTimer = g_timeout_add(200, pushPlayerUpdate, player);
     player->compositeTimer = g_timeout_add(33, compositeTick, player);  // ~30fps when active
 
+    // Grab the keyboard for the page from the start (macOS grabs first-responder
+    // at creation, Windows MoveFocus()es on controller setup) — the page's own
+    // keydown handler is the only keyboard path, there is no Kotlin fallback.
+    focusOverlay(player);
+
     NUVIO_LOG("webview created + reparented into host 0x%lx", s->hostXid);
     delete s;
     return G_SOURCE_REMOVE;
@@ -1047,6 +1092,33 @@ gboolean destroyWebviewOnGtk(gpointer data) {
         player->snapCancel = nullptr;
     }
     if (player->gtkWindow) {
+        // Hand the keyboard back before the overlay dies — but only if we still
+        // hold it (the user may have alt-tabbed elsewhere; stealing focus on
+        // close would be hostile). Falls back to the host window when the saved
+        // owner is gone; RevertToParent covers the rest.
+        GdkWindow *gw = gtk_widget_get_window(player->gtkWindow);
+        if (gw && player->overlayXid) {
+            Display *dpy = GDK_WINDOW_XDISPLAY(gw);
+            Window cur = 0;
+            int revert = 0;
+            XGetInputFocus(dpy, &cur, &revert);
+            if (cur == player->overlayXid) {
+                GdkDisplay *gdpy = gdk_window_get_display(gw);
+                Window target = player->savedFocusXid ? player->savedFocusXid
+                                                      : player->hostXid;
+                gdk_x11_display_error_trap_push(gdpy);
+                XSetInputFocus(dpy, target, RevertToParent, CurrentTime);
+                XFlush(dpy);
+                if (gdk_x11_display_error_trap_pop(gdpy) && target != player->hostXid) {
+                    gdk_x11_display_error_trap_push(gdpy);
+                    XSetInputFocus(dpy, player->hostXid, RevertToParent, CurrentTime);
+                    XFlush(dpy);
+                    gdk_x11_display_error_trap_pop_ignored(gdpy);
+                }
+                NUVIO_LOG("input focus restored to 0x%lx", target);
+            }
+        }
+        player->savedFocusXid = 0;
         releaseSnapshots(player);
         gtk_widget_destroy(player->gtkWindow);
         player->gtkWindow = nullptr;
@@ -1539,7 +1611,19 @@ JNIEXPORT void JNICALL NP(updateControls)(JNIEnv *env, jobject, jlong handle, js
     auto *u = new ControlsUpdate{p, jstringToUtf8(env, controlsJson)};
     g_main_context_invoke(nullptr, applyControlsOnGtk, u);
 }
-JNIEXPORT void JNICALL NP(requestFocus)(JNIEnv *, jobject, jlong) {}
+// Re-grant the overlay X input focus (initial grab happens at webview
+// creation; Kotlin calls this on fullscreen changes and window refocus).
+JNIEXPORT void JNICALL NP(requestFocus)(JNIEnv *, jobject, jlong handle) {
+    auto *player = reinterpret_cast<Player *>(handle);
+    if (!player) return;
+    g_main_context_invoke(nullptr,
+                          +[](gpointer data) -> gboolean {
+                              auto *p = static_cast<Player *>(data);
+                              if (playerAlive(p)) focusOverlay(p);
+                              return G_SOURCE_REMOVE;
+                          },
+                          player);
+}
 JNIEXPORT void JNICALL NP(applyWindowChrome)(JNIEnv *, jobject, jlong, jboolean, jint, jint, jint) {}
 JNIEXPORT void JNICALL NP(setWindowBorderlessFullscreen)(
     JNIEnv *, jobject, jlong, jboolean, jint, jint, jint, jint) {}

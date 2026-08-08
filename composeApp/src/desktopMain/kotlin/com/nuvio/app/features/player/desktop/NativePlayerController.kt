@@ -26,6 +26,8 @@ import com.nuvio.app.features.player.toStorageHexString
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import javax.swing.SwingUtilities
 import kotlin.concurrent.Volatile
 
@@ -286,14 +288,20 @@ internal class NativePlayerController(
         }
     }
 
-    /**
-     * Feed a keyboard shortcut command (same vocabulary as the controls webview,
-     * e.g. "keyboardToggle") through the normal event pipeline. Used on Linux,
-     * where the controls webview is redirected offscreen and never holds keyboard
-     * focus, so keys are caught on the AWT side and forwarded here instead.
-     */
-    fun handleKeyCommand(command: String) {
-        SwingUtilities.invokeLater { handlePlayerEvent(command, 0.0) }
+    // Linux: while the player is attached the controls overlay owns X input
+    // focus (granted by the bridge at webview creation). The AWT window gaining
+    // focus means the X server moved the keyboard back to the toplevel — push
+    // it to the overlay again. Returns the uninstaller; null until the host is
+    // inside a window (the ancestor does not exist before the first paint).
+    fun installWindowFocusForwarding(): (() -> Unit)? {
+        val window = SwingUtilities.getWindowAncestor(host) ?: return null
+        val listener = object : WindowAdapter() {
+            override fun windowGainedFocus(event: WindowEvent) {
+                requestKeyboardFocus()
+            }
+        }
+        window.addWindowFocusListener(listener)
+        return { window.removeWindowFocusListener(listener) }
     }
 
     fun updateControls(state: PlayerControlsState) {
