@@ -40,7 +40,9 @@ static bool nuvioDebug() {
     static const bool on = std::getenv("NUVIO_BRIDGE_DEBUG") != nullptr;
     return on;
 }
-#define NUVIO_ERR(...) do { fprintf(stderr, "[nuvio-bridge] " __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
+// Millisecond monotonic timestamp in every line: cold-start and stall
+// investigations need real deltas, and g_get_monotonic_time is cheap.
+#define NUVIO_ERR(...) do { fprintf(stderr, "[nuvio-bridge %8ld] ", (long)(g_get_monotonic_time() / 1000)); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
 #define NUVIO_LOG(...) do { if (nuvioDebug()) { NUVIO_ERR(__VA_ARGS__); } } while (0)
 
 namespace {
