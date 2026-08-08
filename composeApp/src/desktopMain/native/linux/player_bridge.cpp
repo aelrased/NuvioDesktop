@@ -99,6 +99,16 @@ struct Player {
     // also what restores the page after a web-process crash/reload.
     std::string pendingControlsJson;
     std::atomic<bool> firstFrameShown{false};  // gates the loading-screen composite
+    // Keyboard shortcuts render a small feedback toast in the page without
+    // revealing the chrome, so they open the composite gate for a bounded
+    // window instead of latching overlayActive (nothing would ever close it —
+    // hideChrome only fires when visible chrome fades).
+    int toastTicks = 0;
+    // Page elements macOS/Windows show over the video while the chrome is
+    // hidden (their webviews are always-visible layers). Mirrored from the
+    // state JSON so the gate stays open while either is on screen.
+    bool skipPromptShown = false;
+    bool nextEpisodeShown = false;
     // X input focus owner before the overlay grabbed it (teardown restores it;
     // 0 = nothing saved). The overlay holds real X focus while the player is
     // attached — WKWebView/WebView2 parity — so the page's own keydown
@@ -434,19 +444,28 @@ void onPlayerMessage(WebKitUserContentManager *, WebKitJavascriptResult *js, gpo
     // it is up. cursorActivity also arrives while hidden (mouse woke the UI) and
     // must re-activate compositing so the fade-in is actually shown.
     if (type) {
-        if (strcmp(type, "hideChrome") == 0) {
+        if (strncmp(type, "keyboard", 8) == 0) {
+            // Keyboard shortcuts (page keydown, real X focus): the page renders
+            // its feedback toast without revealing the chrome, so neither latch
+            // overlayActive (nothing would ever unlatch it — hideChrome only
+            // fires when visible chrome fades) nor touch the cursor (a keypress
+            // must not un-hide it). Composite through a bounded window covering
+            // the toast's 1400ms + fade at the 33ms tick.
+            player->toastTicks = 55;
+        } else if (strcmp(type, "hideChrome") == 0) {
             player->overlayActive = false;
             player->fadeTicks = 18;  // keep compositing ~0.5s to render the fade-out
+            // Cursor follows chrome: hidden on hideChrome, back on any activity
+            // (cursorActivity also re-shows the chrome via the Kotlin side).
+            setOverlayCursorHidden(player, true);
         } else {
             player->overlayActive = true;
             player->fadeTicks = 0;
+            setOverlayCursorHidden(player, false);
         }
         // The page just defined its API surface — deliver any controls payload
         // that arrived before the page finished loading (macOS/Windows parity).
         if (strcmp(type, "controlsReady") == 0) flushControlsJson(player);
-        // Cursor follows chrome: hidden on hideChrome, back on any activity
-        // (cursorActivity also re-shows the chrome via the Kotlin side).
-        setOverlayCursorHidden(player, strcmp(type, "hideChrome") == 0);
     }
     JNIEnv *env = attachGtkThread();
     if (env && type) {
@@ -558,7 +577,12 @@ void compositeOverlay(Player *player) {
     // inactive — the page rendered it but it never reached mpv. mpv is not
     // decoding while paused, so this is free.
     bool paused = mpvGetFlag(player->mpv, "pause");
-    bool active = loading || paused || player->overlayActive || player->fadeTicks > 0;
+    // toastTicks: bounded window for keyboard-feedback toasts; skip prompt /
+    // next-episode card: page elements shown over playing video with the chrome
+    // hidden (always visible on macOS/Windows, whose webviews are real layers).
+    bool active = loading || paused || player->overlayActive || player->fadeTicks > 0 ||
+                  player->toastTicks > 0 || player->skipPromptShown ||
+                  player->nextEpisodeShown;
     // Track the host (video) size BEFORE the activity gate: on resize/fullscreen
     // the host canvas changes size but the overlay does not, so the controls +
     // their click hit-area drift out of alignment. This must also run while the
@@ -658,6 +682,7 @@ void compositeOverlay(Player *player) {
         if (fc) gdk_frame_clock_request_phase(fc, GDK_FRAME_CLOCK_PHASE_UPDATE);
     }
     if (!player->overlayActive && player->fadeTicks > 0) player->fadeTicks--;
+    if (player->toastTicks > 0) player->toastTicks--;
 }
 
 // Fast timer: composite the controls over the video (cheap while hidden).
@@ -1033,6 +1058,17 @@ struct ControlsUpdate {
     std::string json;
 };
 
+// Parse a boolean field from the (trusted, locally-built) state JSON; fallback
+// when the key is absent.
+bool jsonFlag(const std::string &json, const char *key, bool fallback) {
+    std::string needle = std::string("\"") + key + "\":";
+    size_t k = json.find(needle);
+    if (k == std::string::npos) return fallback;
+    const char *v = json.c_str() + k + needle.size();
+    while (*v == ' ') ++v;
+    return *v == 't';
+}
+
 // native -> JS: push a fresh controls state (identical call to WKWebView).
 // Buffered on the Player and delivered via the probing flush so a payload that
 // arrives before the page loads is retried instead of lost.
@@ -1067,6 +1103,14 @@ gboolean applyControlsOnGtk(gpointer data) {
                 u->player->fadeTicks = 18;  // render the fade-out, like hideChrome
             }
         }
+        // Skip-intro prompt and next-episode card show over playing video with
+        // the chrome hidden (macOS/Windows get this for free from their
+        // always-visible webviews); mirror their visibility so the composite
+        // gate keeps them on screen. Dismissed skip prompts render nothing —
+        // don't hold the gate open for the rest of the interval.
+        u->player->skipPromptShown = jsonFlag(u->json, "skipPromptVisible", false) &&
+                                     !jsonFlag(u->json, "skipPromptDismissed", false);
+        u->player->nextEpisodeShown = jsonFlag(u->json, "nextEpisodeVisible", false);
         u->player->pendingControlsJson = std::move(u->json);
         flushControlsJson(u->player);
     }
