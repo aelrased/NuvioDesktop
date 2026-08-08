@@ -845,6 +845,34 @@ struct WebviewSetup {
     std::string url;
 };
 
+// One web context shared by every controls webview, with a real HTTP disk
+// cache. The page re-fetches the opening artwork on every player open; with
+// the per-player ephemeral context that meant a network round-trip each time —
+// the gray spinner-and-bar phase of the loading screen. A shared cached
+// context serves it from disk after the first view of a title. The context is
+// intentionally immortal (static ref, never unref'd): the original reason for
+// ephemeral contexts was a disk-backed WebKitWebsiteDataStore whose finalize()
+// races the detached gtk_main thread at process exit (SIGABRT); a context
+// that is never finalized cannot race.
+WebKitWebContext *sharedControlsContext() {
+    static WebKitWebContext *ctx = nullptr;
+    if (!ctx) {
+        gchar *cacheDir = g_build_filename(g_get_user_cache_dir(), "nuvio",
+                                           "webkit-cache", nullptr);
+        gchar *dataDir = g_build_filename(g_get_user_cache_dir(), "nuvio",
+                                          "webkit-data", nullptr);
+        WebKitWebsiteDataManager *dm = webkit_website_data_manager_new(
+            "base-cache-directory", cacheDir,
+            "base-data-directory", dataDir,
+            nullptr);
+        ctx = webkit_web_context_new_with_website_data_manager(dm);
+        g_object_unref(dm);  // ctx holds its own ref
+        g_free(cacheDir);
+        g_free(dataDir);
+    }
+    return ctx;
+}
+
 // Surface controls-page load progress (debug only) so a blank/erroring page is
 // diagnosable; failures always log via onLoadFailed.
 void onLoadChanged(WebKitWebView * /*wv*/, WebKitLoadEvent event, gpointer data) {
@@ -895,19 +923,21 @@ gboolean createWebviewOnGtk(gpointer data) {
     // render, so disable DMABUF before WebKit's processes spawn. overwrite=0
     // keeps an explicit user setting authoritative.
     setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+    // The persistent cached context (sharedControlsContext) brings WebKit's
+    // accelerated compositing up on some stacks (observed on virtio/GNOME)
+    // where the DMABUF opt-out alone no longer guarantees alpha-correct
+    // snapshots — same dark-wall-over-video failure as above. Force the
+    // full software path; the controls page is cheap to render.
+    setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
 
-    // Ephemeral (in-memory) web context: the controls page is a trusted local
-    // file:// UI that needs no cookies/cache/IndexedDB. Using the default context
-    // creates a disk-backed WebKitWebsiteDataStore whose finalize() races the
-    // detached gtk_main thread at process exit -> SIGABRT in
-    // webkit_web_context_finalize on quit. Ephemeral has no persistent store.
-    WebKitWebContext *webContext = webkit_web_context_new_ephemeral();
+    // Shared immortal cached context — see sharedControlsContext() for why
+    // this replaced the per-player ephemeral context (artwork re-fetch on
+    // every open) and how it avoids the exit-time finalize SIGABRT.
     WebKitWebView *wv = WEBKIT_WEB_VIEW(g_object_new(
         WEBKIT_TYPE_WEB_VIEW,
-        "web-context", webContext,
+        "web-context", sharedControlsContext(),
         "user-content-manager", ucm,
         nullptr));
-    g_object_unref(webContext);  // wv holds its own ref
     GdkRGBA transparent = {0.0, 0.0, 0.0, 0.0};
     webkit_web_view_set_background_color(wv, &transparent);
 
