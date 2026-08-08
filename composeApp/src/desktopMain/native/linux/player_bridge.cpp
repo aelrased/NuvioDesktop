@@ -845,6 +845,33 @@ struct WebviewSetup {
     std::string url;
 };
 
+// ---- Webview warm-up (adoption model) -------------------------------------
+// The warm view is not a throwaway probe (the Windows semantics): the next
+// player ADOPTS it — window, view, and user-content manager — so the controls
+// page is already parsed and rendering when the player opens, and the loading
+// screen composites within ~150ms instead of after a full engine+page load.
+// After adoption a fresh warm view is spawned in the background for the next
+// open. All GTK-thread owned.
+GtkWidget *gWarmupWindow = nullptr;
+WebKitWebView *gWarmupView = nullptr;
+WebKitUserContentManager *gWarmupUcm = nullptr;
+std::string gWarmupUrl;
+std::mutex gWarmupMutex;
+std::condition_variable gWarmupCv;
+bool gWarmupStarted = false;
+bool gWarmupDone = false;
+bool gWarmupSucceeded = false;
+
+void notifyWarmupDone(bool ok) {
+    {
+        std::lock_guard<std::mutex> lock(gWarmupMutex);
+        if (gWarmupDone) return;
+        gWarmupDone = true;
+        gWarmupSucceeded = ok;
+    }
+    gWarmupCv.notify_all();
+}
+
 // One web context shared by every controls webview, with a real HTTP disk
 // cache. The page re-fetches the opening artwork on every player open; with
 // the per-player ephemeral context that meant a network round-trip each time —
@@ -872,6 +899,8 @@ WebKitWebContext *sharedControlsContext() {
     }
     return ctx;
 }
+
+gboolean warmupOnGtk(gpointer data);  // defined after the player pipeline
 
 // Surface controls-page load progress (debug only) so a blank/erroring page is
 // diagnosable; failures always log via onLoadFailed.
@@ -903,53 +932,73 @@ gboolean createWebviewOnGtk(gpointer data) {
     auto *s = static_cast<WebviewSetup *>(data);
     Player *player = s->player;
 
-    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
-    gtk_widget_set_app_paintable(win, TRUE);
-    GdkScreen *screen = gtk_widget_get_screen(win);
-    GdkVisual *rgba = gdk_screen_get_rgba_visual(screen);
-    if (rgba) gtk_widget_set_visual(win, rgba);
+    GtkWidget *win;
+    WebKitWebView *wv;
+    bool adopted = false;
 
-    WebKitUserContentManager *ucm = webkit_user_content_manager_new();
-    webkit_user_content_manager_register_script_message_handler(ucm, "player");
-    g_signal_connect(ucm, "script-message-received::player",
-                     G_CALLBACK(onPlayerMessage), player);
+    if (gWarmupWindow && gWarmupView && gWarmupUcm) {
+        // Adopt the warm view: the controls page is already parsed (or well
+        // into loading), so the loading screen can composite almost
+        // immediately instead of after a full engine + page cold start. The
+        // warm structure was built with identical window/visual/settings.
+        win = gWarmupWindow;
+        wv = gWarmupView;
+        g_signal_connect(gWarmupUcm, "script-message-received::player",
+                         G_CALLBACK(onPlayerMessage), player);
+        gWarmupWindow = nullptr;
+        gWarmupView = nullptr;
+        gWarmupUcm = nullptr;
+        adopted = true;
+        NUVIO_LOG("adopted warm webview");
+    } else {
+        win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
+        gtk_widget_set_app_paintable(win, TRUE);
+        GdkScreen *screen = gtk_widget_get_screen(win);
+        GdkVisual *rgba = gdk_screen_get_rgba_visual(screen);
+        if (rgba) gtk_widget_set_visual(win, rgba);
 
-    // WebKit's DMABUF renderer yields controls snapshots with degraded alpha —
-    // the semi-transparent chrome scrim reads back near-opaque (NVIDIA: stale or
-    // fully opaque via GBM failures; Mesa: no fully-transparent pixels at all),
-    // which mpv then blends as a dark wall over the video. The software path
-    // snapshots with correct alpha everywhere, and the controls page is cheap to
-    // render, so disable DMABUF before WebKit's processes spawn. overwrite=0
-    // keeps an explicit user setting authoritative.
-    setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
-    // The persistent cached context (sharedControlsContext) brings WebKit's
-    // accelerated compositing up on some stacks (observed on virtio/GNOME)
-    // where the DMABUF opt-out alone no longer guarantees alpha-correct
-    // snapshots — same dark-wall-over-video failure as above. Force the
-    // full software path; the controls page is cheap to render.
-    setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
+        WebKitUserContentManager *ucm = webkit_user_content_manager_new();
+        webkit_user_content_manager_register_script_message_handler(ucm, "player");
+        g_signal_connect(ucm, "script-message-received::player",
+                         G_CALLBACK(onPlayerMessage), player);
 
-    // Shared immortal cached context — see sharedControlsContext() for why
-    // this replaced the per-player ephemeral context (artwork re-fetch on
-    // every open) and how it avoids the exit-time finalize SIGABRT.
-    WebKitWebView *wv = WEBKIT_WEB_VIEW(g_object_new(
-        WEBKIT_TYPE_WEB_VIEW,
-        "web-context", sharedControlsContext(),
-        "user-content-manager", ucm,
-        nullptr));
-    GdkRGBA transparent = {0.0, 0.0, 0.0, 0.0};
-    webkit_web_view_set_background_color(wv, &transparent);
+        // WebKit's DMABUF renderer yields controls snapshots with degraded alpha —
+        // the semi-transparent chrome scrim reads back near-opaque (NVIDIA: stale or
+        // fully opaque via GBM failures; Mesa: no fully-transparent pixels at all),
+        // which mpv then blends as a dark wall over the video. The software path
+        // snapshots with correct alpha everywhere, and the controls page is cheap to
+        // render, so disable DMABUF before WebKit's processes spawn. overwrite=0
+        // keeps an explicit user setting authoritative.
+        setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+        // The persistent cached context (sharedControlsContext) brings WebKit's
+        // accelerated compositing up on some stacks (observed on virtio/GNOME)
+        // where the DMABUF opt-out alone no longer guarantees alpha-correct
+        // snapshots — same dark-wall-over-video failure as above. Force the
+        // full software path; the controls page is cheap to render.
+        setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
 
-    // The controls page is loaded from file:// and its JS pulls sibling assets
-    // (js/css/fonts) plus talks to native; without file-access + console piping a
-    // JS failure is silent. Mirror the capabilities the macOS/Windows webviews grant.
-    WebKitSettings *settings = webkit_web_view_get_settings(wv);
-    webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
-    webkit_settings_set_allow_file_access_from_file_urls(settings, TRUE);
-    webkit_settings_set_allow_universal_access_from_file_urls(settings, TRUE);
-    webkit_settings_set_enable_developer_extras(settings, TRUE);
-    webkit_settings_set_javascript_can_access_clipboard(settings, TRUE);
+        // Shared immortal cached context — see sharedControlsContext() for why
+        // this replaced the per-player ephemeral context (artwork re-fetch on
+        // every open) and how it avoids the exit-time finalize SIGABRT.
+        wv = WEBKIT_WEB_VIEW(g_object_new(
+            WEBKIT_TYPE_WEB_VIEW,
+            "web-context", sharedControlsContext(),
+            "user-content-manager", ucm,
+            nullptr));
+        GdkRGBA transparent = {0.0, 0.0, 0.0, 0.0};
+        webkit_web_view_set_background_color(wv, &transparent);
+
+        // The controls page is loaded from file:// and its JS pulls sibling assets
+        // (js/css/fonts) plus talks to native; without file-access + console piping a
+        // JS failure is silent. Mirror the capabilities the macOS/Windows webviews grant.
+        WebKitSettings *settings = webkit_web_view_get_settings(wv);
+        webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
+        webkit_settings_set_allow_file_access_from_file_urls(settings, TRUE);
+        webkit_settings_set_allow_universal_access_from_file_urls(settings, TRUE);
+        webkit_settings_set_enable_developer_extras(settings, TRUE);
+        webkit_settings_set_javascript_can_access_clipboard(settings, TRUE);
+    }
 
     g_signal_connect(wv, "load-changed", G_CALLBACK(onLoadChanged), player);
     g_signal_connect(wv, "load-failed", G_CALLBACK(onLoadFailed), nullptr);
@@ -987,7 +1036,7 @@ gboolean createWebviewOnGtk(gpointer data) {
                                     gpointer) -> gboolean { return TRUE; }),
                      nullptr);
 
-    gtk_container_add(GTK_CONTAINER(win), GTK_WIDGET(wv));
+    if (!adopted) gtk_container_add(GTK_CONTAINER(win), GTK_WIDGET(wv));
 
     // Make sure the overlay actually asks the X server for pointer/keyboard
     // events; without an explicit mask WebKit gets no DOM pointer events once the
@@ -1065,7 +1114,9 @@ gboolean createWebviewOnGtk(gpointer data) {
     }
     XFlush(dpy);
 
-    webkit_web_view_load_uri(wv, s->url.c_str());
+    // Adopted views are already loading (or loaded); a reload here would throw
+    // away exactly the head start adoption exists for.
+    if (!adopted) webkit_web_view_load_uri(wv, s->url.c_str());
 
     player->gtkWindow = win;
     player->webview = wv;
@@ -1077,6 +1128,12 @@ gboolean createWebviewOnGtk(gpointer data) {
     // at creation, Windows MoveFocus()es on controller setup) — the page's own
     // keydown handler is the only keyboard path, there is no Kotlin fallback.
     focusOverlay(player);
+
+    // Adoption consumed the warm view — spawn the next one in the background
+    // so the following player open is warm too.
+    if (adopted && !gWarmupUrl.empty()) {
+        warmupOnGtk(new std::string(gWarmupUrl));
+    }
 
     NUVIO_LOG("webview created + reparented into host 0x%lx", s->hostXid);
     delete s;
@@ -1207,6 +1264,83 @@ gboolean destroyWebviewOnGtk(gpointer data) {
         g_object_unref(player->cursorHidden);
         player->cursorHidden = nullptr;
     }
+    return G_SOURCE_REMOVE;
+}
+
+// ---- Webview warm-up (Windows warmupWebView2 parity) ----------------------
+// The first WebKitGTK view pays the whole engine cold start — mapping and
+// relocating the WebKit libraries, spawning web/network processes, fontconfig
+// caches, parsing the controls page. Same shape as the Windows warm-up: a
+// hidden throwaway view loads the controls page once at app start and is kept
+// alive until shutdown; it is never handed to a player.
+gboolean warmupOnGtk(gpointer data) {
+    auto *url = static_cast<std::string *>(data);
+    // The warm-up spawns WebKit's processes first — the DMABUF and compositing
+    // opt-outs must already be in place (see createWebviewOnGtk for why).
+    setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+    setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
+    // Built exactly like the player overlay window (createWebviewOnGtk), never
+    // shown: WebKit loads and lays the page out unmapped, and adoption picks
+    // the whole structure up mid-flight.
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
+    gtk_widget_set_app_paintable(win, TRUE);
+    GdkScreen *screen = gtk_widget_get_screen(win);
+    GdkVisual *rgba = gdk_screen_get_rgba_visual(screen);
+    if (rgba) gtk_widget_set_visual(win, rgba);
+
+    WebKitUserContentManager *ucm = webkit_user_content_manager_new();
+    webkit_user_content_manager_register_script_message_handler(ucm, "player");
+    // controlsReady = page scripts executed end to end (same readiness signal
+    // the Windows warm-up waits for). One-shot latched; harmless after
+    // adoption when the player's own handler is connected alongside.
+    g_signal_connect(ucm, "script-message-received::player",
+                     G_CALLBACK(+[](WebKitUserContentManager *,
+                                    WebKitJavascriptResult *js, gpointer) {
+                         JSCValue *msg = webkit_javascript_result_get_js_value(js);
+                         if (!msg || !jsc_value_is_object(msg)) return;
+                         JSCValue *typeV = jsc_value_object_get_property(msg, "type");
+                         char *type = typeV ? jsc_value_to_string(typeV) : nullptr;
+                         if (type && strcmp(type, "controlsReady") == 0) {
+                             notifyWarmupDone(true);
+                         }
+                         if (type) g_free(type);
+                         if (typeV) g_object_unref(typeV);
+                     }),
+                     nullptr);
+    WebKitWebView *wv = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                                                     "web-context", sharedControlsContext(),
+                                                     "user-content-manager", ucm,
+                                                     nullptr));
+    GdkRGBA transparent = {0.0, 0.0, 0.0, 0.0};
+    webkit_web_view_set_background_color(wv, &transparent);
+    // Full player-parity settings — this view becomes the player's overlay.
+    WebKitSettings *settings = webkit_web_view_get_settings(wv);
+    webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
+    webkit_settings_set_allow_file_access_from_file_urls(settings, TRUE);
+    webkit_settings_set_allow_universal_access_from_file_urls(settings, TRUE);
+    webkit_settings_set_enable_developer_extras(settings, TRUE);
+    webkit_settings_set_javascript_can_access_clipboard(settings, TRUE);
+    g_signal_connect(wv, "load-failed",
+                     G_CALLBACK(+[](WebKitWebView *, WebKitLoadEvent, gchar *,
+                                    GError *, gpointer) -> gboolean {
+                         notifyWarmupDone(false);
+                         return FALSE;
+                     }),
+                     nullptr);
+    g_signal_connect(wv, "load-changed",
+                     G_CALLBACK(+[](WebKitWebView *, WebKitLoadEvent event, gpointer) {
+                         if (event == WEBKIT_LOAD_FINISHED) notifyWarmupDone(true);
+                     }),
+                     nullptr);
+    gtk_container_add(GTK_CONTAINER(win), GTK_WIDGET(wv));
+    webkit_web_view_load_uri(wv, url->c_str());
+    gWarmupWindow = win;
+    gWarmupView = wv;
+    gWarmupUcm = ucm;
+    gWarmupUrl = *url;
+    NUVIO_LOG("warm webview spawned (unmapped, loading %s)", url->c_str());
+    delete url;
     return G_SOURCE_REMOVE;
 }
 
@@ -1701,8 +1835,37 @@ JNIEXPORT void JNICALL NP(requestFocus)(JNIEnv *, jobject, jlong handle) {
 JNIEXPORT void JNICALL NP(applyWindowChrome)(JNIEnv *, jobject, jlong, jboolean, jint, jint, jint) {}
 JNIEXPORT void JNICALL NP(setWindowBorderlessFullscreen)(
     JNIEnv *, jobject, jlong, jboolean, jint, jint, jint, jint) {}
-JNIEXPORT jboolean JNICALL NP(warmupWebView2)(JNIEnv *, jobject, jstring) { return JNI_FALSE; }
-JNIEXPORT void JNICALL NP(shutdownWebView2Warmup)(JNIEnv *, jobject) {}
+// Named for its WebView2 origin; on Linux it warms the WebKitGTK engine (the
+// JNI name is shared across the desktop bridges). Blocks up to 5s like the
+// Windows implementation — Kotlin calls it from a daemon preload thread.
+JNIEXPORT jboolean JNICALL NP(warmupWebView2)(JNIEnv *env, jobject, jstring controlsPageUrl) {
+    {
+        std::lock_guard<std::mutex> lock(gWarmupMutex);
+        if (gWarmupStarted) return (gWarmupDone && gWarmupSucceeded) ? JNI_TRUE : JNI_FALSE;
+        gWarmupStarted = true;
+    }
+    ensureGtk();
+    g_main_context_invoke(nullptr, warmupOnGtk,
+                          new std::string(jstringToUtf8(env, controlsPageUrl)));
+    std::unique_lock<std::mutex> lock(gWarmupMutex);
+    bool completed = gWarmupCv.wait_for(lock, std::chrono::seconds(5),
+                                        [] { return gWarmupDone; });
+    NUVIO_LOG("webview warmup %s",
+              !completed ? "timed out" : gWarmupSucceeded ? "ready" : "failed");
+    return (completed && gWarmupSucceeded) ? JNI_TRUE : JNI_FALSE;
+}
+JNIEXPORT void JNICALL NP(shutdownWebView2Warmup)(JNIEnv *, jobject) {
+    if (gShuttingDown.load()) return;
+    g_main_context_invoke(nullptr,
+                          +[](gpointer) -> gboolean {
+                              if (gWarmupWindow) {
+                                  gtk_widget_destroy(gWarmupWindow);
+                                  gWarmupWindow = nullptr;
+                              }
+                              return G_SOURCE_REMOVE;
+                          },
+                          nullptr);
+}
 JNIEXPORT jboolean JNICALL NP(setWindowsDisplaySleepInhibited)(JNIEnv *, jobject, jboolean) {
     return JNI_FALSE;
 }
