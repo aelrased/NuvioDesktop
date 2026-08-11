@@ -1488,6 +1488,14 @@ JNIEXPORT jlong JNICALL NP(create)(
         // gpu-hwdec-interop=auto + decoderPriority handling). gpu-hwdec-interop=auto
         // lets vo=gpu use direct hardware decode instead of the slow copy-back path.
         mpv_set_option_string(m, "audio-channels", "auto");
+        // NUVIO_MPV_AUDIO_DEVICE pins mpv's audio output device (names from
+        // `mpv --audio-device=help`) for HDMI/passthrough testing — same role
+        // as the GPU_CONTEXT/HWDEC overrides below. Unset = mpv's default
+        // routing (the system default sink).
+        const char *audioDevEnv = getenv("NUVIO_MPV_AUDIO_DEVICE");
+        if (audioDevEnv && *audioDevEnv) {
+            mpv_set_option_string(m, "audio-device", audioDevEnv);
+        }
         mpv_set_option_string(m, "hwdec", hwdec);
         mpv_set_option_string(m, "gpu-hwdec-interop", "auto");
         if (decoderPriority == 0) {
