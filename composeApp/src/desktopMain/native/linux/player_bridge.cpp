@@ -431,6 +431,11 @@ void focusOverlay(Player *player) {
 // JS -> native: forward {type, value} to NativePlayerEventSink.onPlayerEvent.
 void onPlayerMessage(WebKitUserContentManager *, WebKitJavascriptResult *js, gpointer data) {
     auto *player = static_cast<Player *>(data);
+    // WebKit delivers script messages through queued main-loop IPC: one posted
+    // just before close (cursorActivity fires on every mouse move) can land
+    // after dispose() freed the Player. playerAlive compares the pointer value
+    // against the live set — safe on a freed pointer.
+    if (!playerAlive(player)) return;
     if (!player->eventSink || !player->eventMethod) return;
     JSCValue *msg = webkit_javascript_result_get_js_value(js);
     if (!msg || !jsc_value_is_object(msg)) return;
@@ -476,6 +481,21 @@ void onPlayerMessage(WebKitUserContentManager *, WebKitJavascriptResult *js, gpo
     if (type) g_free(type);
     if (typeV) g_object_unref(typeV);
     if (valV) g_object_unref(valV);
+}
+
+// The overlay toplevel is a child of the AWT canvas at the X level, and player
+// close races Compose's canvas teardown against dispose(): when AWT destroys
+// the canvas first, X cascade-destroys the overlay's window, GDK reports it
+// "unexpectedly destroyed", and GTK reacts to the external GDK_DESTROY by
+// gtk_widget_destroy()ing — finalizing — the toplevel itself. Track that here
+// so the queued teardown never touches the freed widget (every user of these
+// fields is null-guarded).
+void onOverlayDestroyed(GtkWidget *, gpointer data) {
+    auto *player = static_cast<Player *>(data);
+    NUVIO_LOG("overlay toplevel destroyed (host teardown or dispose)");
+    player->gtkWindow = nullptr;
+    player->webview = nullptr;
+    player->overlayXid = 0;
 }
 
 // Free the snapshot buffers (safe to call with none allocated). Only after
@@ -932,6 +952,14 @@ gboolean createWebviewOnGtk(gpointer data) {
     auto *s = static_cast<WebviewSetup *>(data);
     Player *player = s->player;
 
+    // Fast open->close: dispose() can free the player before this queued call
+    // runs. Its teardown is queued behind us (FIFO), so bailing here leaves
+    // nothing for it to clean up.
+    if (!playerAlive(player)) {
+        delete s;
+        return G_SOURCE_REMOVE;
+    }
+
     GtkWidget *win;
     WebKitWebView *wv;
     bool adopted = false;
@@ -1121,6 +1149,7 @@ gboolean createWebviewOnGtk(gpointer data) {
     player->gtkWindow = win;
     player->webview = wv;
     player->hostXid = s->hostXid;
+    g_signal_connect(win, "destroy", G_CALLBACK(onOverlayDestroyed), player);
     player->updateTimer = g_timeout_add(200, pushPlayerUpdate, player);
     player->compositeTimer = g_timeout_add(33, compositeTick, player);  // ~30fps when active
 
@@ -1208,12 +1237,20 @@ gboolean applyControlsOnGtk(gpointer data) {
 // Tear the webview down on the GTK thread (owns all GTK/WebKit state).
 gboolean destroyWebviewOnGtk(gpointer data) {
     auto *player = static_cast<Player *>(data);
+    // The ticks self-remove once dispose() un-registers the player (they see
+    // !playerAlive and return G_SOURCE_REMOVE), so by the time this teardown
+    // runs the stored ID may already be dead — removing it again is the GLib
+    // "Source ID not found" CRITICAL. Only remove sources GLib still tracks.
+    auto removeSource = [](guint id) {
+        GSource *src = g_main_context_find_source_by_id(nullptr, id);
+        if (src && !g_source_is_destroyed(src)) g_source_remove(id);
+    };
     if (player->updateTimer) {
-        g_source_remove(player->updateTimer);
+        removeSource(player->updateTimer);
         player->updateTimer = 0;
     }
     if (player->compositeTimer) {
-        g_source_remove(player->compositeTimer);
+        removeSource(player->compositeTimer);
         player->compositeTimer = 0;
     }
     player->snapGen++;  // drop any in-flight snapshot callback
@@ -1250,12 +1287,15 @@ gboolean destroyWebviewOnGtk(gpointer data) {
             }
         }
         player->savedFocusXid = 0;
-        releaseSnapshots(player);
         gtk_widget_destroy(player->gtkWindow);
         player->gtkWindow = nullptr;
         player->webview = nullptr;
         player->overlayXid = 0;
     }
+    // Outside the gtkWindow block: when the toplevel died externally (see
+    // onOverlayDestroyed) the block above is skipped, but the snapshot
+    // surfaces still need freeing.
+    releaseSnapshots(player);
     if (player->cursorVisible) {
         g_object_unref(player->cursorVisible);
         player->cursorVisible = nullptr;
@@ -1612,14 +1652,18 @@ JNIEXPORT void JNICALL NP(dispose)(JNIEnv *env, jobject, jlong handle) {
     Player *player = asPlayer(handle);
     if (!player) return;
     // Mark not-live first so any in-flight GTK timer bails before we free it.
+    // The erase doubles as an idempotency gate: a second dispose of the same
+    // handle must not re-run teardown on freed memory.
     {
         std::lock_guard<std::mutex> lk(gLiveMutex);
-        gLivePlayers.erase(player);
+        if (gLivePlayers.erase(player) == 0) return;
     }
     // Tear the overlay down on the GTK thread before freeing the player.
-    if (player->gtkWindow) {
-        gtkSync([player] { destroyWebviewOnGtk(player); });
-    }
+    // Unconditionally: gtkWindow is written by the GTK thread, so reading it
+    // here races a still-queued createWebviewOnGtk (fast open->close). The
+    // invoke queue is FIFO — a pending create bails on !playerAlive first, and
+    // destroyWebviewOnGtk checks every field it touches.
+    gtkSync([player] { destroyWebviewOnGtk(player); });
     player->running.store(false);
     if (player->mpv) mpv_wakeup(player->mpv);
     if (player->eventThread.joinable()) player->eventThread.join();
@@ -1868,7 +1912,12 @@ JNIEXPORT void JNICALL NP(shutdownWebView2Warmup)(JNIEnv *, jobject) {
                           +[](gpointer) -> gboolean {
                               if (gWarmupWindow) {
                                   gtk_widget_destroy(gWarmupWindow);
+                                  // The view/ucm die with their window — null
+                                  // them too or the adoption gate could later
+                                  // read dangling pointers.
                                   gWarmupWindow = nullptr;
+                                  gWarmupView = nullptr;
+                                  gWarmupUcm = nullptr;
                               }
                               return G_SOURCE_REMOVE;
                           },
