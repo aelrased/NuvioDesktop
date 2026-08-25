@@ -1,7 +1,7 @@
 package com.nuvio.app.features.player.desktop
 
+import com.nuvio.app.core.storage.DesktopCache
 import java.io.File
-import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal fun interface NativePlayerEventSink {
@@ -86,6 +86,7 @@ internal object NativePlayerBridge {
         width: Int,
         height: Int,
     )
+    external fun setMacosWindowFullscreen(windowViewPtr: Long, fullscreen: Boolean)
 
     external fun setSubtitleDelayMs(handle: Long, delayMs: Int)
     external fun applySubtitleStyle(
@@ -97,6 +98,8 @@ internal object NativePlayerBridge {
         bold: Boolean,
         fontSize: Float,
         subPos: Int,
+        useLibass: Boolean,
+        stripSdh: Boolean,
     )
     external fun warmupWebView2(controlsPageUrl: String): Boolean
     external fun shutdownWebView2Warmup()
@@ -185,18 +188,15 @@ internal object NativePlayerBridge {
         }
 
         val resource = "/native/$platformDir/$libraryName"
-        val input = NativePlayerBridge::class.java.getResourceAsStream(resource)
-            ?: error("Missing bundled native player bridge: $resource")
-        val dir = File(System.getProperty("java.io.tmpdir"), "native-player-bridge").apply { mkdirs() }
-        val suffix = libraryName.substringAfter("player_bridge", ".dylib")
-        val file = Files.createTempFile(dir.toPath(), "player-bridge-", suffix).toFile()
-        file.deleteOnExit()
-        extractBundledRuntimeResources(platformDir, dir)
-        input.use { source ->
-            file.outputStream().use { target -> source.copyTo(target) }
+        val files = buildMap {
+            put(libraryName, readResourceBytes(resource))
+            bundledRuntimeResourceNames(platformDir).forEach { name ->
+                resourceBytesOrNull("/native/$platformDir/$name")?.let { bytes -> put(name, bytes) }
+            }
         }
-        loadNativeRuntimeDependencies(platform, dir)
-        System.load(file.absolutePath)
+        val directory = DesktopCache.installVersionedFiles("native-player-bridge/$platformDir", files).toFile()
+        loadNativeRuntimeDependencies(platform, directory)
+        System.load(directory.resolve(libraryName).absolutePath)
     }
 
     private fun findPackagedApplicationLibrary(platformDir: String, libraryName: String): File? {
@@ -215,19 +215,6 @@ internal object NativePlayerBridge {
             if (dependency.exists()) {
                 System.load(dependency.absolutePath)
             }
-        }
-    }
-
-    private fun extractBundledRuntimeResources(platformDir: String, dir: File) {
-        val runtimeNames = bundledRuntimeResourceNames(platformDir)
-        runtimeNames.forEach { name ->
-            val resource = "/native/$platformDir/$name"
-            val input = NativePlayerBridge::class.java.getResourceAsStream(resource) ?: return@forEach
-            val target = dir.resolve(name)
-            input.use { source ->
-                target.outputStream().use { output -> source.copyTo(output) }
-            }
-            target.deleteOnExit()
         }
     }
 
@@ -306,36 +293,25 @@ internal object NativePlayerBridge {
         }
 
     private fun exportControlsPageAssets(): ControlsPageAssets {
-        val root = File(System.getProperty("java.io.tmpdir"), "nuvio-player-ui").apply { mkdirs() }
-        val fontsDir = root.resolve("fonts").apply { mkdirs() }
-        val htmlFile = root.resolve("controls.html")
-        writeTextIfChanged(
-            target = htmlFile,
-            text = readTextResource("/player-ui/controls.html"),
+        val files = linkedMapOf(
+            "controls.html" to readResourceBytes("/player-ui/controls.html"),
+            "controls.css" to readTextResource("/player-ui/controls.css")
+                .replace("/* __NUVIO_PLAYER_FONT_FACES__ */", nativePlayerFontFaces())
+                .toByteArray(Charsets.UTF_8),
+            "controls.js" to readResourceBytes("/player-ui/controls.js"),
+            "fonts/jetbrains_sans_regular.ttf" to readResourceBytes(
+                "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_regular.ttf",
+            ),
+            "fonts/jetbrains_sans_semibold.ttf" to readResourceBytes(
+                "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_semibold.ttf",
+            ),
+            "fonts/jetbrains_sans_bold.ttf" to readResourceBytes(
+                "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_bold.ttf",
+            ),
         )
-        writeTextIfChanged(
-            target = root.resolve("controls.css"),
-            text = readTextResource("/player-ui/controls.css")
-                .replace("/* __NUVIO_PLAYER_FONT_FACES__ */", nativePlayerFontFaces()),
-        )
-        copyResourceIfChanged(
-            resource = "/player-ui/controls.js",
-            target = root.resolve("controls.js"),
-        )
-        copyResourceIfChanged(
-            resource = "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_regular.ttf",
-            target = fontsDir.resolve("jetbrains_sans_regular.ttf"),
-        )
-        copyResourceIfChanged(
-            resource = "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_semibold.ttf",
-            target = fontsDir.resolve("jetbrains_sans_semibold.ttf"),
-        )
-        copyResourceIfChanged(
-            resource = "/composeResources/nuvio.composeapp.generated.resources/font/jetbrains_sans_bold.ttf",
-            target = fontsDir.resolve("jetbrains_sans_bold.ttf"),
-        )
+        val root = DesktopCache.installVersionedFiles("player-ui", files).toFile()
         return ControlsPageAssets(
-            url = htmlFile.toURI().toASCIIString(),
+            url = root.resolve("controls.html").toURI().toASCIIString(),
         )
     }
 
@@ -365,25 +341,13 @@ internal object NativePlayerBridge {
         """.trimIndent()
 
     private fun readTextResource(resource: String): String =
-        NativePlayerBridge::class.java.getResourceAsStream(resource)
-            ?.bufferedReader(Charsets.UTF_8)
-            ?.use { it.readText() }
-            ?: error("Missing native player controls resource: $resource")
+        readResourceBytes(resource).toString(Charsets.UTF_8)
 
-    private fun writeTextIfChanged(target: File, text: String) {
-        val bytes = text.toByteArray(Charsets.UTF_8)
-        if (target.exists() && target.readBytes().contentEquals(bytes)) return
-        target.writeBytes(bytes)
-    }
+    private fun readResourceBytes(resource: String): ByteArray =
+        resourceBytesOrNull(resource) ?: error("Missing native player resource: $resource")
 
-    private fun copyResourceIfChanged(resource: String, target: File) {
-        val bytes = NativePlayerBridge::class.java.getResourceAsStream(resource)
-            ?.use { it.readBytes() }
-            ?: error("Missing native player controls resource: $resource")
-        if (target.exists() && target.readBytes().contentEquals(bytes)) return
-        Files.createDirectories(target.parentFile.toPath())
-        target.writeBytes(bytes)
-    }
+    private fun resourceBytesOrNull(resource: String): ByteArray? =
+        NativePlayerBridge::class.java.getResourceAsStream(resource)?.use { it.readBytes() }
 
     private data class ControlsPageAssets(
         val url: String,
@@ -391,7 +355,10 @@ internal object NativePlayerBridge {
 }
 
 internal fun preloadNativePlayerBridgeAsync() {
-    if (DesktopHostOs.current == DesktopHostOs.MACOS || DesktopHostOs.current == DesktopHostOs.WINDOWS || DesktopHostOs.current == DesktopHostOs.LINUX) {
+    if (DesktopHostOs.current == DesktopHostOs.MACOS ||
+        DesktopHostOs.current == DesktopHostOs.WINDOWS ||
+        DesktopHostOs.current == DesktopHostOs.LINUX
+    ) {
         runCatching {
             NativePlayerBridge.preloadAsync()
         }

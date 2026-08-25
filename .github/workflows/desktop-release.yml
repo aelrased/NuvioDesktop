@@ -163,6 +163,8 @@ jobs:
       MACOS_NOTARY_TEAM_ID: ${{ vars.MACOS_NOTARY_TEAM_ID }}
       NUVIO_MACOS_NOTARY_KEYCHAIN_PROFILE: ${{ vars.MACOS_NOTARY_PROFILE }}
       NUVIO_MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
 
     steps:
       - name: Check out release source
@@ -194,6 +196,8 @@ jobs:
             MACOS_NOTARY_TEAM_ID
             NUVIO_MACOS_NOTARY_KEYCHAIN_PROFILE
             NUVIO_MACOS_SIGNING_IDENTITY
+            SENTRY_AUTH_TOKEN
+            SENTRY_DESKTOP_DSN
           )
           missing=()
           for value_name in "${required_values[@]}"; do
@@ -283,6 +287,7 @@ jobs:
         run: |
           ./gradlew \
             :composeApp:notarizeReleaseDmgWithKeychain \
+            :desktopSentry:sentryUploadSourceBundleJava \
             "-Pnuvio.macos.arch=${MACOS_ARCH}" \
             -Pcompose.desktop.packaging.checkJdkVendor=false \
             --no-configuration-cache \
@@ -328,6 +333,8 @@ jobs:
     environment: desktop-release
     env:
       LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_DESKTOP_LOCAL_PROPERTIES_BASE64 }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
       WEBVIEW2_VERSION: 1.0.4078.44
       TORRSERVER_WINDOWS_SHA256: 13031185a54abe0f729f9f3bdb7271a349a89ac8c559327d773c66007ed604f4
 
@@ -372,8 +379,19 @@ jobs:
       - name: Configure desktop runtime
         shell: bash
         run: |
-          if [[ -z "${LOCAL_PROPERTIES_BASE64}" ]]; then
-            echo "Missing required desktop release value: LOCAL_PROPERTIES_BASE64" >&2
+          missing=()
+          required_values=(
+            LOCAL_PROPERTIES_BASE64
+            SENTRY_AUTH_TOKEN
+            SENTRY_DESKTOP_DSN
+          )
+          for value_name in "${required_values[@]}"; do
+            if [[ -z "${!value_name}" ]]; then
+              missing+=("${value_name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required desktop release values: %s\n' "${missing[*]}" >&2
             exit 1
           fi
 
@@ -415,6 +433,7 @@ jobs:
         run: |
           & .\gradlew.bat `
             :composeApp:packageReleaseMsi `
+            :desktopSentry:sentryUploadSourceBundleJava `
             "-Pnuvio.webview2.dir=$env:WEBVIEW2_ROOT" `
             "-Pcompose.desktop.packaging.checkJdkVendor=false" `
             --no-configuration-cache `

@@ -18,6 +18,10 @@ internal object DesktopStorage {
         resolveAppDataDir().also { Files.createDirectories(it) }
     }
 
+    val cacheDir: Path by lazy {
+        resolveCacheDir().also { Files.createDirectories(it) }
+    }
+
     fun store(name: String): Store = synchronized(stores) {
         stores.getOrPut(name) { Store(rootDir.resolve("$name.properties")) }
     }
@@ -48,6 +52,22 @@ internal object DesktopStorage {
             else -> {
                 val xdgConfig = System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }
                 (xdgConfig?.let(Paths::get) ?: userHome.resolve(".config")).resolve("nuvio")
+            }
+        }
+    }
+
+    private fun resolveCacheDir(): Path {
+        val osName = System.getProperty("os.name").orEmpty().lowercase(Locale.ROOT)
+        val userHome = Paths.get(System.getProperty("user.home").orEmpty())
+        return when {
+            osName.contains("mac") -> userHome.resolve("Library/Caches/Nuvio")
+            osName.contains("win") -> {
+                val localAppData = System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() }
+                (localAppData?.let(Paths::get) ?: userHome.resolve("AppData/Local")).resolve("Nuvio/Cache")
+            }
+            else -> {
+                val xdgCache = System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotBlank() }
+                (xdgCache?.let(Paths::get) ?: userHome.resolve(".cache")).resolve("nuvio")
             }
         }
     }

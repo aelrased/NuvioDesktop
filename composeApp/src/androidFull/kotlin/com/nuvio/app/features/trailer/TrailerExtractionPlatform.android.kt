@@ -40,6 +40,12 @@ internal object TrailerExtractionPlatform {
         .followSslRedirects(true)
         .build()
 
+    fun supportsSeparateVideo(candidate: StreamCandidate): Boolean = true
+
+    fun supportsSeparateAudio(candidate: StreamCandidate): Boolean = true
+
+    fun diagnostic(message: String) = Unit
+
     suspend fun performRequest(
         url: String,
         method: String,

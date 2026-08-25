@@ -14,14 +14,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -70,6 +76,7 @@ fun DesktopDetailHero(
     heroTrailerMuted: Boolean,
     heroGradientColor: Color? = null,
     onBackdropLoaded: (Painter) -> Unit = {},
+    onHeroTrailerMuteToggle: () -> Unit,
     onHeroTrailerReady: () -> Unit,
     onHeroTrailerEnded: () -> Unit,
     onHeroTrailerError: () -> Unit,
@@ -88,6 +95,11 @@ fun DesktopDetailHero(
         targetValue = if (heroTrailerReady) 1f else 0f,
         animationSpec = tween(durationMillis = NuvioTokens.Motion.sheetEnterMillis),
         label = "desktop_detail_hero_trailer_alpha",
+    )
+    val gradientIntensity by animateFloatAsState(
+        targetValue = if (heroTrailerReady) 0.3f else 1f,
+        animationSpec = tween(durationMillis = NuvioTokens.Motion.sheetEnterMillis),
+        label = "desktop_detail_hero_gradient_intensity",
     )
     var logoLoadError by remember(meta.id, meta.logo) {
         mutableStateOf(false)
@@ -129,6 +141,7 @@ fun DesktopDetailHero(
                 sourceAudioUrl = heroTrailerSourceAudioUrl,
                 playWhenReady = heroTrailerPlayWhenReady,
                 muted = heroTrailerMuted,
+                fillFrame = true,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
@@ -150,10 +163,10 @@ fun DesktopDetailHero(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
                             0.00f to Color.Transparent,
-                            0.14f to bottomGradientColor.copy(alpha = opacity.subtle),
-                            0.38f to bottomGradientColor.copy(alpha = opacity.overlayLight),
-                            0.66f to bottomGradientColor.copy(alpha = opacity.overlayHeavy),
-                            0.88f to bottomGradientColor.copy(alpha = 0.98f),
+                            0.14f to bottomGradientColor.copy(alpha = opacity.subtle * gradientIntensity),
+                            0.38f to bottomGradientColor.copy(alpha = opacity.overlayLight * gradientIntensity),
+                            0.66f to bottomGradientColor.copy(alpha = opacity.overlayHeavy * gradientIntensity),
+                            0.88f to bottomGradientColor.copy(alpha = 0.98f * gradientIntensity),
                             1.00f to bottomGradientColor,
                         ),
                     ),
@@ -165,9 +178,9 @@ fun DesktopDetailHero(
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.00f to sideGradientColor.copy(alpha = opacity.overlayHeavy),
-                            0.32f to sideGradientColor.copy(alpha = opacity.medium),
-                            0.62f to sideGradientColor.copy(alpha = opacity.subtle),
+                            0.00f to sideGradientColor.copy(alpha = opacity.overlayHeavy * gradientIntensity),
+                            0.32f to sideGradientColor.copy(alpha = opacity.medium * gradientIntensity),
+                            0.62f to sideGradientColor.copy(alpha = opacity.subtle * gradientIntensity),
                             1.00f to Color.Transparent,
                         ),
                     ),
@@ -281,6 +294,39 @@ fun DesktopDetailHero(
                 onPlayClick = onPlayClick,
                 onPlayLongClick = onPlayLongClick,
             )
+        }
+
+        if (heroTrailerSourceUrl != null) {
+            Surface(
+                onClick = onHeroTrailerMuteToggle,
+                enabled = heroTrailerReady,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = space.s32,
+                        end = actionHorizontalInset + if (isFullscreenActionSupported) 60.dp else 0.dp,
+                    )
+                    .size(48.dp)
+                    .graphicsLayer { alpha = trailerAlpha },
+                shape = CircleShape,
+                color = colorScheme.surfaceVariant.copy(alpha = 0.82f),
+                contentColor = colorScheme.onSurface,
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (heroTrailerMuted) {
+                            Icons.AutoMirrored.Rounded.VolumeOff
+                        } else {
+                            Icons.AutoMirrored.Rounded.VolumeUp
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+            }
         }
 
         if (isFullscreenActionSupported) {

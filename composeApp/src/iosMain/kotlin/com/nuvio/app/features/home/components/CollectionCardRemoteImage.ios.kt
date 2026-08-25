@@ -66,6 +66,7 @@ private class GifImageViewHolder {
 @Composable
 internal actual fun CollectionCardRemoteImage(
     imageUrl: String,
+    staticImageUrl: String?,
     contentDescription: String,
     modifier: Modifier,
     contentScale: ContentScale,

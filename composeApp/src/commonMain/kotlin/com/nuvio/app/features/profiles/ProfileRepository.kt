@@ -235,6 +235,8 @@ object ProfileRepository {
                 usesPrimaryPlugins = profile.usesPrimaryPlugins,
                 avatarId = profile.avatarId,
                 avatarUrl = profile.avatarUrl,
+                profileBackgroundId = profile.profileBackgroundId,
+                profileBackgroundUrl = profile.profileBackgroundUrl,
             )
         } + ProfilePushPayload(
             profileIndex = nextIndex,
@@ -254,6 +256,8 @@ object ProfileRepository {
         avatarColorHex: String,
         avatarId: String? = null,
         avatarUrl: String? = null,
+        profileBackgroundId: String? = null,
+        profileBackgroundUrl: String? = null,
         usesPrimaryAddons: Boolean = false,
     ) {
         val allPayloads = _state.value.profiles.map { profile ->
@@ -265,6 +269,8 @@ object ProfileRepository {
                     usesPrimaryAddons = usesPrimaryAddons,
                     avatarId = avatarId,
                     avatarUrl = avatarUrl,
+                    profileBackgroundId = profileBackgroundId,
+                    profileBackgroundUrl = profileBackgroundUrl,
                 )
             } else {
                 ProfilePushPayload(
@@ -275,6 +281,8 @@ object ProfileRepository {
                     usesPrimaryPlugins = profile.usesPrimaryPlugins,
                     avatarId = profile.avatarId,
                     avatarUrl = profile.avatarUrl,
+                    profileBackgroundId = profile.profileBackgroundId,
+                    profileBackgroundUrl = profile.profileBackgroundUrl,
                 )
             }
         }
@@ -322,6 +330,7 @@ object ProfileRepository {
             val result = SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
             result.decodeSingle<PinVerifyResult>().also { verifyResult ->
                 if (verifyResult.unlocked) {
+                    pullProfiles()
                     rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
                 }
             }
@@ -409,6 +418,8 @@ object ProfileRepository {
                 avatarColorHex = p.avatarColorHex,
                 avatarId = p.avatarId,
                 avatarUrl = p.avatarUrl,
+                profileBackgroundId = p.profileBackgroundId,
+                profileBackgroundUrl = p.profileBackgroundUrl,
                 usesPrimaryAddons = p.usesPrimaryAddons,
                 usesPrimaryPlugins = p.usesPrimaryPlugins,
             )

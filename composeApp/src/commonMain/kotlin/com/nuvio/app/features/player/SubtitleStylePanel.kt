@@ -111,10 +111,10 @@ fun SubtitleStylePanel(
             SubtitleStyleStepper(
                 value = stringResource(Res.string.compose_player_font_size_value, style.fontSizeSp),
                 onDecrease = {
-                    onStyleChanged(style.copy(fontSizeSp = (style.fontSizeSp - 2).coerceAtLeast(12)))
+                    onStyleChanged(style.copy(fontSizeSp = (style.fontSizeSp - 2).coerceAtLeast(subtitleFontSizeRangeSp.first)))
                 },
                 onIncrease = {
-                    onStyleChanged(style.copy(fontSizeSp = (style.fontSizeSp + 2).coerceAtMost(40)))
+                    onStyleChanged(style.copy(fontSizeSp = (style.fontSizeSp + 2).coerceAtMost(subtitleFontSizeRangeSp.last)))
                 },
             )
         }
@@ -483,7 +483,7 @@ private fun formatCueTimestamp(timeMs: Long): String {
     return "$minutes:${seconds.toString().padStart(2, '0')}"
 }
 
-private val SubtitleOutlineColorSwatches = listOf(
+internal val SubtitleOutlineColorSwatches = listOf(
     Color.Black,
     Color.White,
     Color(0xFF00E5FF),

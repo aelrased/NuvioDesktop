@@ -92,6 +92,7 @@
                       eventMethod:(jmethodID)eventMethod;
 - (void)shutdown;
 - (void)updateControlsJson:(NSString *)controlsJson;
+- (void)requestFocus;
 - (void)setPaused:(BOOL)paused;
 - (BOOL)isPaused;
 - (void)seekToMilliseconds:(long long)positionMs;
@@ -120,7 +121,9 @@
                              outlineSize:(double)outlineSize
                                     bold:(BOOL)bold
                                 fontSize:(double)fontSize
-                                  subPos:(int)subPos;
+                                  subPos:(int)subPos
+                               useLibass:(BOOL)useLibass
+                                stripSdh:(BOOL)stripSdh;
 - (void)handleScriptMessage:(NSDictionary *)message;
 - (void)focusControlsWebViewIfNeeded;
 - (void)layoutNativeSubviews;
@@ -1050,6 +1053,16 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     std::atomic_bool _cachedPaused;
     std::atomic_bool _cachedLoading;
     std::atomic_bool _cachedEnded;
+    BOOL _hasAppliedSubtitleStyle;
+    BOOL _appliedSubtitleUseLibass;
+    NSString *_appliedSubtitleTextColor;
+    NSString *_appliedSubtitleBackgroundColor;
+    NSString *_appliedSubtitleOutlineColor;
+    double _appliedSubtitleOutlineSize;
+    BOOL _appliedSubtitleBold;
+    double _appliedSubtitleFontSize;
+    int64_t _appliedSubtitlePosition;
+    BOOL _appliedSubtitleStripSdh;
 }
 
 - (instancetype)initWithHostView:(NSView *)hostView
@@ -1162,6 +1175,13 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
 - (void)focusControlsWebViewIfNeeded {
     if (_didFocusControlsWebView || !_webView || !_webView.window) {
+        return;
+    }
+    [self requestFocus];
+}
+
+- (void)requestFocus {
+    if (!_webView || !_webView.window) {
         return;
     }
     _didFocusControlsWebView = YES;
@@ -2024,24 +2044,85 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                              outlineSize:(double)outlineSize
                                     bold:(BOOL)bold
                                 fontSize:(double)fontSize
-                                  subPos:(int)subPos {
+                                  subPos:(int)subPos
+                               useLibass:(BOOL)useLibass
+                                stripSdh:(BOOL)stripSdh {
     if (!_mpv) return;
-    [self setStringProperty:"sub-ass-override" value:@"force"];
-    [self setStringProperty:"sub-color" value:textColor ?: @"#FFFFFFFF"];
-    [self setStringProperty:"sub-back-color" value:backgroundColor ?: @"#00000000"];
-    [self setStringProperty:"sub-outline-color" value:outlineColor ?: @"#FF000000"];
-    [self setStringProperty:"sub-border-style"
-                      value:[(backgroundColor ?: @"") hasPrefix:@"#00"] ? @"outline-and-shadow" : @"opaque-box"];
-    [self setStringProperty:"sub-bold" value:bold ? @"yes" : @"no"];
-
-    double outline = MAX(0.0, MIN(8.0, outlineSize));
-    mpv_set_property(_mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline);
-
-    double size = MAX(24.0, MIN(96.0, fontSize));
-    mpv_set_property(_mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size);
-
+    double size = MAX(18.0, MIN(96.0, fontSize));
+    double scale = useLibass ? size / 54.0 : 1.0;
     int64_t position = MAX(0, MIN(150, subPos));
-    mpv_set_property(_mpv, "sub-pos", MPV_FORMAT_INT64, &position);
+    double outline = MAX(0.0, MIN(8.0, outlineSize));
+    NSString *resolvedTextColor = textColor ?: @"#FFFFFFFF";
+    NSString *resolvedBackgroundColor = backgroundColor ?: @"#00000000";
+    NSString *resolvedOutlineColor = outlineColor ?: @"#FF000000";
+
+    BOOL modeChanged = !_hasAppliedSubtitleStyle || _appliedSubtitleUseLibass != useLibass;
+    BOOL sizeChanged = !_hasAppliedSubtitleStyle || _appliedSubtitleFontSize != size;
+    BOOL positionChanged = !_hasAppliedSubtitleStyle || _appliedSubtitlePosition != position;
+    BOOL boldChanged = !_hasAppliedSubtitleStyle || _appliedSubtitleBold != bold;
+    BOOL textColorChanged = !_hasAppliedSubtitleStyle || ![_appliedSubtitleTextColor isEqualToString:resolvedTextColor];
+    BOOL backgroundColorChanged =
+        !_hasAppliedSubtitleStyle || ![_appliedSubtitleBackgroundColor isEqualToString:resolvedBackgroundColor];
+    BOOL outlineColorChanged =
+        !_hasAppliedSubtitleStyle || ![_appliedSubtitleOutlineColor isEqualToString:resolvedOutlineColor];
+    BOOL outlineSizeChanged = !_hasAppliedSubtitleStyle || _appliedSubtitleOutlineSize != outline;
+    BOOL stripSdhChanged = !_hasAppliedSubtitleStyle || _appliedSubtitleStripSdh != stripSdh;
+
+    if (modeChanged) {
+        [self setStringProperty:"sub-ass-override" value:useLibass ? @"scale" : @"force"];
+    }
+    if (modeChanged || (!useLibass && boldChanged)) {
+        const char *styleOverridesCommand[] = {
+            "change-list",
+            "sub-ass-style-overrides",
+            useLibass ? "clr" : "set",
+            useLibass ? "" : (bold ? "Bold=1" : "Bold=0"),
+            NULL,
+        };
+        mpv_command(_mpv, styleOverridesCommand);
+    }
+    if (modeChanged || sizeChanged) {
+        mpv_set_property(_mpv, "sub-scale", MPV_FORMAT_DOUBLE, &scale);
+        mpv_set_property(_mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size);
+    }
+    if (modeChanged || positionChanged) {
+        mpv_set_property(_mpv, "sub-pos", MPV_FORMAT_INT64, &position);
+    }
+
+    if (!useLibass) {
+        if (modeChanged || textColorChanged) {
+            [self setStringProperty:"sub-color" value:resolvedTextColor];
+        }
+        if (modeChanged || backgroundColorChanged) {
+            [self setStringProperty:"sub-back-color" value:resolvedBackgroundColor];
+            [self setStringProperty:"sub-border-style"
+                              value:[resolvedBackgroundColor hasPrefix:@"#00"] ? @"outline-and-shadow" : @"opaque-box"];
+        }
+        if (modeChanged || outlineColorChanged) {
+            [self setStringProperty:"sub-outline-color" value:resolvedOutlineColor];
+        }
+        if (modeChanged || boldChanged) {
+            [self setStringProperty:"sub-bold" value:bold ? @"yes" : @"no"];
+        }
+        if (modeChanged || outlineSizeChanged) {
+            mpv_set_property(_mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline);
+        }
+    }
+    if (stripSdhChanged) {
+        [self setStringProperty:"sub-filter-sdh" value:stripSdh ? @"yes" : @"no"];
+        [self setStringProperty:"sub-filter-sdh-harder" value:stripSdh ? @"yes" : @"no"];
+    }
+
+    _hasAppliedSubtitleStyle = YES;
+    _appliedSubtitleUseLibass = useLibass;
+    _appliedSubtitleTextColor = resolvedTextColor;
+    _appliedSubtitleBackgroundColor = resolvedBackgroundColor;
+    _appliedSubtitleOutlineColor = resolvedOutlineColor;
+    _appliedSubtitleOutlineSize = outline;
+    _appliedSubtitleBold = bold;
+    _appliedSubtitleFontSize = size;
+    _appliedSubtitlePosition = position;
+    _appliedSubtitleStripSdh = stripSdh;
 }
 
 - (double)doubleProperty:(const char *)name fallback:(double)fallback {
@@ -2283,6 +2364,17 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         [self syncControls];
         return;
     }
+    if ([type isEqualToString:@"setPlaybackState"] || [type isEqualToString:@"setPlaybackStateQuiet"]) {
+        BOOL shouldPlay = value && value.doubleValue >= 0.5;
+        if (shouldPlay && [self isEnded]) {
+            [self seekToMilliseconds:0];
+        }
+        [self setPaused:!shouldPlay];
+        if (_eventSink && _eventMethod) {
+            [self sendPlayerEvent:type value:shouldPlay ? 1.0 : 0.0];
+        }
+        return;
+    }
     if ([type isEqualToString:@"toggleFullscreen"]) {
         [self beginFullscreenTransitionWithReason:@"control-toggle"];
     }
@@ -2425,6 +2517,26 @@ static NSArray<NSString *> *jstringArrayToNSArray(JNIEnv *env, jobjectArray valu
     return result;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setMacosWindowFullscreen(
+    JNIEnv * /* env */,
+    jobject /* bridge */,
+    jlong windowViewPtr,
+    jboolean fullscreen
+) {
+    NSView *windowView = (__bridge NSView *)(void *)(intptr_t)windowViewPtr;
+    if (!windowView) return;
+    BOOL requestedFullscreen = fullscreen == JNI_TRUE;
+    runOnMainAsync(^{
+        NSWindow *window = windowView.window;
+        if (!window) return;
+        BOOL isFullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+        if (isFullscreen != requestedFullscreen) {
+            [window toggleFullScreen:nil];
+        }
+    });
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     JNIEnv *env,
@@ -2523,6 +2635,19 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_updateControls(
     MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
     runOnMainAsync(^{
         [player updateControlsJson:[NSString stringWithUTF8String:controls.c_str()]];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(
+    JNIEnv *,
+    jobject,
+    jlong handle
+) {
+    if (handle == 0) return;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player requestFocus];
     });
 }
 
@@ -2831,7 +2956,9 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applySubtitleStyle
     jfloat outlineSize,
     jboolean bold,
     jfloat fontSize,
-    jint subPos
+    jint subPos,
+    jboolean useLibass,
+    jboolean stripSdh
 ) {
     if (handle == 0) return;
     std::string text = jstringToString(env, textColor);
@@ -2845,6 +2972,8 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applySubtitleStyle
                                      outlineSize:(double)outlineSize
                                             bold:bold == JNI_TRUE
                                         fontSize:(double)fontSize
-                                          subPos:(int)subPos];
+                                          subPos:(int)subPos
+                                       useLibass:useLibass == JNI_TRUE
+                                        stripSdh:stripSdh == JNI_TRUE];
     });
 }

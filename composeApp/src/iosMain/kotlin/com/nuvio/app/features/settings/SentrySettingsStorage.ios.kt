@@ -4,6 +4,7 @@ import platform.Foundation.NSUserDefaults
 
 internal actual object SentrySettingsPlatform {
     actual val crashReportsSupported: Boolean = false
+    actual val usesDesktopCopy: Boolean = false
 }
 
 internal actual object SentrySettingsStorage {

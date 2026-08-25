@@ -14,8 +14,10 @@ import org.gradle.jvm.tasks.Jar
 import org.gradle.language.jvm.tasks.ProcessResources
 import org.gradle.process.ExecOperations
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URL
 import java.util.Properties
@@ -54,6 +56,9 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
     abstract val sentryDsn: Property<String>
 
     @get:Input
+    abstract val sentryDesktopDsn: Property<String>
+
+    @get:Input
     abstract val sentryEnvironment: Property<String>
 
     @TaskAction
@@ -85,6 +90,7 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 |
                 |object SentryConfig {
                 |    const val DSN = "${sentryDsn.get()}"
+                |    const val DESKTOP_DSN = "${sentryDesktopDsn.get()}"
                 |    const val ENVIRONMENT = "${sentryEnvironment.get()}"
                 |}
                 """.trimMargin()
@@ -118,6 +124,19 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 |    const val CLIENT_ID = "${props.getProperty("SIMKL_CLIENT_ID", "")}"
                 |    const val REDIRECT_URI = "${props.getProperty("SIMKL_REDIRECT_URI", "nuvio://auth/simkl")}"
                 |    const val APP_NAME = "${props.getProperty("SIMKL_APP_NAME", "nuvio")}"
+                |}
+                """.trimMargin()
+            )
+        }
+
+        outDir.resolve("com/nuvio/app/features/discordrpc").apply {
+            mkdirs()
+            resolve("DiscordConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.discordrpc
+                |
+                |object DiscordConfig {
+                |    const val CLIENT_ID = "${props.getProperty("NUVIO_DISCORD_CLIENT_ID", "1538974392376369212")}"
                 |}
                 """.trimMargin()
             )
@@ -187,6 +206,7 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 |
                 |object CommunityConfig {
                 |    const val CONTRIBUTIONS_URL = "${props.getProperty("CONTRIBUTIONS_URL", "")}" 
+                |    const val SUPPORTERS_WALL_URL = "${props.getProperty("SUPPORTERS_WALL_URL", "https://nuvio.tv/api/supporters/wall")}"
                 |    const val DONATIONS_BASE_URL = "${props.getProperty("DONATIONS_BASE_URL", "")}" 
                 |    const val DONATIONS_DONATE_URL = "${props.getProperty("DONATIONS_DONATE_URL", "")}" 
                 |}
@@ -511,7 +531,9 @@ val iosFrameworkBundleId = "com.nuvio.media"
 val nuvioEngineAppleFramework = rootProject.file("../nuvio-engine/platform/apple/NuvioEngine.xcframework")
 val fullCommonSourceDir = project.file("src/fullCommonMain/kotlin")
 val fullPluginSourceDir = fullCommonSourceDir.resolve("com/nuvio/app/features/plugins")
+val fullTrailerSourceDir = fullCommonSourceDir.resolve("com/nuvio/app/features/trailer")
 val generatedRuntimeConfigDir = layout.buildDirectory.dir("generated/runtime-config/kotlin")
+val desktopSentryResourceDir = rootProject.layout.projectDirectory.dir("desktopSentry/build/generated/sentry")
 val requestedGradleTasks = gradle.startParameter.taskNames.map { taskName ->
     taskName.substringAfterLast(':').lowercase()
 }
@@ -578,6 +600,7 @@ val generateRuntimeConfigs = tasks.register<GenerateRuntimeConfigsTask>("generat
     supabaseAnonKey.set(runtimeConfigValue("NUVIO_SUPABASE_ANON_KEY"))
     supabaseFallbackUrl.set(runtimeConfigValue("NUVIO_SUPABASE_FALLBACK_URL"))
     sentryDsn.set(runtimeConfigValue("SENTRY_DSN"))
+    sentryDesktopDsn.set(runtimeConfigValue("SENTRY_DESKTOP_DSN"))
     sentryEnvironment.set(
         when {
             requestedGradleTasks.any { "benchmark" in it } -> "benchmark"
@@ -848,6 +871,7 @@ val windowsPlayerBridgeCommand = if (missingWindowsPlayerBridgeInputs.isNotEmpty
         "User32.lib",
         "Gdi32.lib",
         "Dwmapi.lib",
+        "Shell32.lib",
     ).joinToString(" ")
     val powershellCompileCommand = compileCommand.replace("\"", "__DQ__")
     val powershellCommand = """
@@ -1152,6 +1176,10 @@ kotlin {
                     defFile(project.file("src/nativeInterop/cinterop/commoncrypto.def"))
                     compilerOpts("-I${project.projectDir}/src/nativeInterop/cinterop")
                 }
+                create("appicon") {
+                    defFile(project.file("src/nativeInterop/cinterop/appicon.def"))
+                    compilerOpts("-I${project.projectDir}/src/nativeInterop/cinterop")
+                }
                 if (iosDistribution == "full") {
                     check(nuvioEngineSliceDirectory.resolve("libCNuvioEngine.a").isFile) {
                         "Build the local Nuvio Engine Apple XCFramework before compiling iOS Full."
@@ -1237,13 +1265,31 @@ kotlin {
         }
         val desktopMain by getting {
             kotlin.srcDir(fullPluginSourceDir)
+            kotlin.srcDir(fullTrailerSourceDir)
+            kotlin.srcDir(
+                if (isWindowsHost) {
+                    "src/windowsDesktopMain/kotlin"
+                } else {
+                    "src/nonWindowsDesktopMain/kotlin"
+                },
+            )
+            resources.srcDir(desktopSentryResourceDir)
             dependencies {
                 implementation(compose.desktop.currentOs)
+                if (!isWindowsHost) {
+                    implementation(project(":composeMediaPlayer"))
+                }
                 implementation(libs.kotlinx.coroutines.swing)
                 implementation(libs.ktor.client.cio)
                 implementation("com.squareup.okhttp3:okhttp:4.12.0")
                 implementation(libs.quickjs.kt)
                 implementation(libs.ksoup)
+                implementation(libs.sentry.jvm)
+            }
+        }
+        val androidHostTest by getting {
+            if (androidDistribution == "full") {
+                kotlin.srcDir(project.file("src/androidFullHostTest/kotlin"))
             }
         }
         commonMain.dependencies {
@@ -1251,6 +1297,9 @@ kotlin {
                 exclude(group = "org.jetbrains.skiko", module = "skiko")
             }
             implementation("io.coil-kt.coil3:coil-network-ktor3:${libs.versions.coil.get()}") {
+                exclude(group = "org.jetbrains.skiko", module = "skiko")
+            }
+            implementation("io.coil-kt.coil3:coil-network-cache-control:${libs.versions.coil.get()}") {
                 exclude(group = "org.jetbrains.skiko", module = "skiko")
             }
             implementation("io.coil-kt.coil3:coil-svg:${libs.versions.coil.get()}") {
@@ -1274,6 +1323,7 @@ kotlin {
             implementation(libs.supabase.postgrest)
             implementation(libs.supabase.auth)
             implementation(libs.supabase.functions)
+            implementation(libs.supabase.storage)
             implementation(libs.reorderable)
             implementation(libs.kotlinx.atomicfu)
         }
@@ -1281,6 +1331,12 @@ kotlin {
             implementation(libs.kotlin.test)
         }
     }
+}
+
+tasks.matching {
+    it.name == "desktopProcessResources" || it.name == "processDesktopMainResources"
+}.configureEach {
+    dependsOn(":desktopSentry:generateSentryDebugMetaPropertiesjava")
 }
 
 compose.desktop {
@@ -1329,7 +1385,7 @@ compose.desktop {
             )
             macOS {
                 bundleID = "com.nuvio.media.desktop"
-                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon.icns"))
+                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.icns"))
                 infoPlist {
                     extraKeysRawXml = """
                         <key>CFBundleURLTypes</key>
@@ -1365,15 +1421,16 @@ compose.desktop {
                 }
             }
             windows {
-                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon.ico"))
+                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.ico"))
                 upgradeUuid = windowsMsiUpgradeUuid
                 shortcut = true
                 menu = true
                 menuGroup = "Nuvio"
             }
             linux {
-                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon.png"))
+                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.png"))
                 rpmLicenseType = "Proprietary"
+                debMaintainer = "contact@nuvio.tv"
             }
         }
 
@@ -1618,6 +1675,43 @@ tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
     doLast {
         publishWindowsMsiOutput(release = true)
     }
+}
+
+if (isLinuxHost) {
+    val linuxDebPatchScript = rootProject.layout.projectDirectory.file("scripts/patch-linux-deb.sh")
+    val linuxDebVerifyScript = rootProject.layout.projectDirectory.file("scripts/verify-linux-deb.sh")
+
+    tasks.withType<AbstractJPackageTask>()
+        .matching { it.name == "packageDeb" || it.name == "packageReleaseDeb" }
+        .configureEach {
+            doLast {
+                val effectiveLinuxPackageName = linuxPackageName.orNull ?: packageName.get().lowercase()
+                val effectiveLinuxAppRelease = linuxAppRelease.orNull ?: "1"
+                val artifactPrefix =
+                    "${effectiveLinuxPackageName}_${packageVersion.get()}-${effectiveLinuxAppRelease}_"
+                val debs = destinationDir.get().asFile
+                    .listFiles { file ->
+                        file.isFile && file.name.startsWith(artifactPrefix) && file.extension == "deb"
+                    }
+                    ?.sortedBy { it.name }
+                    .orEmpty()
+                require(debs.size == 1) {
+                    "Expected exactly one current Linux DEB matching $artifactPrefix in " +
+                        "${destinationDir.get().asFile.absolutePath}, found ${debs.size}."
+                }
+                val deb = debs.single()
+                listOf(linuxDebPatchScript, linuxDebVerifyScript).forEach { script ->
+                    val command = listOf("bash", script.asFile.absolutePath, deb.absolutePath)
+                    val exitCode = ProcessBuilder(command)
+                        .inheritIO()
+                        .start()
+                        .waitFor()
+                    check(exitCode == 0) {
+                        "Linux DEB command failed with exit code $exitCode: ${command.joinToString(" ")}"
+                    }
+                }
+            }
+        }
 }
 
 if (isMacHost) {

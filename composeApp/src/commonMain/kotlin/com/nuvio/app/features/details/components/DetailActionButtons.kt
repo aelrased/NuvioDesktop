@@ -215,7 +215,7 @@ fun DetailActionButtons(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DetailIconAction(
+internal fun DetailIconAction(
     label: String,
     icon: ImageVector,
     active: Boolean,
@@ -243,7 +243,6 @@ private fun DetailIconAction(
             MaterialTheme.colorScheme.onSurface
         },
         tonalElevation = 6.dp,
-        shadowElevation = 8.dp,
     ) {
         Box(
             modifier = Modifier

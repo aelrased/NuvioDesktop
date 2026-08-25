@@ -88,6 +88,7 @@ object ProfileSettingsSync {
     fun startObserving() {
         if (observeJob?.isActive == true) return
         ensureRepositoriesLoaded()
+        ProviderCredentialSync.startObserving()
         observeLocalChangesAndPush()
     }
 
@@ -95,6 +96,7 @@ object ProfileSettingsSync {
         observeJob?.cancel()
         observeJob = null
         skipNextPushSignature = null
+        ProviderCredentialSync.clearAccountState()
     }
 
     suspend fun pull(profileId: Int): Boolean {
@@ -174,7 +176,7 @@ object ProfileSettingsSync {
     @OptIn(FlowPreview::class)
     private fun observeLocalChangesAndPush() {
         val signatureFlows = listOf(
-            ThemeSettingsRepository.selectedTheme.map { "theme" },
+            ThemeSettingsRepository.selectedThemePreference.map { "theme" },
             ThemeSettingsRepository.amoledEnabled.map { "amoled" },
             ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.map { "liquid_glass_tab_bar" },
             ThemeSettingsRepository.desktopNavigationLayout.map { "desktop_navigation_layout" },
@@ -230,11 +232,23 @@ object ProfileSettingsSync {
                 themeSettings = ThemeSettingsStorage.exportToSyncPayload(),
                 posterCardStyleSettingsPayload = PosterCardStyleStorage.loadPayload().orEmpty().trim(),
                 cardDepthStyleSettingsPayload = CardDepthStyleStorage.loadPayload().orEmpty().trim(),
-                playerSettings = PlayerSettingsStorage.exportToSyncPayload(),
+                playerSettings = withoutProfileCredentials(
+                    PROFILE_PLAYER_SETTINGS_FEATURE,
+                    PlayerSettingsStorage.exportToSyncPayload(),
+                ),
                 streamBadgeSettings = StreamBadgeSettingsStorage.exportToSyncPayload(),
-                debridSettings = DebridSettingsStorage.exportToSyncPayload(),
-                tmdbSettings = TmdbSettingsStorage.exportToSyncPayload(),
-                mdbListSettings = MdbListSettingsStorage.exportToSyncPayload(),
+                debridSettings = withoutProfileCredentials(
+                    PROFILE_DEBRID_SETTINGS_FEATURE,
+                    DebridSettingsStorage.exportToSyncPayload(),
+                ),
+                tmdbSettings = withoutProfileCredentials(
+                    PROFILE_TMDB_SETTINGS_FEATURE,
+                    TmdbSettingsStorage.exportToSyncPayload(),
+                ),
+                mdbListSettings = withoutProfileCredentials(
+                    PROFILE_MDBLIST_SETTINGS_FEATURE,
+                    MdbListSettingsStorage.exportToSyncPayload(),
+                ),
                 metaScreenSettingsPayload = MetaScreenSettingsStorage.loadPayload().orEmpty().trim(),
                 collectionMobileSettingsPayload = CollectionMobileSettingsStorage.loadPayload().orEmpty().trim(),
                 continueWatchingSettingsPayload = ContinueWatchingPreferencesStorage.loadPayload().orEmpty().trim(),
@@ -257,19 +271,46 @@ object ProfileSettingsSync {
         CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload)
         CardDepthStyleRepository.onProfileChanged()
 
-        PlayerSettingsStorage.replaceFromSyncPayload(blob.features.playerSettings)
+        val localPlayerSettings = PlayerSettingsStorage.exportToSyncPayload()
+        val localIntroDbApiKey = PlayerSettingsStorage.loadIntroDbApiKey()
+        PlayerSettingsStorage.replaceFromSyncPayload(
+            preservingLocalProfileCredentials(
+                PROFILE_PLAYER_SETTINGS_FEATURE,
+                blob.features.playerSettings,
+                localPlayerSettings,
+            ),
+        )
+        localIntroDbApiKey?.let(PlayerSettingsStorage::saveIntroDbApiKey)
         PlayerSettingsRepository.onProfileChanged()
 
         StreamBadgeSettingsStorage.replaceFromSyncPayload(blob.features.streamBadgeSettings)
         StreamBadgeSettingsRepository.onProfileChanged()
 
-        DebridSettingsStorage.replaceFromSyncPayload(blob.features.debridSettings)
+        DebridSettingsStorage.replaceFromSyncPayload(
+            preservingLocalProfileCredentials(
+                PROFILE_DEBRID_SETTINGS_FEATURE,
+                blob.features.debridSettings,
+                DebridSettingsStorage.exportToSyncPayload(),
+            ),
+        )
         DebridSettingsRepository.onProfileChanged()
 
-        TmdbSettingsStorage.replaceFromSyncPayload(blob.features.tmdbSettings)
+        TmdbSettingsStorage.replaceFromSyncPayload(
+            preservingLocalProfileCredentials(
+                PROFILE_TMDB_SETTINGS_FEATURE,
+                blob.features.tmdbSettings,
+                TmdbSettingsStorage.exportToSyncPayload(),
+            ),
+        )
         TmdbSettingsRepository.onProfileChanged()
 
-        MdbListSettingsStorage.replaceFromSyncPayload(blob.features.mdbListSettings)
+        MdbListSettingsStorage.replaceFromSyncPayload(
+            preservingLocalProfileCredentials(
+                PROFILE_MDBLIST_SETTINGS_FEATURE,
+                blob.features.mdbListSettings,
+                MdbListSettingsStorage.exportToSyncPayload(),
+            ),
+        )
         MdbListMetadataService.clearCache()
         MdbListSettingsRepository.onProfileChanged()
 

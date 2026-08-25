@@ -10,6 +10,8 @@ actual fun HeroTrailerPlayerSurface(
     sourceAudioUrl: String?,
     playWhenReady: Boolean,
     muted: Boolean,
+    startPositionMillis: Long,
+    fillFrame: Boolean,
     modifier: Modifier,
     onReady: () -> Unit,
     onEnded: () -> Unit,

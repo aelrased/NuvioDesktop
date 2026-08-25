@@ -12,6 +12,7 @@ internal actual object PlayerTrackPreferenceStorage {
     private const val subtitleTrackIdKey = "subtitle_track_id"
     private const val addonSubtitleIdKey = "addon_subtitle_id"
     private const val addonSubtitleUrlKey = "addon_subtitle_url"
+    private const val addonSubtitleItemIdKey = "addon_subtitle_item_id"
     private const val addonSubtitleAddonNameKey = "addon_subtitle_addon_name"
     private const val audioLanguageKey = "audio_language"
     private const val audioNameKey = "audio_name"
@@ -33,6 +34,7 @@ internal actual object PlayerTrackPreferenceStorage {
             subtitleTrackId = loadString(subtitleTrackIdKey, id),
             addonSubtitleId = loadString(addonSubtitleIdKey, id),
             addonSubtitleUrl = loadString(addonSubtitleUrlKey, id),
+            addonSubtitleItemId = loadString(addonSubtitleItemIdKey, id),
             addonSubtitleAddonName = loadString(addonSubtitleAddonNameKey, id),
             audioLanguage = loadString(audioLanguageKey, id),
             audioName = loadString(audioNameKey, id),
@@ -46,6 +48,7 @@ internal actual object PlayerTrackPreferenceStorage {
                 it.subtitleTrackId,
                 it.addonSubtitleId,
                 it.addonSubtitleUrl,
+                it.addonSubtitleItemId,
                 it.addonSubtitleAddonName,
                 it.audioLanguage,
                 it.audioName,
@@ -63,6 +66,7 @@ internal actual object PlayerTrackPreferenceStorage {
             putOptionalString(subtitleTrackIdKey, id, preference.subtitleTrackId)
             putOptionalString(addonSubtitleIdKey, id, preference.addonSubtitleId)
             putOptionalString(addonSubtitleUrlKey, id, preference.addonSubtitleUrl)
+            putOptionalString(addonSubtitleItemIdKey, id, preference.addonSubtitleItemId)
             putOptionalString(addonSubtitleAddonNameKey, id, preference.addonSubtitleAddonName)
             putOptionalString(audioLanguageKey, id, preference.audioLanguage)
             putOptionalString(audioNameKey, id, preference.audioName)

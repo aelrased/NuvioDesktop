@@ -34,6 +34,7 @@ internal actual object PlatformLocalAccountDataCleaner {
         "nuvio_collection_mobile_settings",
         "nuvio_collections",
         "nuvio_plugins",
+        "nuvio_member_access",
     )
 
     private var appContext: Context? = null
@@ -50,5 +51,6 @@ internal actual object PlatformLocalAccountDataCleaner {
                 .clear()
                 .apply()
         }
+        context.filesDir.resolve("nuvio_plugin_scrapers").deleteRecursively()
     }
 }

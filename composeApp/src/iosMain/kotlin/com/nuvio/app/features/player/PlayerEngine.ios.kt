@@ -64,6 +64,7 @@ actual fun PlatformPlayerSurface(
     onControllerReady: (PlayerEngineController) -> Unit,
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
+    sourceAvailable: Boolean,
 ) {
     sanitizePlaybackResponseHeaders(sourceResponseHeaders)
     val latestOnControllerReady = rememberUpdatedState(onControllerReady)
@@ -274,6 +275,7 @@ actual fun PlatformPlayerSurface(
                     bold = style.bold,
                     fontSize = style.toMpvSubtitleFontSize(),
                     subPos = style.toMpvSubtitlePosition(),
+                    stripSdh = style.stripSdh,
                 )
             }
         }
@@ -444,7 +446,7 @@ private fun SubtitleStyleState.toMpvSubtitlePosition(): Int =
     (100 - (bottomOffset / 2)).coerceIn(0, 150)
 
 private fun SubtitleStyleState.toMpvSubtitleFontSize(): Float =
-    (fontSizeSp * 3f).coerceIn(24f, 96f)
+    (fontSizeSp * 3f).coerceIn(18f, 96f)
 
 private fun Int.toHexByte(): String {
     val digits = "0123456789ABCDEF"

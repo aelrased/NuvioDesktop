@@ -112,6 +112,7 @@ internal fun settingsSearchEntries(
     val detailPage = stringResource(Res.string.compose_settings_page_meta_screen)
     val continueWatchingPage = stringResource(Res.string.compose_settings_page_continue_watching)
     val posterStylePage = stringResource(Res.string.compose_settings_page_poster_customization)
+    val hoverPreviewPage = stringResource(Res.string.compose_settings_page_hover_preview)
     val addonsPage = stringResource(Res.string.compose_settings_page_addons)
     val pluginsPage = stringResource(Res.string.compose_settings_page_plugins)
     val collectionsPage = stringResource(Res.string.collections_header)
@@ -416,12 +417,30 @@ internal fun settingsSearchEntries(
         category = advancedCategory,
         icon = Icons.Rounded.Tune,
     )
+    if (DesktopRendererSettings.isSupported) {
+        addRow(
+            page = SettingsPage.Advanced,
+            key = "desktop-opengl-renderer",
+            title = stringResource(Res.string.settings_advanced_opengl_renderer),
+            description = stringResource(Res.string.settings_advanced_opengl_renderer_description),
+            pageLabel = advancedPage,
+            section = stringResource(Res.string.settings_advanced_section_windows_graphics),
+            category = advancedCategory,
+            icon = Icons.Rounded.Tune,
+        )
+    }
     if (SentrySettingsRepository.isSupported) {
         addRow(
             page = SettingsPage.Advanced,
             key = "sentry-crash-reports",
             title = stringResource(Res.string.settings_advanced_sentry_reports),
-            description = stringResource(Res.string.settings_advanced_sentry_reports_subtitle),
+            description = stringResource(
+                if (SentrySettingsPlatform.usesDesktopCopy) {
+                    Res.string.settings_advanced_sentry_reports_subtitle_desktop
+                } else {
+                    Res.string.settings_advanced_sentry_reports_subtitle
+                },
+            ),
             pageLabel = advancedPage,
             section = stringResource(Res.string.settings_advanced_section_diagnostics),
             category = advancedCategory,
@@ -452,6 +471,15 @@ internal fun settingsSearchEntries(
         description = stringResource(Res.string.settings_appearance_poster_customization_description),
         icon = Icons.Rounded.Tune,
     )
+    if (isDesktop) {
+        addPage(
+            page = SettingsPage.HoverPreview,
+            key = "hover-preview",
+            title = hoverPreviewPage,
+            description = stringResource(Res.string.settings_appearance_hover_preview_description),
+            icon = Icons.Rounded.Style,
+        )
+    }
 
     addPage(
         page = SettingsPage.Addons,

@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 
 internal actual object SentrySettingsPlatform {
     actual val crashReportsSupported: Boolean = true
+    actual val usesDesktopCopy: Boolean = false
 }
 
 internal actual object SentrySettingsStorage {

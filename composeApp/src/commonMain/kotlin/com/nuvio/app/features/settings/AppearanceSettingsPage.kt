@@ -47,17 +47,23 @@ import com.nuvio.app.core.ui.NuvioModalBottomSheet
 import com.nuvio.app.core.ui.dismissNuvioBottomSheet
 import com.nuvio.app.core.ui.labelRes
 import com.nuvio.app.core.ui.ThemeColors
+import com.nuvio.app.core.ui.accentBrush
+import com.nuvio.app.features.membership.MemberAccessRepository
+import com.nuvio.app.features.membership.availableAppThemes
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.cd_selected
 import nuvio.composeapp.generated.resources.collections_header
 import nuvio.composeapp.generated.resources.compose_settings_page_continue_watching
 import nuvio.composeapp.generated.resources.compose_settings_page_homescreen
+import nuvio.composeapp.generated.resources.compose_settings_page_hover_preview
 import nuvio.composeapp.generated.resources.compose_settings_page_meta_screen
 import nuvio.composeapp.generated.resources.compose_settings_page_poster_customization
 import nuvio.composeapp.generated.resources.compose_settings_page_streams
 import nuvio.composeapp.generated.resources.settings_appearance_app_language
 import nuvio.composeapp.generated.resources.settings_appearance_app_language_sheet_title
+import nuvio.composeapp.generated.resources.settings_appearance_app_icon
 import nuvio.composeapp.generated.resources.settings_appearance_nav_bar_style
 import nuvio.composeapp.generated.resources.settings_appearance_nav_bar_style_sheet_title
 import nuvio.composeapp.generated.resources.settings_appearance_amoled_black
@@ -65,6 +71,7 @@ import nuvio.composeapp.generated.resources.settings_appearance_amoled_descripti
 import nuvio.composeapp.generated.resources.settings_appearance_continue_watching_description
 import nuvio.composeapp.generated.resources.settings_appearance_desktop_navigation
 import nuvio.composeapp.generated.resources.settings_appearance_desktop_navigation_sheet_title
+import nuvio.composeapp.generated.resources.settings_appearance_hover_preview_description
 import nuvio.composeapp.generated.resources.settings_appearance_liquid_glass
 import nuvio.composeapp.generated.resources.settings_appearance_liquid_glass_description
 import nuvio.composeapp.generated.resources.settings_appearance_poster_customization_description
@@ -91,6 +98,9 @@ internal fun LazyListScope.appearanceSettingsContent(
     liquidGlassNativeTabBarSupported: Boolean,
     liquidGlassNativeTabBarEnabled: Boolean,
     onLiquidGlassNativeTabBarToggle: (Boolean) -> Unit,
+    appIconState: AppIconSettingsState,
+    onAppIconSelected: (AppIconOption) -> Unit,
+    onAppIconFailureDismissed: () -> Unit,
     selectedAppLanguage: AppLanguage,
     onAppLanguageSelected: (AppLanguage) -> Unit,
     selectedNavBarStyle: NavBarStyle,
@@ -101,6 +111,7 @@ internal fun LazyListScope.appearanceSettingsContent(
     onCollectionsClick: () -> Unit,
     onContinueWatchingClick: () -> Unit,
     onPosterCustomizationClick: () -> Unit,
+    onHoverPreviewClick: () -> Unit,
 ) {
     item {
         SettingsSection(
@@ -108,7 +119,11 @@ internal fun LazyListScope.appearanceSettingsContent(
             isTablet = isTablet,
         ) {
             SettingsGroup(isTablet = isTablet) {
-                val themes = listOf(AppTheme.WHITE) + AppTheme.entries.filterNot { it == AppTheme.WHITE }
+                val memberAccess by remember {
+                    MemberAccessRepository.ensureStarted()
+                    MemberAccessRepository.access
+                }.collectAsStateWithLifecycle()
+                val themes = availableAppThemes(memberAccess.entitlements)
                 val horizontalPadding = if (isTablet) 20.dp else 16.dp
                 val verticalPadding = if (isTablet) 18.dp else 14.dp
                 val themeSpacing = if (isTablet) 16.dp else 12.dp
@@ -161,6 +176,7 @@ internal fun LazyListScope.appearanceSettingsContent(
             ThemeSettingsRepository.desktopNavigationLayout
         }.collectAsStateWithLifecycle()
         var showNavBarStyleSheet by remember { mutableStateOf(false) }
+        var showAppIconPicker by remember { mutableStateOf(false) }
         SettingsSection(
             title = stringResource(Res.string.settings_appearance_section_display),
             isTablet = isTablet,
@@ -190,6 +206,33 @@ internal fun LazyListScope.appearanceSettingsContent(
                         description = stringResource(desktopNavigationLayout.labelRes),
                         isTablet = isTablet,
                         onClick = { showDesktopNavigationSheet = true },
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.compose_settings_page_hover_preview),
+                        description = stringResource(Res.string.settings_appearance_hover_preview_description),
+                        isTablet = isTablet,
+                        onClick = onHoverPreviewClick,
+                    )
+                }
+                if (AppIconPlatform.isSupported) {
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.settings_appearance_app_icon),
+                        description = stringResource(appIconState.selected.labelResource),
+                        enabled = appIconState.pending == null,
+                        isTablet = isTablet,
+                        trailingContent = {
+                            AppIconThumbnail(
+                                icon = appIconState.selected,
+                                modifier = Modifier.size(if (isTablet) 44.dp else 40.dp),
+                                cornerRadius = if (isTablet) 11.dp else 10.dp,
+                            )
+                        },
+                        onClick = {
+                            onAppIconFailureDismissed()
+                            showAppIconPicker = true
+                        },
                     )
                 }
                 SettingsGroupDivider(isTablet = isTablet)
@@ -230,6 +273,18 @@ internal fun LazyListScope.appearanceSettingsContent(
                     showLanguageSheet = false
                 },
                 onDismiss = { showLanguageSheet = false },
+            )
+        }
+
+        if (showAppIconPicker) {
+            AppIconPicker(
+                isTablet = isTablet,
+                state = appIconState,
+                onSelected = onAppIconSelected,
+                onDismiss = {
+                    onAppIconFailureDismissed()
+                    showAppIconPicker = false
+                },
             )
         }
 
@@ -482,7 +537,7 @@ private fun ThemeChip(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(palette.secondary),
+                    .background(palette.accentBrush()),
                 contentAlignment = Alignment.Center,
             ) {
                 if (isSelected) {

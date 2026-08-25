@@ -22,6 +22,46 @@ import com.nuvio.app.features.watchprogress.WatchProgressUiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 
+internal data class PlayerSurfaceSource(
+    val sourceUrl: String,
+    val sourceAudioUrl: String?,
+    val sourceHeaders: Map<String, String>,
+    val sourceResponseHeaders: Map<String, String>,
+    val externalSubtitles: List<com.nuvio.app.features.streams.StreamSubtitle>,
+    val streamType: String?,
+    val initialPositionMs: Long?,
+    val initialPositionRequestKey: String?,
+)
+
+internal fun shouldRenderPlayerSurface(
+    hasCurrentSource: Boolean,
+    hasLifecycleController: Boolean,
+    releaseInFlight: Boolean,
+    desktop: Boolean,
+): Boolean = hasCurrentSource || (desktop && hasLifecycleController && releaseInFlight)
+
+internal class PlayerReleaseSurfaceRetention {
+    private var nextAttemptId = 0L
+    private var activeAttemptId: Long? = null
+
+    var inFlight by mutableStateOf(false)
+        private set
+
+    fun begin(): Long {
+        val attemptId = ++nextAttemptId
+        activeAttemptId = attemptId
+        inFlight = true
+        return attemptId
+    }
+
+    fun finish(attemptId: Long): Boolean {
+        if (activeAttemptId != attemptId) return false
+        activeAttemptId = null
+        inFlight = false
+        return true
+    }
+}
+
 internal class PlayerScreenRuntime(
     args: PlayerScreenArgs,
 ) {
@@ -63,7 +103,7 @@ internal class PlayerScreenRuntime(
     lateinit var scope: CoroutineScope
     lateinit var hapticFeedback: HapticFeedback
 
-    var playerSettingsUiState: PlayerSettingsUiState = PlayerSettingsUiState()
+    var playerSettingsUiState by mutableStateOf(PlayerSettingsUiState())
     var p2pSettingsUiState by mutableStateOf(P2pSettingsUiState())
     var p2pStreamingState by mutableStateOf<P2pStreamingState>(P2pStreamingState.Idle)
     var metaScreenSettingsUiState: MetaScreenSettingsUiState = MetaScreenSettingsUiState()
@@ -120,6 +160,7 @@ internal class PlayerScreenRuntime(
     var activeEpisodeNumber by mutableStateOf(episodeNumber)
     var activeEpisodeTitle by mutableStateOf(episodeTitle)
     var activeEpisodeThumbnail by mutableStateOf(episodeThumbnail)
+    var activePauseDescription by mutableStateOf(pauseDescription)
     var activeVideoId by mutableStateOf(videoId)
     var activeInitialPositionMs by mutableStateOf(initialPositionMs)
     var activeInitialProgressFraction by mutableStateOf(initialProgressFraction)
@@ -128,6 +169,8 @@ internal class PlayerScreenRuntime(
     var layoutSize by mutableStateOf(IntSize.Zero)
     var playbackSnapshot by mutableStateOf(PlayerPlaybackSnapshot())
     var playerController by mutableStateOf<PlayerEngineController?>(null)
+    var playerLifecycleController by mutableStateOf<PlayerEngineController?>(null)
+    val playerReleaseSurfaceRetention = PlayerReleaseSurfaceRetention()
     var playerControllerSourceUrl by mutableStateOf<String?>(null)
     var errorMessage by mutableStateOf<String?>(null)
     var isScrubbingTimeline by mutableStateOf(false)
@@ -171,11 +214,15 @@ internal class PlayerScreenRuntime(
     var submitIntroStatusMessage by mutableStateOf<String?>(null)
     var playerControlsPendingP2pSwitch by mutableStateOf<PendingPlayerP2pSwitch?>(null)
     var playerControlsCloseModalsToken by mutableStateOf(0L)
+    var playerControlsSubmitIntroSuccessToken by mutableStateOf(0L)
+    var playerNotificationMessage by mutableStateOf("")
+    var playerNotificationToken by mutableStateOf(0L)
     var episodeStreamsPanelState by mutableStateOf(EpisodeStreamsPanelState())
     var playerMetaVideos by mutableStateOf<List<MetaVideo>>(emptyList())
     var skipIntervals by mutableStateOf<List<SkipInterval>>(emptyList())
     var activeSkipInterval by mutableStateOf<SkipInterval?>(null)
     var skipIntervalDismissed by mutableStateOf(false)
+    val autoSkippedIntervalKeys = mutableSetOf<String>()
     var parentalWarnings by mutableStateOf<List<ParentalWarning>>(emptyList())
     var showParentalGuide by mutableStateOf(false)
     var parentalGuideHasShown by mutableStateOf(false)

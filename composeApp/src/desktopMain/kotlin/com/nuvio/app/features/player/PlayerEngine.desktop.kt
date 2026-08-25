@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -68,6 +69,7 @@ actual fun PlatformPlayerSurface(
     onControllerReady: (PlayerEngineController) -> Unit,
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
+    sourceAvailable: Boolean,
 ) {
     if (DesktopHostOs.current == DesktopHostOs.MACOS ||
         DesktopHostOs.current == DesktopHostOs.WINDOWS ||
@@ -75,6 +77,7 @@ actual fun PlatformPlayerSurface(
     ) {
         NativePlayerSurface(
             sourceUrl = sourceUrl,
+            sourceAvailable = sourceAvailable,
             sourceHeaders = sourceHeaders,
             modifier = modifier,
             playWhenReady = playWhenReady,
@@ -282,6 +285,7 @@ private fun LinuxWaylandPlayerSurface(
 @Composable
 private fun NativePlayerSurface(
     sourceUrl: String,
+    sourceAvailable: Boolean,
     sourceHeaders: Map<String, String>,
     modifier: Modifier,
     playWhenReady: Boolean,
@@ -314,7 +318,7 @@ private fun NativePlayerSurface(
     val decoderPriority = playerSettings.decoderPriority
     val nvidiaRtxSuperResolutionEnabled = playerSettings.nvidiaRtxSuperResolutionEnabled
 
-    LaunchedEffect(controller, sourceUrl, playbackHeaders) {
+    SideEffect {
         onControllerReady(controller)
     }
 
@@ -357,7 +361,7 @@ private fun NativePlayerSurface(
         )
     }
 
-    DisposableEffect(controller, sourceUrl, playbackHeaders) {
+    DisposableEffect(controller, sourceAvailable, sourceUrl, playbackHeaders) {
         onDispose { controller.dispose() }
     }
 
@@ -380,6 +384,7 @@ private fun NativePlayerSurface(
 
     LaunchedEffect(
         controller,
+        sourceAvailable,
         sourceUrl,
         playbackHeaders,
         decoderPriority,
@@ -388,7 +393,7 @@ private fun NativePlayerSurface(
         initialPositionMs,
         initialPositionRequestKey,
     ) {
-        if (!hostFirstFullSizePaintComplete.value) {
+        if (!sourceAvailable || !hostFirstFullSizePaintComplete.value) {
             return@LaunchedEffect
         }
         delay(16L)
@@ -407,8 +412,13 @@ private fun NativePlayerSurface(
         onControllerReady(controller)
     }
 
-    LaunchedEffect(controller, playWhenReady) {
-        if (playWhenReady) controller.play() else controller.pause()
+    LaunchedEffect(controller, sourceAvailable, playWhenReady) {
+        if (!sourceAvailable) return@LaunchedEffect
+        if (playWhenReady) {
+            controller.play()
+        } else {
+            controller.pause()
+        }
     }
 
     LaunchedEffect(controller, resizeMode) {

@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -632,7 +633,8 @@ fun MetaDetailsScreen(
                     meta.trailers.isNotEmpty()
                 }
                 val uriHandler = LocalUriHandler.current
-                val inAppTrailerPlaybackEnabled = AppFeaturePolicy.trailerPlaybackMode == TrailerPlaybackMode.IN_APP
+                val trailerPlaybackMode = AppFeaturePolicy.trailerPlaybackMode
+                val inAppTrailerPlaybackEnabled = trailerPlaybackMode == TrailerPlaybackMode.IN_APP
                 val trailerScope = rememberCoroutineScope()
                 var selectedTrailer by remember(meta.id) { mutableStateOf<MetaTrailer?>(null) }
                 var trailerPlaybackSource by remember(meta.id) { mutableStateOf<TrailerPlaybackSource?>(null) }
@@ -677,32 +679,33 @@ fun MetaDetailsScreen(
                     heroTrailerFinished = true
                     onBack()
                 }
-                val resolveTrailer: (MetaTrailer) -> Unit = remember(meta.id, inAppTrailerPlaybackEnabled, uriHandler) {
+                val resolveTrailer: (MetaTrailer) -> Unit = remember(meta.id, trailerPlaybackMode, uriHandler) {
                     { trailer ->
                         val youtubeUrl = trailer.youtubePlaybackUrl()
-                        if (!inAppTrailerPlaybackEnabled) {
-                            runCatching { uriHandler.openUri(youtubeUrl) }
-                        } else {
-                            selectedTrailer = trailer
-                            trailerPlaybackSource = null
-                            trailerErrorMessage = null
-                            trailerLoading = true
-                            trailerRequestToken += 1
-                            val currentRequestToken = trailerRequestToken
-                            trailerScope.launch {
-                                val resolvedSource = runCatching {
-                                    TrailerPlaybackResolver.resolveFromYouTubeUrl(youtubeUrl)
-                                }.getOrNull()
-                                if (currentRequestToken != trailerRequestToken) {
-                                    return@launch
+                        when (trailerPlaybackMode) {
+                            TrailerPlaybackMode.EXTERNAL -> runCatching { uriHandler.openUri(youtubeUrl) }
+                            TrailerPlaybackMode.IN_APP -> {
+                                selectedTrailer = trailer
+                                trailerPlaybackSource = null
+                                trailerErrorMessage = null
+                                trailerLoading = true
+                                trailerRequestToken += 1
+                                val currentRequestToken = trailerRequestToken
+                                trailerScope.launch {
+                                    val resolvedSource = runCatching {
+                                        TrailerPlaybackResolver.resolveFromYouTubeUrl(youtubeUrl)
+                                    }.getOrNull()
+                                    if (currentRequestToken != trailerRequestToken) {
+                                        return@launch
+                                    }
+                                    trailerPlaybackSource = resolvedSource
+                                    trailerErrorMessage = if (resolvedSource == null) {
+                                        getString(Res.string.trailer_no_playable_stream)
+                                    } else {
+                                        null
+                                    }
+                                    trailerLoading = false
                                 }
-                                trailerPlaybackSource = resolvedSource
-                                trailerErrorMessage = if (resolvedSource == null) {
-                                    getString(Res.string.trailer_no_playable_stream)
-                                } else {
-                                    null
-                                }
-                                trailerLoading = false
                             }
                         }
                     }
@@ -883,7 +886,7 @@ fun MetaDetailsScreen(
                         .calculateTopPadding()
                         .toPx()
                 }
-                val heroHeightPx = remember(meta.id) { mutableIntStateOf(0) }
+                val heroHeightPx = rememberSaveable(meta.id) { mutableIntStateOf(0) }
                 // Keep pixel-by-pixel list state reads out of this composition.
                 val detailScrollOffsetPx = remember(listState, heroHeightPx) {
                     {
@@ -899,10 +902,13 @@ fun MetaDetailsScreen(
                 }
                 val isHeroCollapsed = remember(listState, heroHeightPx, safeAreaTopPx) {
                     derivedStateOf {
-                        val measuredHeroHeightPx = heroHeightPx.intValue
-                        val thresholdPx = (measuredHeroHeightPx - safeAreaTopPx).coerceAtLeast(0f)
-                        measuredHeroHeightPx > 0 &&
-                            (listState.firstVisibleItemIndex > 0 || detailScrollOffsetPx() > thresholdPx)
+                        if (listState.firstVisibleItemIndex > 0) {
+                            true
+                        } else {
+                            val measuredHeroHeightPx = heroHeightPx.intValue
+                            val thresholdPx = (measuredHeroHeightPx - safeAreaTopPx).coerceAtLeast(0f)
+                            measuredHeroHeightPx > 0 && detailScrollOffsetPx() > thresholdPx
+                        }
                     }
                 }
                 val heroTrailerSourceUrl = heroTrailerPlaybackSource
@@ -1046,6 +1052,9 @@ fun MetaDetailsScreen(
                                         heroGradientColor = dominantBackdropColor.takeIf { dominantColorEnabled },
                                         onBackdropLoaded = { painter ->
                                             dominantBackdropPainter = painter
+                                        },
+                                        onHeroTrailerMuteToggle = {
+                                            HeroTrailerAudioState.toggleMuted()
                                         },
                                         onHeroTrailerReady = {
                                             if (!heroTrailerFinished) {
@@ -1342,6 +1351,7 @@ fun MetaDetailsScreen(
                             backgroundColor = dominantBackdropColor.takeIf { dominantColorEnabled },
                             onBack = onBackFromDetails,
                             onToggleSaved = toggleSaved,
+                            modifier = Modifier.zIndex(2f),
                         )
 
                         selectedEpisodeForActions
@@ -1672,6 +1682,7 @@ fun MetaDetailsScreen(
                 title = selectedEpisode.title,
                 subtitle = localizedSeasonEpisodeCode(selectedEpisode.season, selectedEpisode.episode) ?: seasonLabel,
                 isWatched = isSelectedEpisodeWatched,
+                blurred = metaScreenSettingsUiState.blurUnwatchedEpisodes && !isSelectedEpisodeWatched,
                 depthSurface = NuvioCardDepthSurface.EpisodeCards,
                 anchor = zoomAnchor,
                 actions = buildList {

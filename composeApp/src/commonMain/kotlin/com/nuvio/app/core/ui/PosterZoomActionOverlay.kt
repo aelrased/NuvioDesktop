@@ -24,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -84,7 +86,25 @@ object PosterZoomAnchorHolder {
         pending = anchor
     }
 
-    fun consume(): PosterZoomAnchor? = pending.also { pending = null }
+    fun consume(): PosterZoomAnchor? = pending.also { anchor ->
+        pending = null
+        if (anchor != null) {
+            PosterZoomOverlayCoordinator.show()
+        }
+    }
+}
+
+object PosterZoomOverlayCoordinator {
+    var isVisible by mutableStateOf(false)
+        private set
+
+    fun show() {
+        isVisible = true
+    }
+
+    fun hide() {
+        isVisible = false
+    }
 }
 
 enum class PosterZoomOverlayExitAnimation {
@@ -139,6 +159,7 @@ fun NuvioPosterZoomActionOverlay(
     title: String,
     subtitle: String?,
     isWatched: Boolean = false,
+    blurred: Boolean = false,
     depthSurface: NuvioCardDepthSurface = NuvioCardDepthSurface.Posters,
     anchor: PosterZoomAnchor?,
     actions: List<PosterZoomOverlayAction>,
@@ -163,6 +184,13 @@ fun NuvioPosterZoomActionOverlay(
 
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     var slotBounds by remember { mutableStateOf<Rect?>(null) }
+
+    DisposableEffect(Unit) {
+        PosterZoomOverlayCoordinator.show()
+        onDispose {
+            PosterZoomOverlayCoordinator.hide()
+        }
+    }
 
     LaunchedEffect(Unit) {
         launch { scrim.animateTo(1f, tween(durationMillis = 260, easing = NuvioTokens.Motion.standard)) }
@@ -408,7 +436,9 @@ fun NuvioPosterZoomActionOverlay(
                         AsyncImage(
                             model = imageUrl,
                             contentDescription = title,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(if (blurred) Modifier.blur(NuvioTokens.Space.s18) else Modifier),
                             contentScale = ContentScale.Crop,
                         )
                     } else {

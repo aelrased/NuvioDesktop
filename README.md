@@ -18,9 +18,9 @@
 
 </div>
 
-## ⚠️ Alpha Software — Testers Only
+## ⚠️ Alpha Software - Slow Development - Testers Only
 
-Nuvio Desktop is currently in alpha and is intended only for testers. It is under active development and is not suitable for daily use.
+Nuvio Desktop is currently in alpha and is intended only for testers. It is under development and is not suitable for daily use.
 
 Expect breaking changes with every update. Features, settings, stored data, and compatibility may change or stop working without notice. Do not rely on this build as your primary media app, and report any issues you encounter during testing.
 
