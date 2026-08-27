@@ -19,6 +19,8 @@ fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=linux-deb-dependencies.sh
 source "$script_dir/linux-deb-dependencies.sh"
+# shellcheck source=linux-shortcut-definition.sh
+source "$script_dir/linux-shortcut-definition.sh"
 
 deb="$1"
 if [[ ! -f "$deb" ]]; then
@@ -39,6 +41,12 @@ control="$work_dir/DEBIAN/control"
 if [[ ! -f "$control" ]]; then
     echo "Missing DEBIAN/control in: $deb" >&2
     exit 1
+fi
+
+# Ensure a launcher is present for desktop integration. Some jpackage/deb
+# combinations may omit it; in that case, synthesize a minimal entry.
+if ! nuvio_linux_desktop_entry_exists "$work_dir"; then
+    nuvio_linux_write_desktop_entry "$work_dir"
 fi
 
 depends="$(dpkg-deb -f "$deb" Depends)"

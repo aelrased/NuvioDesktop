@@ -80,6 +80,8 @@ private fun PlayerScreenRuntime.resetTrackSelectionState() {
     trackPreferenceRestoreApplied = false
     preferredAudioSelectionApplied = false
     preferredSubtitleSelectionApplied = false
+    isUserExplicitSubtitleSelection = false
+    hasScannedTextTracksOnce = false
     subtitleTracks = emptyList()
     selectedSubtitleIndex = -1
     selectedAddonSubtitleId = null
@@ -241,7 +243,6 @@ internal fun PlayerScreenRuntime.tryShowParentalGuide() {
     if (!playerSettingsUiState.showParentalGuide) return
     if (!parentalGuideHasShown && parentalWarnings.isNotEmpty() && !playbackStartedForParentalGuide) {
         playbackStartedForParentalGuide = true
-        controlsVisible = true
         showParentalGuide = true
         parentalGuideHasShown = true
     }

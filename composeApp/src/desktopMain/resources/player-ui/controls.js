@@ -2884,9 +2884,47 @@ window.playerControls = nextState => {
   }
 };
 
+
+const isControlsSurfaceEvent = event => {
+  if (activeModal) return true;
+  if (event.target.closest("button, input, textarea, select, a, .action-pill, .volume-control, .modal-layer, .skip-prompt, .next-episode-card")) {
+    return true;
+  }
+
+  const seekEl = document.getElementById("seek");
+  if (seekEl && event.clientY >= seekEl.getBoundingClientRect().top - 6) {
+    return true;
+  }
+
+  const titleEl = document.getElementById("title");
+  const metaRow = document.querySelector(".meta-row");
+  if (titleEl && metaRow) {
+    const titleRect = titleEl.getBoundingClientRect();
+    const metaRect = metaRow.getBoundingClientRect();
+    const textTop = Math.min(titleRect.top, metaRect.top);
+    const textBottom = Math.max(titleRect.bottom, metaRect.bottom);
+    const textRight = titleRect.left + Math.max(titleEl.scrollWidth, metaRow.scrollWidth) + 16;
+
+    if (
+        event.clientX >= titleRect.left &&
+        event.clientX <= textRight &&
+        event.clientY >= textTop &&
+        event.clientY <= textBottom
+    ) {
+      return true;
+    }
+  }
+
+  const header = document.querySelector(".header");
+  if (header && event.clientY <= header.getBoundingClientRect().bottom + 10) {
+    return true;
+  }
+
+  return false;
+};
+
 root.addEventListener("click", event => {
-  if (playbackErrorText()) return;
-  if (event.target.closest("button,input")) return;
+  if (playbackErrorText() || isControlsSurfaceEvent(event)) return;
   window.clearTimeout(tapTimer);
   tapTimer = window.setTimeout(() => {
     requestPlaybackState("setPlaybackStateQuiet", false);
@@ -2894,8 +2932,7 @@ root.addEventListener("click", event => {
 });
 
 root.addEventListener("dblclick", event => {
-  if (playbackErrorText()) return;
-  if (event.target.closest("button,input")) return;
+  if (playbackErrorText() || isControlsSurfaceEvent(event)) return;
   event.preventDefault();
   window.clearTimeout(tapTimer);
   togglePlayerFullscreen();

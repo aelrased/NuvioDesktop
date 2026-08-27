@@ -18,6 +18,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -79,6 +80,7 @@ import com.nuvio.app.features.details.SeasonViewModeStorage
 import com.nuvio.app.features.details.formatRuntimeFromMinutes
 import com.nuvio.app.features.details.metaVideoSeasonEpisodeComparator
 import com.nuvio.app.features.details.normalizeSeasonNumber
+import com.nuvio.app.features.details.preferredEpisodeNumberForSeason
 import com.nuvio.app.features.details.seasonSortKey
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
@@ -302,7 +304,11 @@ fun DetailSeriesContent(
                             progressByVideoId = progressByVideoId,
                             episodeRatings = episodeRatings,
                             blurUnwatchedEpisodes = blurUnwatchedEpisodes,
-                            preferredEpisodeNumber = preferredEpisodeNumber,
+                            preferredEpisodeNumber = preferredEpisodeNumberForSeason(
+                                displayedSeasonNumber = seasonForContent,
+                                preferredSeasonNumber = preferredSeasonNumber,
+                                preferredEpisodeNumber = preferredEpisodeNumber,
+                            ),
                             onEpisodeClick = onEpisodeClick,
                             onEpisodeLongPress = onEpisodeLongPress,
                         )
@@ -321,7 +327,7 @@ fun DetailSeriesContent(
                                     video = episode,
                                     fallbackImage = meta.background ?: meta.poster,
                                     progressEntry = progressByVideoId[episodeVideoId],
-                                    imdbRating = episode.seasonEpisodeKey()?.let { episodeRatings[it] },
+                                    imdbRating = episode.seasonEpisodeKey()?.let { episodeRatings[it] } ?: episode.rating,
                                     isWatched = progressByVideoId[episodeVideoId]?.isEffectivelyCompleted == true ||
                                         WatchingState.isEpisodeWatched(
                                             watchedKeys = watchedKeys,
@@ -655,7 +661,7 @@ private fun EpisodeHorizontalRow(
                 video = episode,
                 fallbackImage = fallbackImage,
                 progressEntry = progressByVideoId[episodeVideoId],
-                imdbRating = episode.seasonEpisodeKey()?.let { episodeRatings[it] },
+                imdbRating = episode.seasonEpisodeKey()?.let { episodeRatings[it] } ?: episode.rating,
                 isWatched = progressByVideoId[episodeVideoId]?.isEffectivelyCompleted == true ||
                     WatchingState.isEpisodeWatched(
                         watchedKeys = watchedKeys,
@@ -878,7 +884,9 @@ private data class EpisodeHorizontalCardMetrics(
 
 @Composable
 private fun rememberEpisodeHorizontalCardMetrics(maxWidthDp: Float): EpisodeHorizontalCardMetrics {
-    return remember(maxWidthDp) {
+    val posterCardStyle = rememberPosterCardStyleUiState()
+    val userCornerRadius = posterCardStyle.cornerRadiusDp.dp
+    return remember(maxWidthDp, userCornerRadius) {
         when {
             maxWidthDp >= 1300f -> EpisodeHorizontalCardMetrics(
                 rowHorizontalPadding = 0.dp,
@@ -886,7 +894,7 @@ private fun rememberEpisodeHorizontalCardMetrics(maxWidthDp: Float): EpisodeHori
                 itemSpacing = 18.dp,
                 cardWidth = 420.dp,
                 cardHeight = 256.dp,
-                cornerRadius = 18.dp,
+                cornerRadius = userCornerRadius,
                 contentPadding = 16.dp,
                 contentBottomPadding = 18.dp,
                 titleTextSize = 18.sp,
@@ -909,7 +917,7 @@ private fun rememberEpisodeHorizontalCardMetrics(maxWidthDp: Float): EpisodeHori
                 itemSpacing = 16.dp,
                 cardWidth = 384.dp,
                 cardHeight = 236.dp,
-                cornerRadius = 16.dp,
+                cornerRadius = userCornerRadius,
                 contentPadding = 14.dp,
                 contentBottomPadding = 16.dp,
                 titleTextSize = 17.sp,
@@ -932,7 +940,7 @@ private fun rememberEpisodeHorizontalCardMetrics(maxWidthDp: Float): EpisodeHori
                 itemSpacing = 14.dp,
                 cardWidth = 340.dp,
                 cardHeight = 212.dp,
-                cornerRadius = 14.dp,
+                cornerRadius = userCornerRadius,
                 contentPadding = 12.dp,
                 contentBottomPadding = 14.dp,
                 titleTextSize = 16.sp,
@@ -955,7 +963,7 @@ private fun rememberEpisodeHorizontalCardMetrics(maxWidthDp: Float): EpisodeHori
                 itemSpacing = 12.dp,
                 cardWidth = 296.dp,
                 cardHeight = 184.dp,
-                cornerRadius = 14.dp,
+                cornerRadius = userCornerRadius,
                 contentPadding = 10.dp,
                 contentBottomPadding = 12.dp,
                 titleTextSize = 14.sp,

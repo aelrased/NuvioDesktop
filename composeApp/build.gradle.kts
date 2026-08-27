@@ -1190,6 +1190,9 @@ kotlin {
                         extraOpts("-libraryPath", nuvioEngineSliceDirectory.absolutePath)
                     }
                 }
+                configureEach {
+                    extraOpts("-Xccall-mode", "direct")
+                }
             }
 
             if (iosDistribution == "full") {
@@ -1431,6 +1434,9 @@ compose.desktop {
                 iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.png"))
                 rpmLicenseType = "Proprietary"
                 debMaintainer = "contact@nuvio.tv"
+                shortcut = true
+                menuGroup = "Nuvio"
+                appCategory = "AudioVideo"
             }
         }
 
@@ -1633,6 +1639,23 @@ fun publishWindowsMsiArtifact(msi: File) {
     logger.lifecycle("Published Windows MSI artifact: ${publishedMsi.absolutePath}")
 }
 
+fun normalizedLinuxArch(value: String): String =
+    when (value.lowercase()) {
+        "amd64", "x64", "x86_64" -> "x86_64"
+        "aarch64", "arm64" -> "aarch64"
+        else -> value.lowercase()
+    }
+
+val linuxAppImageArch = normalizedLinuxArch(System.getProperty("os.arch"))
+
+fun findExecutableOnPath(name: String): File? =
+    System.getenv("PATH")
+        ?.split(File.pathSeparatorChar)
+        ?.asSequence()
+        ?.map(::File)
+        ?.map { it.resolve(name) }
+        ?.firstOrNull { it.isFile && it.canExecute() }
+
 tasks.matching { it.name == "packageDmg" }.configureEach {
     doLast {
         if (!isMacosDmgNotarizationRequested) {
@@ -1678,8 +1701,113 @@ tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
 }
 
 if (isLinuxHost) {
-    val linuxDebPatchScript = rootProject.layout.projectDirectory.file("scripts/patch-linux-deb.sh")
-    val linuxDebVerifyScript = rootProject.layout.projectDirectory.file("scripts/verify-linux-deb.sh")
+    val linuxDebPatchScript = rootProject.layout.projectDirectory.file("scripts/linux/patch-linux-deb.sh")
+    val linuxDebVerifyScript = rootProject.layout.projectDirectory.file("scripts/linux/verify-linux-deb.sh")
+    val linuxRpmPatchScript = rootProject.layout.projectDirectory.file("scripts/linux/patch-linux-rpm.sh")
+    val linuxRpmVerifyScript = rootProject.layout.projectDirectory.file("scripts/linux/verify-linux-rpm.sh")
+    val linuxAppImageBuildScript = rootProject.layout.projectDirectory.file("scripts/linux/build-appimage.sh")
+
+    fun tailLines(text: String, maxLines: Int = 120): String {
+        val lines = text.lines()
+        if (lines.size <= maxLines) {
+            return text.trimEnd()
+        }
+        return lines.takeLast(maxLines).joinToString("\n").trimEnd()
+    }
+
+    fun runLinuxPackagingScript(command: List<String>, artifactLabel: String) {
+        val process = ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+        if (output.isNotBlank()) {
+            logger.lifecycle(output.trimEnd())
+        }
+        check(exitCode == 0) {
+            buildString {
+                appendLine("Linux $artifactLabel command failed with exit code $exitCode: ${command.joinToString(" ")}")
+                val trimmed = output.trim()
+                if (trimmed.isNotEmpty()) {
+                    appendLine("--- command output (tail) ---")
+                    appendLine(tailLines(trimmed))
+                } else {
+                    appendLine("--- command output ---")
+                    appendLine("<empty>")
+                }
+            }
+        }
+    }
+
+    fun publishLinuxAppImageOutput(
+        task: AbstractJPackageTask,
+        release: Boolean,
+        appImageBuildScript: File,
+    ) {
+        val outputDir = task.destinationDir.get().asFile
+        val effectivePackageName = task.packageName.get().toString()
+        val appRootCandidates = listOf(
+            outputDir.resolve(effectivePackageName),
+            outputDir.resolve(effectivePackageName.lowercase()),
+        )
+        val appRoot = appRootCandidates.firstOrNull(File::isDirectory)
+            ?: error("Expected Linux app-image directory in ${outputDir.absolutePath} for ${task.name}.")
+
+        val appImageTool = providers.gradleProperty("nuvio.appimagetool.path").orNull
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::File)
+            ?: System.getenv("APPIMAGETOOL")
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::File)
+            ?: findExecutableOnPath("appimagetool")
+            ?: error(
+                "AppImage packaging requires appimagetool. Install it on PATH, set APPIMAGETOOL, " +
+                    "or pass -Pnuvio.appimagetool.path=/path/to/appimagetool."
+            )
+
+        val updateInformation = providers.gradleProperty("nuvio.appimage.updateInformation").orNull
+            ?.takeIf { it.isNotBlank() }
+            ?: System.getenv("APPIMAGE_UPDATE_INFORMATION")?.takeIf { it.isNotBlank() }
+            ?: System.getenv("UPDATE_INFORMATION")?.takeIf { it.isNotBlank() }
+        val websiteUrl = providers.gradleProperty("nuvio.appimage.websiteUrl").orNull
+            ?.takeIf { it.isNotBlank() }
+            ?: System.getenv("APPIMAGE_WEBSITE_URL")?.takeIf { it.isNotBlank() }
+
+        val distributionName = if (release) "main-release" else "main"
+        val appImageName = "Nuvio-Linux-$linuxAppImageArch-$desktopReleaseVersionName.AppImage"
+        val outputAppImage = layout.buildDirectory
+            .dir("compose/binaries/$distributionName/app")
+            .get()
+            .asFile
+            .resolve(appImageName)
+
+        runLinuxPackagingScript(
+            buildList {
+                add("bash")
+                add(appImageBuildScript.absolutePath)
+                add(appRoot.absolutePath)
+                add(outputAppImage.absolutePath)
+                add(appImageTool.absolutePath)
+                if (updateInformation != null) {
+                    add("--update-information")
+                    add(updateInformation)
+                }
+                if (websiteUrl != null) {
+                    add("--website-url")
+                    add(websiteUrl)
+                }
+            },
+            "AppImage",
+        )
+
+        val publishedDir = layout.buildDirectory.dir("compose/release-appimages").get().asFile
+        publishedDir.mkdirs()
+        val publishedAppImage = publishedDir.resolve(appImageName)
+        if (outputAppImage.canonicalFile != publishedAppImage.canonicalFile) {
+            outputAppImage.copyTo(publishedAppImage, overwrite = true)
+        }
+        logger.lifecycle("Published Linux AppImage artifact: ${publishedAppImage.absolutePath}")
+    }
 
     tasks.withType<AbstractJPackageTask>()
         .matching { it.name == "packageDeb" || it.name == "packageReleaseDeb" }
@@ -1702,14 +1830,48 @@ if (isLinuxHost) {
                 val deb = debs.single()
                 listOf(linuxDebPatchScript, linuxDebVerifyScript).forEach { script ->
                     val command = listOf("bash", script.asFile.absolutePath, deb.absolutePath)
-                    val exitCode = ProcessBuilder(command)
-                        .inheritIO()
-                        .start()
-                        .waitFor()
-                    check(exitCode == 0) {
-                        "Linux DEB command failed with exit code $exitCode: ${command.joinToString(" ")}"
-                    }
+                    runLinuxPackagingScript(command, "DEB")
                 }
+            }
+        }
+
+    tasks.withType<AbstractJPackageTask>()
+        .matching { it.name == "packageRpm" || it.name == "packageReleaseRpm" }
+        .configureEach {
+            doLast {
+                val effectiveLinuxPackageName = linuxPackageName.orNull ?: packageName.get().lowercase()
+                val effectiveLinuxAppRelease = linuxAppRelease.orNull ?: "1"
+                val artifactPrefix =
+                    "${effectiveLinuxPackageName}-${packageVersion.get()}-${effectiveLinuxAppRelease}."
+                val rpms = destinationDir.get().asFile
+                    .listFiles { file ->
+                        file.isFile && file.name.startsWith(artifactPrefix) && file.extension == "rpm"
+                    }
+                    ?.sortedBy { it.name }
+                    .orEmpty()
+                require(rpms.size == 1) {
+                    "Expected exactly one current Linux RPM matching $artifactPrefix in " +
+                        "${destinationDir.get().asFile.absolutePath}, found ${rpms.size}."
+                }
+                val rpm = rpms.single()
+                listOf(linuxRpmPatchScript, linuxRpmVerifyScript).forEach { script ->
+                    val command = listOf("bash", script.asFile.absolutePath, rpm.absolutePath)
+                    runLinuxPackagingScript(command, "RPM")
+                }
+            }
+        }
+
+    tasks.withType<AbstractJPackageTask>()
+        .matching { it.name == "packageAppImage" || it.name == "packageReleaseAppImage" }
+        .configureEach {
+            notCompatibleWithConfigurationCache("Linux AppImage artifact publication uses script file operations.")
+            doLast {
+                val packageTask = this as AbstractJPackageTask
+                publishLinuxAppImageOutput(
+                    task = packageTask,
+                    release = packageTask.name == "packageReleaseAppImage",
+                    appImageBuildScript = linuxAppImageBuildScript.asFile,
+                )
             }
         }
 }

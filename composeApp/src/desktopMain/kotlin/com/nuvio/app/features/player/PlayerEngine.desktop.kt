@@ -365,21 +365,17 @@ private fun NativePlayerSurface(
         onDispose { controller.dispose() }
     }
 
-    // Linux: the bridge grants the controls overlay real X input focus (the
-    // position WKWebView/WebView2 hold natively on macOS/Windows), so the page's
-    // own keydown handler drives every shortcut — no Kotlin key map. When the AWT
-    // window regains focus (alt-tab back, a click the WM answers by focusing the
-    // toplevel) the X server has taken the keyboard back — hand it to the overlay
-    // again while the player is attached.
-    if (DesktopHostOs.current == DesktopHostOs.LINUX) {
-        DisposableEffect(controller, hostFirstFullSizePaintComplete.value) {
-            val uninstall = if (hostFirstFullSizePaintComplete.value) {
-                controller.installWindowFocusForwarding()
-            } else {
-                null
-            }
-            onDispose { uninstall?.invoke() }
+    // The controls overlay owns the player shortcuts. After alt-tab, desktop
+    // window focus can return to the AWT/Compose host instead of the embedded
+    // WebView, so explicitly hand keyboard focus back to the native controls
+    // whenever the player window becomes active again.
+    DisposableEffect(controller, hostFirstFullSizePaintComplete.value) {
+        val uninstall = if (hostFirstFullSizePaintComplete.value) {
+            controller.installWindowFocusForwarding()
+        } else {
+            null
         }
+        onDispose { uninstall?.invoke() }
     }
 
     LaunchedEffect(

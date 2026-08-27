@@ -54,6 +54,12 @@ if ! dpkg-deb --contents "$deb" > "$contents_file"; then
     exit 1
 fi
 
+if ! awk '{print $6}' "$contents_file" | grep -Eq '^\./usr/share/applications/.+\.desktop$'; then
+    echo "DEB does not install a desktop launcher under /usr/share/applications." >&2
+    awk '{print $6}' "$contents_file" | grep -E '\.desktop$|^\./opt/' >&2 || true
+    exit 1
+fi
+
 non_root_entry=""
 while read -r _mode owner_group _size _date _time path; do
     if [[ "$owner_group" != "root/root" && -z "$non_root_entry" ]]; then

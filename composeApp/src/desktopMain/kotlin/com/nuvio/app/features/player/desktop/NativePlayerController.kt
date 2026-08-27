@@ -51,6 +51,7 @@ internal class NativePlayerController(
     private val host: PlayerHost,
     private val nativeCreate: NativePlayerCreate = NativePlayerBridge::create,
     private val nativeDispose: (Long) -> Unit = NativePlayerBridge::dispose,
+    private val nativeSeekTo: (Long, Long) -> Unit = NativePlayerBridge::seekTo,
     private val isHostDisplayable: () -> Boolean = { (host as? java.awt.Component)?.isDisplayable == true },
     private val resolveHostView: () -> Long = { AwtNativeViewResolver.resolveNativeViewPointer(host as java.awt.Component) },
     private val createWaitTimeoutMs: Long = 5_000L,
@@ -66,6 +67,9 @@ internal class NativePlayerController(
 
         @Volatile
         var rememberedVolumeLevel: Float = DesktopPlayerVolumeStorage.loadVolumeLevel() ?: 1f
+
+        @Volatile
+        var rememberedResizeMode: PlayerResizeMode = PlayerResizeMode.Fit
     }
 
     private data class ReleaseCallback(
@@ -351,6 +355,7 @@ internal class NativePlayerController(
                         }
                         applyRememberedVolume()
                         updateControls(controlsState)
+                        setResizeMode(rememberedResizeMode)
                         applyPendingSubtitleSettings()
                     }
                 }.onFailure { error ->
@@ -466,11 +471,10 @@ internal class NativePlayerController(
         }
     }
 
-    // Linux: while the player is attached the controls overlay owns X input
-    // focus (granted by the bridge at webview creation). The AWT window gaining
-    // focus means the X server moved the keyboard back to the toplevel — push
-    // it to the overlay again. Returns the uninstaller; null until the host is
-    // inside a window (the ancestor does not exist before the first paint).
+    // The embedded controls WebView can lose keyboard focus when the desktop
+    // window is reactivated (for example after alt-tab). Re-apply native focus
+    // whenever the host window gains focus. Returns the uninstaller; null until
+    // the host is inside a window (the ancestor does not exist before first paint).
     fun installWindowFocusForwarding(): (() -> Unit)? {
         val window = SwingUtilities.getWindowAncestor(host) ?: return null
         val listener = object : WindowAdapter() {
@@ -530,6 +534,7 @@ internal class NativePlayerController(
     }
 
     fun setResizeMode(mode: PlayerResizeMode) {
+        rememberedResizeMode = mode
         handle.takeIf { it != 0L }?.let { current ->
             NativePlayerBridge.setResizeMode(
                 handle = current,
@@ -960,7 +965,14 @@ internal class NativePlayerController(
 
     override fun seekTo(positionMs: Long) {
         log.d { "seekTo positionMs=$positionMs handle=$handle" }
-        handle.takeIf { it != 0L }?.let { NativePlayerBridge.seekTo(it, positionMs) }
+        handle.takeIf { it != 0L }?.let { nativeSeekTo(it, positionMs) }
+    }
+
+    override fun trySeekTo(positionMs: Long): Boolean {
+        val current = handle.takeIf { it != 0L } ?: return false
+        log.d { "trySeekTo positionMs=$positionMs handle=$current" }
+        nativeSeekTo(current, positionMs)
+        return true
     }
 
     override fun seekBy(offsetMs: Long) {
