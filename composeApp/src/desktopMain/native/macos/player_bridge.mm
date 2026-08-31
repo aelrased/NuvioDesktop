@@ -42,6 +42,8 @@
 #define NX_KEYTYPE_REWIND 20
 #endif
 
+static constexpr double kMaxVolumePercent = 200.0;
+
 @class PlayerMetalView;
 @class MpvWebPlayer;
 @class NuvioPlayerOpenGLLayer;
@@ -87,6 +89,7 @@
                    playWhenReady:(BOOL)playWhenReady
                 initialPositionMs:(long long)initialPositionMs
                       controlsUrl:(NSString *)controlsUrl
+                   decoderPriority:(int)decoderPriority
                            javaVm:(JavaVM *)javaVm
                         eventSink:(jobject)eventSink
                       eventMethod:(jmethodID)eventMethod;
@@ -1071,6 +1074,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                    playWhenReady:(BOOL)playWhenReady
                 initialPositionMs:(long long)initialPositionMs
                       controlsUrl:(NSString *)controlsUrl
+                   decoderPriority:(int)decoderPriority
                            javaVm:(JavaVM *)javaVm
                         eventSink:(jobject)eventSink
                       eventMethod:(jmethodID)eventMethod {
@@ -1164,7 +1168,8 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     [self startMpvWithSource:sourceUrl
                  headerLines:headerLines
                 playWhenReady:playWhenReady
-             initialPositionMs:initialPositionMs];
+             initialPositionMs:initialPositionMs
+              decoderPriority:decoderPriority];
     _timer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                              target:self
                                            selector:@selector(syncControls)
@@ -1409,7 +1414,8 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 - (void)startMpvWithSource:(NSString *)sourceUrl
                headerLines:(NSArray<NSString *> *)headerLines
               playWhenReady:(BOOL)playWhenReady
-           initialPositionMs:(long long)initialPositionMs {
+           initialPositionMs:(long long)initialPositionMs
+            decoderPriority:(int)decoderPriority {
     _mpv = mpv_create();
     if (!_mpv) {
         @throw [NSException exceptionWithName:@"PlayerBridgeError"
@@ -1418,11 +1424,12 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     }
     _initialStartSeconds = initialPositionMs > 0 ? (double)initialPositionMs / 1000.0 : 0.0;
 
-    setMpvOptionString(_mpv, "config", "yes");
+    setMpvOptionString(_mpv, "config", "no");
     setMpvOptionString(_mpv, "osc", "no");
     setMpvOptionString(_mpv, "input-default-bindings", "yes");
     setMpvOptionString(_mpv, "input-vo-keyboard", "no");
     setMpvOptionString(_mpv, "keep-open", "yes");
+    setMpvOptionString(_mpv, "volume-max", "200");
     setMpvOptionString(_mpv, "vo", "libmpv");
     setMpvOptionString(_mpv, "ao", "avfoundation,coreaudio,");
     setMpvOptionString(_mpv, "audio-channels", "auto");
@@ -1462,16 +1469,6 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     if (initResult < 0) {
         NSString *reason = [NSString stringWithFormat:@"mpv_initialize failed: %s", mpv_error_string(initResult)];
         @throw [NSException exceptionWithName:@"PlayerBridgeError" reason:reason userInfo:nil];
-    }
-
-    /* Force critical options after mpv.conf (user config must not break rendering) */
-    {
-        NSString *userVo = [self stringProperty:"vo" fallback:@""];
-        if (![userVo isEqualToString:@"libmpv"]) {
-            NSLog(@"[NuvioPlayer] Warning: mpv.conf set vo=%@, overriding to vo=libmpv "
-                  @"(required for embedded playback)", userVo);
-        }
-        [self setStringProperty:"vo" value:@"libmpv"];
     }
 
     NSString *renderError = nil;
@@ -1523,6 +1520,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
             double duration = [self doubleProperty:"duration" fallback:0.0];
             double position = [self doubleProperty:"time-pos" fallback:0.0];
+            double volumeLevel = [self volume];
             double cacheAhead = [self cacheAheadSecondsForPosition:position];
             BOOL paused = [self rawIsPaused];
             BOOL ended = [self rawIsEnded];
@@ -1547,9 +1545,10 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                 }
                 [self applyHdrForPolledGamma:gamma primaries:primaries reason:@"sync" force:NO];
                 NSString *script = [NSString stringWithFormat:
-                    @"window.playerUpdate({duration:%0.3f,position:%0.3f,paused:%@,loading:%@,audioTracks:%@,subtitleTracks:%@})",
+                    @"window.playerUpdate({duration:%0.3f,position:%0.3f,volumeLevel:%0.3f,paused:%@,loading:%@,audioTracks:%@,subtitleTracks:%@})",
                     duration,
                     position,
+                    volumeLevel,
                     paused ? @"true" : @"false",
                     loading ? @"true" : @"false",
                     audioTracks,
@@ -1849,18 +1848,19 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 - (void)adjustVolume:(double)delta {
     if (!_mpv) return;
     double current = [self doubleProperty:"volume" fallback:100.0];
-    double next = fmax(0.0, fmin(100.0, current + delta));
+    double next = fmax(0.0, fmin(kMaxVolumePercent, current + delta));
     mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
 }
 
 - (void)setVolume:(double)level {
     if (!_mpv) return;
-    double next = fmax(0.0, fmin(100.0, level * 100.0));
+    double next = fmax(0.0, fmin(kMaxVolumePercent, level * 100.0));
     mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
 }
 
 - (double)volume {
-    return [self doubleProperty:"volume" fallback:100.0] / 100.0;
+    double level = [self doubleProperty:"volume" fallback:100.0];
+    return fmax(0.0, fmin(kMaxVolumePercent, level)) / 100.0;
 }
 
 - (void)setResizeMode:(int)mode {
@@ -2542,17 +2542,15 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     JNIEnv *env,
     jobject /* bridge */,
     jlong hostViewPtr,
-    jint hostWidth, jint hostHeight,
     jstring sourceUrl,
     jobjectArray headerLines,
     jboolean playWhenReady,
     jlong initialPositionMs,
     jstring controlsPageUrl,
-    jint decoderPriority, jboolean nvidiaRtxSuperResolutionEnabled,
+    jint decoderPriority,
+    jboolean nvidiaRtxSuperResolutionEnabled,
     jobject eventSink
 ) {
-    (void)hostWidth; (void)hostHeight;
-    (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
     NSView *hostView = (__bridge NSView *)(void *)(intptr_t)hostViewPtr;
     if (!hostView) {
         throwJavaError(env, @"Unable to resolve the AWT host NSView for native playback.");
@@ -2591,6 +2589,7 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
                    playWhenReady:playWhenReady == JNI_TRUE
                 initialPositionMs:initialPositionMs
                      controlsUrl:[NSString stringWithUTF8String:controls.c_str()]
+                 decoderPriority:decoderPriority
                           javaVm:javaVm
                        eventSink:eventSinkRef
                      eventMethod:eventMethod];

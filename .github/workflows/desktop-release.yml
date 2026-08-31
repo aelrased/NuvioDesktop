@@ -648,7 +648,12 @@ jobs:
 
           mkdir -p flatpak
           cp ./scripts/linux/nuvio-launcher.sh flatpak/nuvio-launcher.sh
+          cp ./scripts/linux/linux-shortcut-definition.sh flatpak/linux-shortcut-definition.sh
+          cp ./scripts/linux/com.nuvio.media.desktop.metainfo.xml flatpak/com.nuvio.media.desktop.metainfo.xml
           chmod +x flatpak/nuvio-launcher.sh
+          release_date="$(date -u +%F)"
+          sed -i "s|version=\"0.0.0\"|version=\"${RELEASE_VERSION}\"|" flatpak/com.nuvio.media.desktop.metainfo.xml
+          sed -i "s|date=\"1970-01-01\"|date=\"${release_date}\"|" flatpak/com.nuvio.media.desktop.metainfo.xml
           
           cp ./scripts/linux/nuvio-flatpak.yml flatpak/nuvio-flatpak.yml
           sed -i "s|\${app_root}|${app_root}|g" flatpak/nuvio-flatpak.yml

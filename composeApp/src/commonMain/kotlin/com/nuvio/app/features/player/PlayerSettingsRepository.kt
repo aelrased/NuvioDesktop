@@ -93,8 +93,6 @@ data class PlayerSettingsUiState(
     val iosContrast: Int = 0,
     val iosSaturation: Int = 0,
     val iosGamma: Int = 0,
-    val desktopHwdecMode: DesktopHwdecMode = DesktopHwdecMode.Auto,
-    val customMpvProperties: String = "",
     val nvidiaRtxSuperResolutionEnabled: Boolean = false,
 )
 
@@ -163,8 +161,6 @@ object PlayerSettingsRepository {
     private var iosContrast = 0
     private var iosSaturation = 0
     private var iosGamma = 0
-    private var desktopHwdecMode = DesktopHwdecMode.Auto
-    private var customMpvProperties = ""
     private var nvidiaRtxSuperResolutionEnabled = false
 
     fun ensureLoaded() {
@@ -238,8 +234,6 @@ object PlayerSettingsRepository {
         iosContrast = 0
         iosSaturation = 0
         iosGamma = 0
-        desktopHwdecMode = DesktopHwdecMode.Auto
-        customMpvProperties = ""
         nvidiaRtxSuperResolutionEnabled = false
         publish()
     }
@@ -388,10 +382,6 @@ object PlayerSettingsRepository {
         iosContrast = PlayerSettingsStorage.loadIosContrast() ?: 0
         iosSaturation = PlayerSettingsStorage.loadIosSaturation() ?: 0
         iosGamma = PlayerSettingsStorage.loadIosGamma() ?: 0
-        desktopHwdecMode = PlayerSettingsStorage.loadDesktopHwdecMode()
-            ?.let { runCatching { DesktopHwdecMode.valueOf(it) }.getOrNull() }
-            ?: DesktopHwdecMode.Auto
-        customMpvProperties = PlayerSettingsStorage.loadCustomMpvProperties() ?: ""
         nvidiaRtxSuperResolutionEnabled = PlayerSettingsStorage.loadNvidiaRtxSuperResolutionEnabled() ?: false
         publish()
     }
@@ -936,22 +926,6 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveIosGamma(iosGamma)
     }
 
-    fun setDesktopHwdecMode(mode: DesktopHwdecMode) {
-        ensureLoaded()
-        if (desktopHwdecMode == mode) return
-        desktopHwdecMode = mode
-        publish()
-        PlayerSettingsStorage.saveDesktopHwdecMode(mode.name)
-    }
-
-    fun setCustomMpvProperties(props: String) {
-        ensureLoaded()
-        if (customMpvProperties == props) return
-        customMpvProperties = props
-        publish()
-        PlayerSettingsStorage.saveCustomMpvProperties(props)
-    }
-
     fun resetIosVideoOutputTuning() {
         ensureLoaded()
         iosBrightness = 0
@@ -1041,8 +1015,6 @@ object PlayerSettingsRepository {
             iosContrast = iosContrast,
             iosSaturation = iosSaturation,
             iosGamma = iosGamma,
-            desktopHwdecMode = desktopHwdecMode,
-            customMpvProperties = customMpvProperties,
             nvidiaRtxSuperResolutionEnabled = nvidiaRtxSuperResolutionEnabled,
         )
     }

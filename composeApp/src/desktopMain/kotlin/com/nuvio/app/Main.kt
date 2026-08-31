@@ -1,7 +1,6 @@
 package com.nuvio.app
 
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -10,9 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import org.jetbrains.compose.resources.painterResource
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
@@ -33,7 +30,6 @@ import com.nuvio.app.features.player.desktop.DesktopWindowModeStorage
 import com.nuvio.app.features.player.desktop.NativePlayerBridge
 import com.nuvio.app.features.player.desktop.applyNativeDesktopWindowChrome
 import com.nuvio.app.features.player.desktop.installDesktopAppFullscreenShortcuts
-import com.nuvio.app.features.player.desktop.installDesktopMouseButtonShortcuts
 import com.nuvio.app.features.player.desktop.preloadNativePlayerBridgeAsync
 import com.nuvio.app.features.player.desktop.registerDesktopAppFullscreenToggle
 import com.nuvio.app.features.profiles.ProfileRepository
@@ -43,59 +39,10 @@ import com.nuvio.app.features.settings.transparentPreviewResource
 import java.awt.Desktop
 import javax.imageio.ImageIO
 import java.awt.Color as AwtColor
-import java.awt.Toolkit
-import java.awt.image.BufferedImage
-import javax.imageio.ImageIO
 import javax.swing.JComponent
 
 private val NuvioDesktopNativeBackground = AwtColor(0x0D, 0x0D, 0x0D)
 private const val MacosDarkAquaAppearance = "NSAppearanceNameDarkAqua"
-
-private fun linuxDensity(): Float {
-    return System.getProperty("sun.java2d.uiScale")?.toFloatOrNull() ?: 1.0f
-}
-
-private fun centeredWindowPosition(widthDp: Float, heightDp: Float): WindowPosition {
-    val toolkit = Toolkit.getDefaultToolkit()
-    val screen = toolkit.screenSize
-    val density = linuxDensity()
-    val screenW = screen.width / density
-    val screenH = screen.height / density
-    val x = ((screenW - widthDp) / 2f).coerceAtLeast(0f)
-    val y = ((screenH - heightDp) / 2f).coerceAtLeast(0f)
-    return WindowPosition.Absolute(x.dp, y.dp)
-}
-
-private fun loadDesktopIconImages(): List<BufferedImage> {
-    val classLoader = Thread.currentThread().contextClassLoader
-    val sizes = listOf(16, 24, 32, 48, 64, 72, 96, 128, 256)
-    return sizes.mapNotNull { size ->
-        runCatching {
-            val resource = classLoader.getResourceAsStream("icons/nuvio_${size}.png")
-            if (resource != null) {
-                resource.use { ImageIO.read(it) }
-            } else {
-                null
-            }
-        }.getOrNull()
-    }.ifEmpty {
-        listOfNotNull(
-            runCatching {
-                classLoader.getResourceAsStream(NuvioDesktopIconPath)?.use { ImageIO.read(it) }
-            }.getOrNull(),
-        )
-    }
-}
-
-private fun setLinuxTaskbarIcon(window: java.awt.Window) {
-    if (!System.getProperty("os.name").contains("linux", ignoreCase = true)) return
-    runCatching {
-        val iconImages = loadDesktopIconImages()
-        if (iconImages.isNotEmpty()) {
-            window.iconImages = iconImages
-        }
-    }
-}
 
 fun main(args: Array<String>) {
     // On Linux, initialize GTK BEFORE AWT/Compose/Skia to prevent GdkDisplayManager
@@ -107,7 +54,6 @@ fun main(args: Array<String>) {
     SentryInitializer.start()
     configureDesktopQuickJsLibrary()
     configureDesktopChrome()
-    installLinuxDesktopIntegration()
     installDesktopOpenUriHandler()
     handleDesktopLaunchArgs(args)
     preloadNativePlayerBridgeAsync()
@@ -147,12 +93,6 @@ fun main(args: Array<String>) {
                 java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
             }.getOrNull()
         }
-        val (screenW, screenH) = remember {
-            val s = Toolkit.getDefaultToolkit().screenSize
-            Pair(s.width, s.height)
-        }
-        val defaultWidth = (screenW * 0.75f)
-        val defaultHeight = (screenH * 0.88f)
         val initialWidth = when {
             isStartingMaximizedOrFullscreen && maxScreenBounds != null -> maxScreenBounds.width.dp
             savedGeometry != null -> savedGeometry.width.dp
@@ -167,10 +107,7 @@ fun main(args: Array<String>) {
             width = initialWidth,
             height = initialHeight,
             position = savedGeometry?.let { WindowPosition.Absolute(x = it.x.dp, y = it.y.dp) }
-                ?: WindowPosition.Absolute(
-                    ((screenW - defaultWidth) / 2f).dp,
-                    ((screenH - defaultHeight) / 2f).dp,
-                ),
+                ?: WindowPosition.PlatformDefault,
             // Windows fullscreen is emulated natively (see DesktopAppFullscreenController)
             // rather than driven by WindowPlacement, so it's restored separately below.
             placement = initialPlacement,
@@ -193,7 +130,6 @@ fun main(args: Array<String>) {
                 window.rootPane.background = NuvioDesktopNativeBackground
                 window.contentPane.background = NuvioDesktopNativeBackground
                 (window.contentPane as? JComponent)?.isOpaque = true
-                setLinuxTaskbarIcon(window)
             }
             LaunchedEffect(window, appIconState.selected) {
                 val backgroundSuffix = "-transparent"
@@ -260,30 +196,15 @@ fun main(args: Array<String>) {
                     },
                 )
                 val uninstallFullscreenShortcuts = installDesktopAppFullscreenShortcuts(window)
-                val uninstallMouseButtonShortcuts = installDesktopMouseButtonShortcuts(window)
                 onDispose {
                     fullscreenController.dispose(window)
                     uninstallFullscreenShortcuts()
-                    uninstallMouseButtonShortcuts()
                     unregisterFullscreenToggle()
                 }
             }
 
-            val linuxScale = if (DesktopHostOs.current == DesktopHostOs.LINUX) linuxScaleFactor() else null
-
             if (smokePlayerUrl == null) {
-                if (linuxScale != null) {
-                    val currentDensity = LocalDensity.current
-                    val scaledDensity = Density(
-                        density = currentDensity.density * linuxScale,
-                        fontScale = currentDensity.fontScale * linuxScale,
-                    )
-                    CompositionLocalProvider(LocalDensity provides scaledDensity) {
-                        App()
-                    }
-                } else {
-                    App()
-                }
+                App()
             } else {
                 // The player surface reads LocalNuvioPlatformDensity, which only
                 // NuvioTheme provides — the bare smoke harness must supply it too.
@@ -305,27 +226,6 @@ private fun configureDesktopChrome() {
     if (System.getProperty("os.name").contains("mac", ignoreCase = true)) {
         System.setProperty("apple.awt.application.appearance", MacosDarkAquaAppearance)
     }
-    if (System.getProperty("os.name").contains("linux", ignoreCase = true)) {
-        configureLinuxDpiScaling()
-    }
-}
-
-private fun configureLinuxDpiScaling() {
-    val env = System.getenv("NUVIO_SCALE_FACTOR")
-    if (!env.isNullOrBlank()) {
-        System.setProperty("sun.java2d.uiScale", env)
-        return
-    }
-
-    val existingScale = System.getProperty("sun.java2d.uiScale")
-    if (!existingScale.isNullOrBlank()) return
-
-    System.setProperty("sun.java2d.uiScale", "1.5")
-}
-
-private fun linuxScaleFactor(): Float {
-    val env = System.getenv("NUVIO_SCALE_FACTOR")?.toFloatOrNull()
-    return env ?: 1.5f
 }
 
 private fun installDesktopOpenUriHandler() {

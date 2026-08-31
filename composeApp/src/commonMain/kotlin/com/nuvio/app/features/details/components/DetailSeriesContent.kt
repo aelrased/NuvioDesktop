@@ -73,6 +73,7 @@ import com.nuvio.app.core.ui.nuvioHorizontalScrollBleed
 import com.nuvio.app.core.ui.posterCardClickable
 import com.nuvio.app.core.ui.secondaryClick
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.isDesktop
 import com.nuvio.app.features.details.MetaEpisodeCardStyle
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.details.SeasonViewMode
@@ -203,7 +204,11 @@ fun DetailSeriesContent(
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = if (isDesktop) {
+                            Arrangement.spacedBy(12.dp)
+                        } else {
+                            Arrangement.SpaceBetween
+                        },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
@@ -288,9 +293,11 @@ fun DetailSeriesContent(
                 Column(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    DetailSectionTitle(
-                        title = sectionTitle,
-                    )
+                    if (!isDesktop || seasons.size <= 1) {
+                        DetailSectionTitle(
+                            title = sectionTitle,
+                        )
+                    }
                     val seasonEpisodes = groupedEpisodes.getValue(seasonForContent)
                     if (episodeCardStyle == MetaEpisodeCardStyle.Horizontal) {
                         EpisodeHorizontalRow(

@@ -19,7 +19,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.URL
 import java.util.Properties
 import javax.inject.Inject
 
@@ -414,17 +413,6 @@ fun newestDirectory(root: File): File? =
         ?.listFiles(File::isDirectory)
         ?.maxByOrNull { semanticVersionSortKey(it.name) }
 
-fun List<String>.runCommand(): String? {
-    return try {
-        val proc = ProcessBuilder(this)
-            .redirectErrorStream(true)
-            .start()
-        val output = proc.inputStream.bufferedReader().readText().trim()
-        val exitCode = proc.waitFor()
-        if (exitCode != 0) null else output.takeIf { it.isNotEmpty() }
-    } catch (_: Exception) { null }
-}
-
 fun jpackageCompatibleVersion(version: String): String {
     val versionCore = version.substringBefore('-').substringBefore('+').trim()
     val parts = versionCore.split('.').filter { it.isNotBlank() }
@@ -612,7 +600,6 @@ val generateRuntimeConfigs = tasks.register<GenerateRuntimeConfigsTask>("generat
 
 val isMacHost = System.getProperty("os.name").contains("mac", ignoreCase = true)
 val isWindowsHost = System.getProperty("os.name").contains("win", ignoreCase = true)
-val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
 val prepareMacosTorrServerResources = tasks.register<PrepareMacosTorrServerResourcesTask>("prepareMacosTorrServerResources") {
     enabled = isMacHost
     sourceDir.set(layout.projectDirectory.dir("src/desktopMain/torrserver"))
@@ -731,6 +718,7 @@ val buildMacosPlayerBridge = tasks.register<Exec>("buildMacosPlayerBridge") {
 // Compiles a single JNI .so against the system libmpv + JDK JNI headers.
 // Requires a C++ toolchain, pkg-config, and libmpv development files on the
 // build host (all provided by the Nix dev shell).
+val isLinuxHost = System.getProperty("os.name").contains("linux", ignoreCase = true)
 val linuxPlayerBridgeSource = layout.projectDirectory.file("src/desktopMain/native/linux/player_bridge.cpp")
 val linuxPlayerBridgeOutput = layout.buildDirectory.file("native/linux/libplayer_bridge.so")
 val linuxPlayerBridgeJavaHome = providers.systemProperty("java.home").get()
@@ -930,9 +918,6 @@ val buildWindowsPlayerBridge = tasks.register<Exec>("buildWindowsPlayerBridge") 
     commandLine(windowsPlayerBridgeCommand)
 }
 
-val linuxPlayerRuntimeSource = layout.projectDirectory.dir("src/desktopMain/native/linux/live")
-val linuxPlayerRuntimeOutput = layout.buildDirectory.dir("native/linux-runtime")
-
 val prepareWindowsPlayerRuntime = tasks.register<Sync>("prepareWindowsPlayerRuntime") {
     enabled = isWindowsHost
     into(windowsPlayerRuntimeOutput)
@@ -942,16 +927,15 @@ val prepareWindowsPlayerRuntime = tasks.register<Sync>("prepareWindowsPlayerRunt
     windowsCppRuntimeDlls.forEach { dllFile ->
         from(dllFile)
     }
-    // Bundle libmpv-2.dll from the bundled runtime directory or from overrides
-    val libmpvSource = windowsLibmpvDll
-        ?: windowsLibmpvRuntimeDir?.let { dir ->
-            val dll = dir.resolve("libmpv-2.dll")
-            dll.takeIf(File::exists)
+    when {
+        windowsLibmpvRuntimeDir?.exists() == true -> {
+            from(windowsLibmpvRuntimeDir) {
+                include("*.dll")
+            }
         }
-    if (libmpvSource?.exists() == true) {
-        from(libmpvSource)
-    } else {
-        logger.warn("libmpv-2.dll not found. Pass -Pnuvio.windows.libmpv.runtimeDir=C:/path/to/mpv-dlls or bundle it under src/desktopMain/native/windows/runtime/")
+        windowsLibmpvDll?.exists() == true -> {
+            from(windowsLibmpvDll)
+        }
     }
 }
 
@@ -981,55 +965,6 @@ abstract class GenerateNativeRuntimeIndexTask : DefaultTask() {
     }
 }
 
-val prepareLinuxPlayerRuntime = tasks.register<Sync>("prepareLinuxPlayerRuntime") {
-    enabled = isLinuxHost
-    into(linuxPlayerRuntimeOutput)
-    if (linuxPlayerRuntimeSource.asFile.isDirectory) {
-        from(linuxPlayerRuntimeSource) {
-            include("*.so*")
-        }
-    }
-}
-
-val generateLinuxPlayerRuntimeIndex = tasks.register<GenerateNativeRuntimeIndexTask>("generateLinuxPlayerRuntimeIndex") {
-    enabled = isLinuxHost
-    dependsOn(prepareLinuxPlayerRuntime)
-    runtimeDir.set(linuxPlayerRuntimeOutput)
-    indexFile.set(linuxPlayerRuntimeOutput.map { it.file("runtime-files.txt") })
-}
-
-val torrserverOutputDir = layout.buildDirectory.dir("native/torrserver")
-
-val downloadTorrserver = tasks.register("downloadTorrserver") {
-    val sourceBinary = project.file("src/desktopMain/torrserver/linux-amd64/TorrServer")
-    val outputFile = torrserverOutputDir.get().file("torrserver").asFile
-    inputs.file(sourceBinary)
-    outputs.file(outputFile)
-    doLast {
-        outputFile.parentFile.mkdirs()
-        sourceBinary.copyTo(outputFile, overwrite = true)
-        outputFile.setExecutable(true)
-        logger.lifecycle("Copied TorrServer for Linux from ${sourceBinary.absolutePath} to ${outputFile.absolutePath}")
-    }
-}
-
-val downloadTorrserverWindows = tasks.register("downloadTorrserverWindows") {
-    enabled = isWindowsHost
-    val outputFile = torrserverOutputDir.get().file("torrserver.exe").asFile
-    outputs.file(outputFile)
-    doLast {
-        outputFile.parentFile.mkdirs()
-        val url = URL("https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-windows-amd64.exe")
-        logger.lifecycle("Downloading TorrServer for Windows from $url")
-        url.openStream().use { input ->
-            outputFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        logger.lifecycle("TorrServer downloaded to ${outputFile.absolutePath}")
-    }
-}
-
 val prepareMacosPlayerRuntime = tasks.register<Sync>("prepareMacosPlayerRuntime") {
     enabled = isMacHost
     from(bundledMacosLibmpvRuntimeDir) {
@@ -1050,60 +985,28 @@ val prepareMacosPlayerAppResources = tasks.register<Sync>("prepareMacosPlayerApp
 
 tasks.withType<Jar>().configureEach {
     if (isWindowsHost && name == "desktopJar") {
-        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex, downloadTorrserverWindows)
+        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
         from(windowsPlayerBridgeOutput) {
             into("native/windows")
         }
         from(windowsPlayerRuntimeOutput) {
             into("native/windows")
         }
-        from(torrserverOutputDir) {
-            into("native/torrserver")
-        }
     }
     if (isLinuxHost && name == "desktopJar") {
-        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex, downloadTorrserver)
+        dependsOn(buildLinuxPlayerBridge)
         from(linuxPlayerBridgeOutput) {
             into("native/linux")
         }
-        from(linuxPlayerRuntimeOutput) {
-            into("native/linux")
-        }
-        from(torrserverOutputDir) {
-            into("native/torrserver")
+        // TorrServer ships as a classpath resource so P2P streaming works from
+        // any working directory and in packaged builds (macOS does the same via
+        // prepareMacosTorrServerResources; Linux needs no signing pass).
+        from(layout.projectDirectory.dir("src/desktopMain/torrserver")) {
+            include("linux-amd64/**")
+            into("torrserver")
         }
     }
 }
-
-val desktopNativePlayerTasks = setOf(
-    "run",
-    "runRelease",
-    "desktopRun",
-    "runDistributable",
-    "runReleaseDistributable",
-    "desktopRunHot",
-    "hotRunDesktop",
-    "hotRunDesktopAsync",
-    "hotDevDesktop",
-    "hotDevDesktopAsync",
-    "createDistributable",
-    "createReleaseDistributable",
-    "createRuntimeImage",
-    "package",
-    "packageDistributionForCurrentOS",
-    "packageMsi",
-    "packageUberJarForCurrentOS",
-    "packageReleaseDistributionForCurrentOS",
-    "packageReleaseMsi",
-    "packageReleaseUberJarForCurrentOS",
-)
-val linuxNativePlayerTasks = desktopNativePlayerTasks + setOf(
-    "packageDeb", "packageReleaseDeb",
-    "packageRpm", "packageReleaseRpm",
-    "packageAppImage", "packageReleaseAppImage",
-    "buildAppImage",
-    "patchLinuxDebDependencies",
-)
 
 tasks.matching { it.name == "prepareAppResources" }.configureEach {
     if (isMacHost) {
@@ -1120,14 +1023,32 @@ tasks.withType<ProcessResources>().matching { it.name == "desktopProcessResource
         from(prepareMacosTorrServerResources.map { it.outputDir })
     }
 }
+
 if (isWindowsHost) {
+    val desktopNativePlayerTasks = setOf(
+        "run",
+        "runRelease",
+        "desktopRun",
+        "runDistributable",
+        "runReleaseDistributable",
+        "desktopRunHot",
+        "hotRunDesktop",
+        "hotRunDesktopAsync",
+        "hotDevDesktop",
+        "hotDevDesktopAsync",
+        "createDistributable",
+        "createReleaseDistributable",
+        "createRuntimeImage",
+        "package",
+        "packageDistributionForCurrentOS",
+        "packageMsi",
+        "packageUberJarForCurrentOS",
+        "packageReleaseDistributionForCurrentOS",
+        "packageReleaseMsi",
+        "packageReleaseUberJarForCurrentOS",
+    )
     tasks.matching { it.name in desktopNativePlayerTasks }.configureEach {
-        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex, downloadTorrserverWindows)
-    }
-}
-if (isLinuxHost) {
-    tasks.matching { it.name in linuxNativePlayerTasks }.configureEach {
-        dependsOn(buildLinuxPlayerBridge, prepareLinuxPlayerRuntime, generateLinuxPlayerRuntimeIndex, downloadTorrserver)
+        dependsOn(buildWindowsPlayerBridge, prepareWindowsPlayerRuntime, generateWindowsPlayerRuntimeIndex)
     }
 }
 
@@ -1328,7 +1249,6 @@ kotlin {
             implementation(libs.supabase.functions)
             implementation(libs.supabase.storage)
             implementation(libs.reorderable)
-            implementation(libs.kotlinx.atomicfu)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -1358,17 +1278,6 @@ compose.desktop {
             "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED",
             smokePlayerUrl?.takeIf { it.isNotBlank() }?.let { "-Dnuvio.desktop.smokePlayerUrl=$it" },
-            // ── Memory management ──
-            "-Xms256m",
-            "-Xmx2g",
-            "-XX:+UseG1GC",
-            "-XX:MaxGCPauseMillis=100",
-            "-XX:+UseStringDeduplication",
-            "-XX:SoftRefLRUPolicyMSPerMB=50",
-            // ── Linux: mpv renders directly via X11 wid + OpenGL, no SW copy ──
-            "-Dskiko.renderApi=OPENGL",
-            // ── Wayland support: auto-detect display server ──
-            "-Djdk.ozone.platform.hint=auto",
         )
 
         nativeDistributions {
@@ -1432,7 +1341,6 @@ compose.desktop {
             }
             linux {
                 iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.png"))
-                rpmLicenseType = "Proprietary"
                 debMaintainer = "contact@nuvio.tv"
                 shortcut = true
                 menuGroup = "Nuvio"
@@ -1442,133 +1350,6 @@ compose.desktop {
 
         buildTypes.release.proguard {
             isEnabled.set(false)
-        }
-    }
-}
-
-val patchLinuxDebDependencies = tasks.register("patchLinuxDebDependencies") {
-    notCompatibleWithConfigurationCache("Patches DEB control file to add runtime dependencies.")
-    enabled = isLinuxHost
-    dependsOn("packageReleaseDeb")
-    doLast {
-        val debDir = layout.buildDirectory.dir("compose/binaries/main-release/deb").get().asFile
-        val debFiles = debDir.listFiles { f -> f.extension == "deb" }.orEmpty()
-        if (debFiles.isEmpty()) {
-            logger.warn("No .deb files found in ${debDir.absolutePath}")
-            return@doLast
-        }
-        for (deb in debFiles) {
-            val workDir = File(debDir, "deb-patch-${deb.nameWithoutExtension}")
-            val scriptFile = rootProject.file("scripts/patch-deb-deps.sh")
-
-            val pb = ProcessBuilder("bash", scriptFile.absolutePath, deb.absolutePath, workDir.absolutePath)
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val exitCode = proc.waitFor()
-            if (exitCode != 0) {
-                logger.error("DEB patching failed (exit $exitCode): $output")
-            } else {
-                logger.lifecycle("Patched DEB dependencies: ${deb.name}")
-            }
-        }
-    }
-}
-
-val buildAppImage = tasks.register<Exec>("buildAppImage") {
-    notCompatibleWithConfigurationCache("Packages the unpacked app directory into an AppImage using linuxdeploy + appimagetool.")
-    enabled = isLinuxHost
-    dependsOn("packageReleaseAppImage")
-    val appDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio").get().asFile
-    val appImageOutput = layout.buildDirectory.file("compose/binaries/main-release/appimage/Nuvio-${desktopReleaseVersionName}-x86_64.AppImage")
-    val updateInfo = "gh-releases-zsync|aelrased|NuvioDesktop|latest|Nuvio-*x86_64.AppImage.zsync"
-    outputs.file(appImageOutput)
-    doFirst {
-        if (!appDir.exists()) {
-            error("App directory not found: ${appDir.absolutePath}. Run packageReleaseAppImage first.")
-        }
-        val desktopFile = appDir.resolve("Nuvio.desktop")
-        desktopFile.writeText("""
-            [Desktop Entry]
-            Name=Nuvio
-            Exec=Nuvio
-            Icon=Nuvio
-            Type=Application
-            Categories=AudioVideo;Video;Player;
-            Comment=Nuvio Media Player
-            Terminal=false
-            StartupWMClass=com-nuvio-app-MainKt
-            X-AppImage-UpdateInformation=$updateInfo
-            X-AppImage-Architecture=x86_64
-            X-AppImage-AppStream=true
-        """.trimIndent())
-        appDir.resolve("AppRun").apply {
-            writeText(
-                "#!/bin/bash\n" +
-                "dir=\"$(dirname \"$(readlink -f \"\$0\")\")\"\n" +
-                "export LD_LIBRARY_PATH=\"\$dir/lib:\$dir/lib64:\${LD_LIBRARY_PATH:-}\"\n" +
-                "exec \"\$dir/bin/Nuvio\" \"\$@\"\n"
-            )
-            setExecutable(true)
-        }
-        val iconFile = project.file("src/desktopMain/resources/icons/nuvio-app-icon.png")
-        if (iconFile.exists()) {
-            iconFile.copyTo(appDir.resolve("Nuvio.png"), overwrite = true)
-        }
-
-        // Include AppStream metainfo
-        val metainfoSource = project.file("src/desktopMain/resources/metainfo/com.nuvio.media.desktop.metainfo.xml")
-        if (metainfoSource.exists()) {
-            val metainfoDir = appDir.resolve("usr/share/metainfo")
-            metainfoDir.mkdirs()
-            metainfoSource.copyTo(metainfoDir.resolve("com.nuvio.media.desktop.metainfo.xml"), overwrite = true)
-            logger.lifecycle("Included AppStream metainfo in AppImage")
-        }
-
-        appImageOutput.get().asFile.parentFile.mkdirs()
-
-        // Bundle libmpv and its dependencies using linuxdeploy if available
-        val linuxdeploy = listOf("which", "linuxdeploy").runCommand()?.trim()?.takeIf { it.isNotBlank() }
-        if (linuxdeploy != null) {
-            logger.lifecycle("Using linuxdeploy to bundle native libraries into AppImage")
-        }
-    }
-    workingDir(appImageOutput.get().asFile.parentFile)
-    commandLine(
-        "appimagetool",
-        "--appimage-extract-and-run",
-        "--updateinformation", updateInfo,
-        appDir.absolutePath,
-        appImageOutput.get().asFile.absolutePath,
-    )
-    environment("ARCH", "x86_64")
-}
-
-val patchLinuxRpmDependencies = tasks.register("patchLinuxRpmDependencies") {
-    notCompatibleWithConfigurationCache("Patches RPM spec to add runtime dependencies.")
-    enabled = isLinuxHost
-    dependsOn("packageReleaseRpm")
-    doLast {
-        val rpmDir = layout.buildDirectory.dir("compose/binaries/main-release/rpm").get().asFile
-        val rpmFiles = rpmDir.listFiles { f -> f.extension == "rpm" }.orEmpty()
-        if (rpmFiles.isEmpty()) {
-            logger.warn("No .rpm files found in ${rpmDir.absolutePath}")
-            return@doLast
-        }
-        for (rpm in rpmFiles) {
-            val workDir = File(rpmDir, "rpm-patch-${rpm.nameWithoutExtension}")
-            val scriptFile = rootProject.file("scripts/patch-rpm-deps.sh")
-
-            val pb = ProcessBuilder("bash", scriptFile.absolutePath, rpm.absolutePath, workDir.absolutePath)
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val exitCode = proc.waitFor()
-            if (exitCode != 0) {
-                logger.error("RPM patching failed (exit $exitCode): $output")
-            } else {
-                logger.lifecycle("Patched RPM dependencies: ${rpm.name}")
-            }
         }
     }
 }

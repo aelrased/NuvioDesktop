@@ -30,14 +30,13 @@ asset
 scripts/scrape_android_compose_animation_docs.py
 tools
 AGENTS.md
-release-assets/linux/*.AppImage
-release-assets/linux/*.AppImage.zsync
-release-assets/linux/*.deb
-WAYLAND_EGL_IMPLEMENTATION.md
-hs_err_pid*.log
-composeApp/src/desktopMain/torrserver/windows-amd64/TorrServer.exe
 
 PERFORMANCE_FINDINGS.md
 
 # Local MPVKit iOS build environment (sparse APFS image, see MPVKit docs)
 .mpvkit-build.sparseimage
+
+# Large files
+release-assets/
+composeApp/src/desktopMain/torrserver/
+hs_err_pid*.log

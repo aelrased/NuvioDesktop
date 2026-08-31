@@ -66,6 +66,7 @@ constexpr UINT_PTR NUVIO_TIMER_ID = 0x4E50;
 // thread is wedged; shutdown gives up rather than blocking the caller forever.
 constexpr UINT kUiTaskTimeoutMs = 2000;
 constexpr UINT kShutdownJoinTimeoutMs = 3000;
+constexpr double kMaxVolumePercent = 200.0;
 
 const wchar_t *kMessageWindowClass = L"NuvioPlayerBridgeMessageWindow";
 const wchar_t *kContainerWindowClass = L"NuvioPlayerBridgeContainerWindow";
@@ -847,6 +848,8 @@ public:
         long long initialPositionMs,
         const std::string &controlsUrl,
         JavaVM *vm,
+        int decoderPriority,
+        bool nvidiaRtxSuperResolutionEnabled,
         jobject sink,
         jmethodID method
     ) {
@@ -862,8 +865,8 @@ public:
         auto initState = std::make_shared<InitializationState>();
         auto self = shared_from_this();
         uiThread = std::thread(
-            [self, sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, initState]() {
-                self->runNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, initState);
+            [self, sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority, nvidiaRtxSuperResolutionEnabled, initState]() {
+                self->runNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority, nvidiaRtxSuperResolutionEnabled, initState);
             }
         );
 
@@ -1023,12 +1026,6 @@ public:
         mpvApi().setProperty(mpv, "speed", MPV_FORMAT_DOUBLE, &clamped);
     }
 
-    void setMpvProperty(const char *name, const char *value) {
-        std::lock_guard<std::mutex> lock(mpvMutex);
-        if (!mpv) return;
-        mpvApi().setPropertyString(mpv, name, value);
-    }
-
     double speed() {
         return doubleProperty("speed", 1.0);
     }
@@ -1038,19 +1035,19 @@ public:
         if (!mpv) return;
         double current = 100.0;
         mpvApi().getProperty(mpv, "volume", MPV_FORMAT_DOUBLE, &current);
-        double next = std::max(0.0, std::min(100.0, current + delta));
+        double next = std::max(0.0, std::min(kMaxVolumePercent, current + delta));
         mpvApi().setProperty(mpv, "volume", MPV_FORMAT_DOUBLE, &next);
     }
 
     void setVolume(double level) {
         std::lock_guard<std::mutex> lock(mpvMutex);
         if (!mpv) return;
-        double next = std::max(0.0, std::min(100.0, level * 100.0));
+        double next = std::max(0.0, std::min(kMaxVolumePercent, level * 100.0));
         mpvApi().setProperty(mpv, "volume", MPV_FORMAT_DOUBLE, &next);
     }
 
     double volume() {
-        return std::max(0.0, std::min(100.0, doubleProperty("volume", 100.0))) / 100.0;
+        return std::max(0.0, std::min(kMaxVolumePercent, doubleProperty("volume", 100.0))) / 100.0;
     }
 
     void setResizeMode(int mode) {
@@ -1190,9 +1187,6 @@ public:
         if (modeChanged || (!useLibass && boldChanged)) {
             std::lock_guard<std::mutex> lock(mpvMutex);
             if (!mpv) return;
-            mpvApi().setProperty(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline);
-            mpvApi().setProperty(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size);
-            mpvApi().setProperty(mpv, "sub-pos", MPV_FORMAT_INT64, &position);
             const char *styleOverridesCommand[] = {
                 "change-list",
                 "sub-ass-style-overrides",
@@ -1276,6 +1270,7 @@ private:
     std::thread eventThread;
     std::atomic_bool stopping = false;
     std::atomic_bool shuttingDown = false;
+    std::atomic_bool hwdecLogged = false;  // one-shot log for hwdec-current
 
     bool hasAppliedSubtitleStyle = false;
     bool appliedSubtitleUseLibass = false;
@@ -1306,11 +1301,13 @@ private:
         bool playWhenReady,
         long long initialPositionMs,
         std::string controlsUrl,
+        int decoderPriority,
+        bool nvidiaRtxSuperResolutionEnabled,
         std::shared_ptr<InitializationState> initState
     ) {
         std::string failure;
         try {
-            initializeOnNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl);
+            initializeOnNativeUiThread(sourceUrl, headerLines, playWhenReady, initialPositionMs, controlsUrl, decoderPriority, nvidiaRtxSuperResolutionEnabled);
         } catch (const std::exception &error) {
             failure = error.what();
             cleanupUiResources();
@@ -1339,7 +1336,9 @@ private:
         const std::vector<std::string> &headerLines,
         bool playWhenReady,
         long long initialPositionMs,
-        const std::string &controlsUrl
+        const std::string &controlsUrl,
+        int decoderPriority,
+        bool nvidiaRtxSuperResolutionEnabled
     ) {
         registerWindowClasses();
         uiThreadId = GetCurrentThreadId();
@@ -1391,7 +1390,7 @@ private:
         }
 
         startWebView(controlsUrl);
-        startMpv(sourceUrl, headerLines, playWhenReady, initialPositionMs);
+        startMpv(sourceUrl, headerLines, playWhenReady, initialPositionMs, decoderPriority, nvidiaRtxSuperResolutionEnabled);
         layoutNativeSubviews();
         if (!SetTimer(messageHwnd, NUVIO_TIMER_ID, 500, nullptr)) {
             throw std::runtime_error("Unable to start native player timer.");
@@ -1585,7 +1584,8 @@ private:
         const std::vector<std::string> &headerLines,
         bool playWhenReady,
         long long initialPositionMs,
-        bool nvidiaRtxSuperResolutionEnabled = false
+        int decoderPriority,
+        bool nvidiaRtxSuperResolutionEnabled
     ) {
         MpvApi &api = mpvApi();
         {
@@ -1596,11 +1596,12 @@ private:
             }
             initialStartSeconds = initialPositionMs > 0 ? (double)initialPositionMs / 1000.0 : 0.0;
 
-            setMpvOptionStringLocked("config", "yes");
+            setMpvOptionStringLocked("config", "no");
             setMpvOptionStringLocked("osc", "no");
             setMpvOptionStringLocked("input-default-bindings", "yes");
             setMpvOptionStringLocked("input-vo-keyboard", "no");
             setMpvOptionStringLocked("keep-open", "yes");
+            setMpvOptionStringLocked("volume-max", "200");
             setMpvOptionStringLocked("vo", "gpu-next");
             if (nvidiaRtxSuperResolutionEnabled) {
                 setMpvOptionStringLocked("gpu-api", "d3d11");
@@ -1611,7 +1612,19 @@ private:
                 setMpvOptionStringLocked("hwdec", "auto");
             }
             setMpvOptionStringLocked("hwdec-codecs", "all");
-            setMpvOptionStringLocked("vd-lavc-software-fallback", "no");
+
+            if (nvidiaRtxSuperResolutionEnabled) {
+                setMpvOptionStringLocked("vf", "d3d11vpp=scale=2:scaling-mode=nvidia");
+            }
+            setMpvOptionStringLocked("target-colorspace-hint", "yes");
+            if (decoderPriority == 0) {
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "no");
+            } else if (decoderPriority == 2) {
+                setMpvOptionStringLocked("hwdec", "no");
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "yes");
+            } else {
+                setMpvOptionStringLocked("vd-lavc-software-fallback", "yes");
+            }
             setMpvOptionStringLocked("vd-lavc-threads", "4");
             setMpvOptionStringLocked("tone-mapping", "auto");
             setMpvOptionStringLocked("dither-depth", "auto");
@@ -1727,6 +1740,7 @@ private:
         if (!webView) return;
         double duration = doubleProperty("duration", 0.0);
         double position = doubleProperty("time-pos", 0.0);
+        double volumeLevel = volume();
         bool paused = isPaused();
         bool loading = isLoading();
         std::string audioTracks = audioTracksJson();
@@ -1735,6 +1749,7 @@ private:
         std::ostringstream script;
         script << "window.playerUpdate({duration:" << duration
                << ",position:" << position
+               << ",volumeLevel:" << volumeLevel
                << ",paused:" << (paused ? "true" : "false")
                << ",loading:" << (loading ? "true" : "false")
                << ",audioTracks:" << audioTracks
@@ -2211,10 +2226,10 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     jboolean playWhenReady,
     jlong initialPositionMs,
     jstring controlsPageUrl,
-    jint decoderPriority, jboolean nvidiaRtxSuperResolutionEnabled,
+    jint decoderPriority,
+    jboolean nvidiaRtxSuperResolutionEnabled,
     jobject eventSink
 ) {
-    (void)decoderPriority; (void)nvidiaRtxSuperResolutionEnabled;
     HWND hostHwnd = (HWND)(intptr_t)hostViewPtr;
     std::string sourceUrlText = jstringToUtf8(env, sourceUrl);
     std::vector<std::string> headerLineValues = jstringArrayToVector(env, headerLines);
@@ -2246,6 +2261,8 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
             initialPositionMs,
             controlsPageUrlText,
             javaVm,
+            decoderPriority,
+            nvidiaRtxSuperResolutionEnabled == JNI_TRUE,
             eventSinkRef,
             eventMethod
         );
@@ -2512,39 +2529,4 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applySubtitleStyle
         useLibass == JNI_TRUE,
         stripSdh == JNI_TRUE
     );
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setProperty(
-    JNIEnv *env,
-    jobject,
-    jlong handle,
-    jstring name,
-    jstring value
-) {
-    auto player = playerFromHandle(handle);
-    if (!player) return;
-    player->setMpvProperty(jstringToUtf8(env, name).c_str(), jstringToUtf8(env, value).c_str());
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_renderFrame(
-    JNIEnv *,
-    jobject,
-    jlong,
-    jintArray,
-    jint,
-    jint
-) {
-    return JNI_FALSE;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_resizeNativeView(
-    JNIEnv *,
-    jobject,
-    jlong,
-    jint,
-    jint
-) {
 }

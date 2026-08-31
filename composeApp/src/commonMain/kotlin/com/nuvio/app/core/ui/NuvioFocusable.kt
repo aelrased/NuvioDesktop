@@ -1,39 +1,33 @@
 package com.nuvio.app.core.ui
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 fun Modifier.nuvioFocusBorder(
     shape: Shape,
-    focusColor: Color = Color.Unspecified,
+    borderWidth: Dp = 3.dp,
 ): Modifier = composed {
-    val color = if (focusColor == Color.Unspecified) {
-        MaterialTheme.nuvio.colors.focusRing
-    } else {
-        focusColor
-    }
-    val interactionSource = remember { MutableInteractionSource() }
-    val isFocused by interactionSource.collectIsFocusedAsState()
-
+    var focused by remember { mutableStateOf(false) }
+    val tokens = MaterialTheme.nuvio
     this
-        .focusable(interactionSource = interactionSource)
+        .onFocusChanged { focused = it.isFocused }
+        .focusable()
         .then(
-            if (isFocused) {
-                Modifier.border(BorderStroke(3.dp, color), shape)
-            } else {
-                Modifier
-            }
+            if (focused) Modifier.border(
+                width = borderWidth,
+                color = tokens.colors.focusRing,
+                shape = shape,
+            ) else Modifier,
         )
 }

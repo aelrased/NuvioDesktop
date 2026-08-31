@@ -14,49 +14,10 @@ import coil3.compose.setSingletonImageLoaderFactory
 import coil3.request.CachePolicy
 import coil3.request.crossfade
 import coil3.svg.SvgDecoder
-import coil3.memory.MemoryCache
-import com.nuvio.app.core.build.AppFeaturePolicy
-import com.nuvio.app.core.auth.AuthRepository
-import com.nuvio.app.core.auth.AuthState
-import com.nuvio.app.core.auth.DeviceSessionRegistration
-import com.nuvio.app.core.deeplink.AppDeepLink
-import com.nuvio.app.core.deeplink.AppDeepLinkRepository
-import com.nuvio.app.core.network.NetworkCondition
-import com.nuvio.app.core.network.NetworkStatusRepository
-import com.nuvio.app.core.sync.AppForegroundMonitor
-import com.nuvio.app.core.sync.ProfileSettingsSync
-import com.nuvio.app.core.sync.SyncManager
-import com.nuvio.app.core.ui.LocalNuvioNavBarScrollState
-import com.nuvio.app.core.ui.NuvioNavigationBar
-import com.nuvio.app.core.ui.NuvioClassicNavigationBar
-import com.nuvio.app.core.ui.NuvioNavBarScrollState
-import com.nuvio.app.core.ui.rememberNuvioNavBarScrollState
-import com.nuvio.app.core.format.formatReleaseDateForDisplay
-import com.nuvio.app.core.ui.NuvioContinueWatchingActionSheet
-import com.nuvio.app.core.ui.NuvioCardDepthSurface
-import com.nuvio.app.core.ui.NuvioPosterZoomActionOverlay
-import com.nuvio.app.core.ui.PosterZoomAnchor
-import com.nuvio.app.core.ui.PosterZoomAnchorHolder
-import com.nuvio.app.core.ui.PosterZoomOverlayAction
-import com.nuvio.app.core.ui.PosterZoomOverlayExitAnimation
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
-import com.nuvio.app.core.ui.NuvioStatusModal
-import com.nuvio.app.core.ui.PlatformBackHandler
-import com.nuvio.app.core.ui.PlatformKeyboardNavigation
-import com.nuvio.app.core.ui.platformExitApp
-import com.nuvio.app.core.ui.configurePlatformImageLoader
-import com.nuvio.app.core.ui.NuvioToastHost
-import com.nuvio.app.core.ui.NuvioToastController
-import com.nuvio.app.core.ui.NuvioFloatingPrompt
-import com.nuvio.app.core.ui.nuvioFocusBorder
-import com.nuvio.app.core.ui.ProfileMeshBackground
-import com.nuvio.app.core.ui.TrackingListPickerDialog
-import com.nuvio.app.core.ui.NuvioTheme
-import com.nuvio.app.core.ui.NuvioTokens
-import com.nuvio.app.core.ui.LocalNuvioBottomNavigationOverlayPadding
-import com.nuvio.app.core.ui.NativeNavigationTab
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
+import com.nuvio.app.core.ui.NuvioTheme
+import com.nuvio.app.core.ui.PlatformKeyboardNavigation
+import com.nuvio.app.core.ui.configurePlatformImageLoader
 import com.nuvio.app.core.ui.desktopUiScaleForWindow
 import com.nuvio.app.features.settings.ThemeSettingsRepository
 import com.nuvio.app.navigation.AppRoute
@@ -117,11 +78,6 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
             .crossfade(true)
             .diskCachePolicy(CachePolicy.ENABLED)
             .memoryCachePolicy(CachePolicy.ENABLED)
-            .memoryCache {
-                MemoryCache.Builder()
-                    .maxSizeBytes(128 * 1024 * 1024)
-                    .build()
-            }
             .components {
                 add(SvgDecoder.Factory())
                 add(
@@ -147,6 +103,7 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
             amoled = amoledEnabled,
             desktopUiScale = desktopUiScaleForWindow(maxWidth.value, maxHeight.value),
         ) {
+            PlatformKeyboardNavigation()
             content()
         }
     }

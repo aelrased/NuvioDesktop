@@ -8,69 +8,22 @@ import java.awt.Point
 import java.awt.Toolkit
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
-import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
 import java.awt.image.BufferedImage
-import javax.swing.SwingUtilities
-import javax.swing.Timer
 
-private val usesSoftwareRendering: Boolean
-    get() = DesktopHostOs.current == DesktopHostOs.LINUX && DesktopHostOs.isWayland
-
-internal class NativePlayerHost : Canvas(), PlayerHost {
+internal class NativePlayerHost : Canvas() {
     var onPeerReady: (() -> Unit)? = null
     var onDisplayableChanged: ((Boolean) -> Unit)? = null
-    var onBeforeRemoveNotify: (() -> Unit)? = null
     var onFirstPaint: (() -> Unit)? = null
     var onFirstFullSizePaint: (() -> Unit)? = null
-    var onResize: ((width: Int, height: Int) -> Unit)? = null
+    var onCursorActivity: (() -> Unit)? = null
     private var firstPaintNotified = false
     private var firstFullSizePaintNotified = false
-    override var onMouseClick: (() -> Unit)? = null
-    override var onDoubleClick: (() -> Unit)? = null
-    override var onCursorActivity: (() -> Unit)? = null
     private var controlsVisible = true
     private var cursorVisible = true
-    private var cursorHideTimer: Timer? = null
-
-    private var renderTimer: Timer? = null
-    private var pixelBuffer: IntArray? = null
-    private var frameImage: BufferedImage? = null
-
-    @Volatile
-    override var nativeHandle: Long = 0L
-        set(value) {
-            field = value
-            if (value != 0L && usesSoftwareRendering) {
-                startRenderTimer()
-            } else {
-                stopRenderTimer()
-            }
-        }
-
-    private fun startRenderTimer() {
-        if (renderTimer != null) return
-        renderTimer = Timer(33) {
-            if (nativeHandle != 0L && isDisplayable) {
-                repaint()
-            } else {
-                stopRenderTimer()
-            }
-        }.apply {
-            isRepeats = true
-            start()
-        }
-    }
-
-    private fun stopRenderTimer() {
-        renderTimer?.stop()
-        renderTimer = null
-    }
 
     private companion object {
-        const val CursorIdleHideDelayMs = 3_000
-
         val hiddenCursor: Cursor by lazy {
             val image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
             Toolkit.getDefaultToolkit().createCustomCursor(image, Point(0, 0), "nuvio-hidden-cursor")
@@ -80,21 +33,6 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
     init {
         background = Color.BLACK
         ignoreRepaint = false
-        addComponentListener(object : ComponentAdapter() {
-            override fun componentResized(e: ComponentEvent) {
-                onResize?.invoke(width, height)
-            }
-        })
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                noteCursorActivity()
-                if (e.clickCount >= 2) {
-                    onDoubleClick?.invoke()
-                } else {
-                    onMouseClick?.invoke()
-                }
-            }
-        })
         addMouseMotionListener(object : MouseMotionAdapter() {
             override fun mouseMoved(event: MouseEvent) {
                 noteCursorActivity()
@@ -135,48 +73,18 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
         }
     }
 
-    private fun notifyReadyIfSized() {
-        if (firstFullSizePaintNotified || width <= 1 || height <= 1) return
-        SwingUtilities.invokeLater {
-            if (!isDisplayable || firstFullSizePaintNotified || width <= 1 || height <= 1) return@invokeLater
-            if (!firstPaintNotified) {
-                firstPaintNotified = true
-                onFirstPaint?.invoke()
-            }
-            firstFullSizePaintNotified = true
-            onFirstFullSizePaint?.invoke()
-        }
-    }
-
-    override fun setControlsVisible(visible: Boolean) {
-        if (controlsVisible == visible) return
+    fun setControlsVisible(visible: Boolean) {
         controlsVisible = visible
-        cancelCursorHideTimer()
         setCursorVisible(visible)
     }
 
-    override fun noteCursorActivity() {
+    fun noteCursorActivity() {
         onCursorActivity?.invoke()
-        if (controlsVisible) {
-            cancelCursorHideTimer()
-            setCursorVisible(true)
-            return
-        }
-        setCursorVisible(true)
-        restartCursorHideTimer()
     }
 
-    override fun resetCursorVisibility() {
+    fun resetCursorVisibility() {
         controlsVisible = true
-        cancelCursorHideTimer()
         setCursorVisible(true)
-    }
-
-    override fun dispose() {
-        stopRenderTimer()
-        pixelBuffer = null
-        frameImage = null
-        resetCursorVisibility()
     }
 
     private fun setCursorVisible(visible: Boolean) {
@@ -185,54 +93,13 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
         cursor = if (visible) Cursor.getDefaultCursor() else hiddenCursor
     }
 
-    private fun restartCursorHideTimer() {
-        cancelCursorHideTimer()
-        cursorHideTimer = Timer(CursorIdleHideDelayMs) {
-            if (!controlsVisible) {
-                setCursorVisible(false)
-            }
-            cancelCursorHideTimer()
-        }.apply {
-            isRepeats = false
-            start()
-        }
-    }
-
-    private fun cancelCursorHideTimer() {
-        cursorHideTimer?.stop()
-        cursorHideTimer = null
-    }
-
     override fun update(graphics: Graphics) {
         paint(graphics)
     }
 
     override fun paint(graphics: Graphics) {
-        val handle = nativeHandle
-        if (handle != 0L && usesSoftwareRendering && width > 0 && height > 0) {
-            val w = width
-            val h = height
-            var buf = pixelBuffer
-            if (buf == null || buf.size < w * h) {
-                buf = IntArray(w * h)
-                pixelBuffer = buf
-            }
-            if (NativePlayerBridge.renderFrame(handle, buf, w, h)) {
-                var img = frameImage
-                if (img == null || img.width != w || img.height != h) {
-                    img = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
-                    frameImage = img
-                }
-                img.setRGB(0, 0, w, h, buf, 0, w)
-                graphics.drawImage(img, 0, 0, null)
-            } else {
-                graphics.color = Color.BLACK
-                graphics.fillRect(0, 0, w, h)
-            }
-        } else {
-            graphics.color = Color.BLACK
-            graphics.fillRect(0, 0, width, height)
-        }
+        graphics.color = Color.BLACK
+        graphics.fillRect(0, 0, width, height)
         notifyFirstPaints()
     }
 
@@ -241,26 +108,15 @@ internal class NativePlayerHost : Canvas(), PlayerHost {
         onDisplayableChanged?.invoke(true)
         repaint()
         onPeerReady?.invoke()
-        if (DesktopHostOs.current == DesktopHostOs.LINUX) {
-            SwingUtilities.invokeLater {
-                if (!isDisplayable || firstPaintNotified) return@invokeLater
-                firstPaintNotified = true
-                onFirstPaint?.invoke()
-                notifyReadyIfSized()
-            }
-        }
     }
 
     override fun removeNotify() {
-        onBeforeRemoveNotify?.invoke()
         onDisplayableChanged?.invoke(false)
         firstPaintNotified = false
         firstFullSizePaintNotified = false
         onPeerReady = null
-        onBeforeRemoveNotify = null
         onFirstPaint = null
         onFirstFullSizePaint = null
-        stopRenderTimer()
         resetCursorVisibility()
         super.removeNotify()
     }

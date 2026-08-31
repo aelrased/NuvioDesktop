@@ -11,9 +11,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
@@ -21,7 +20,6 @@ import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.ui.AppPresenceState
 import com.nuvio.app.core.ui.PresenceSnapshot
 import com.nuvio.app.core.ui.nuvio
-import com.nuvio.app.core.ui.toggleFullscreenAction
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.details.MetaDetailsRepository
@@ -39,7 +37,6 @@ import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
 import com.nuvio.app.features.watching.application.WatchingState
 import com.nuvio.app.isDesktop
 import com.nuvio.app.isIos
-import com.nuvio.app.isLinux
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -298,6 +295,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
         p2pConsentBody = stringResource(Res.string.p2p_consent_body),
         p2pConsentEnableLabel = stringResource(Res.string.p2p_consent_enable),
         p2pConsentCancelLabel = stringResource(Res.string.p2p_consent_cancel),
+        speedPanelTitle = stringResource(Res.string.compose_player_playback_speed),
         audioTracksPanelTitle = stringResource(Res.string.compose_player_audio_tracks),
         noAudioTracksLabel = stringResource(Res.string.compose_player_no_audio_tracks_available),
         subtitlesPanelTitle = stringResource(Res.string.compose_player_subtitles),
@@ -357,7 +355,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             playerSettingsUiState.introSubmitEnabled &&
             playerSettingsUiState.introDbApiKey.isNotBlank() &&
             !activeSubmitIntroImdbId().isNullOrBlank(),
-        showVideoSettings = isIos || isDesktop,
+        showVideoSettings = isIos,
         showSources = activeVideoId != null,
         showEpisodes = isSeries,
         showExternalPlayer = args.onOpenInExternalPlayer != null,
@@ -434,24 +432,10 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     )
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
 
-    if (isDesktop) {
-        DisposableEffect(Unit) {
-            setDesktopBackHandler {
-                flushWatchProgress()
-                args.onBack()
-            }
-            onDispose { setDesktopBackHandler(null) }
-        }
-    }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .onSizeChanged {
-                layoutSize = it
-                controlsVisible = true
-                controlsActivityTick += 1
-            }
+            .onSizeChanged { layoutSize = it }
             .playerSurfaceTapGestures(
                 layoutSize = layoutSize,
                 playerControlsLockedState = gestureCallbacks.playerControlsLocked,
@@ -477,7 +461,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 clearLiveGestureFeedbackState = gestureCallbacks.clearLiveGestureFeedback,
                 revealLockedOverlayState = gestureCallbacks.revealLockedOverlay,
                 commitHorizontalSeekState = gestureCallbacks.commitHorizontalSeek,
-            )
+            ),
     ) {
         if (renderPlayerSurface) {
             val surfaceSource = currentPlayerSurfaceSource
@@ -572,11 +556,6 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             suppressOpeningOverlay = isDesktop && playerSurfaceSourceUrl != null,
         )
         RenderPlayerModals(displayedPositionMs = displayedPositionMs)
-        PlayerToastOverlay(
-            message = toastMessage.orEmpty(),
-            visible = toastVisible,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
     }
 }
 
@@ -600,7 +579,6 @@ private fun PlayerScreenRuntime.currentInitialPositionRequestKey(): String? {
 
 @Composable
 private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, isEpisode: Boolean) {
-    val volumeLabel = stringResource(Res.string.compose_player_volume)
     val isInPip = rememberIsInPictureInPicture()
     AnimatedVisibility(
         visible = (controlsVisible || showParentalGuide) && !playerControlsLocked && !isInPip,
@@ -620,7 +598,6 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             resizeMode = resizeMode,
             isLocked = playerControlsLocked,
             showPlaybackControls = controlsVisible,
-            isFullscreen = isDesktopAppFullscreen,
             onLockToggle = {
                 if (playerControlsLocked) unlockPlayerControls() else lockPlayerControls()
             },
@@ -638,8 +615,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
                 refreshTracks()
                 showAudioModal = true
             },
-            onVolumeClick = { showVolumeModal = true },
-            onVideoSettingsClick = if (isIos || isDesktop) {
+            onVideoSettingsClick = if (isIos) {
                 {
                     showVideoSettingsModal = true
                     controlsVisible = true
@@ -687,14 +663,6 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             } else {
                 null
             },
-            onFullscreenClick = if (isDesktop) {
-                {
-                    isDesktopAppFullscreen = !isDesktopAppFullscreen
-                    toggleFullscreenAction()
-                }
-            } else {
-                null
-            },
             parentalWarnings = parentalWarnings,
             showParentalGuide = showParentalGuide,
             onParentalGuideAnimationComplete = { showParentalGuide = false },
@@ -709,25 +677,6 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
                 scheduleProgressSyncAfterSeek()
             },
             horizontalSafePadding = horizontalSafePadding,
-            currentVolume = currentVolume,
-            isVolumeMuted = isVolumeMuted,
-            onVolumeSliderChange = { volume ->
-                currentVolume = volume
-                playerController?.setVolume(volume)
-            },
-            onClickVolumeIcon = {
-                if (isVolumeMuted) {
-                    currentVolume = previousVolume
-                    playerController?.setVolume(previousVolume)
-                    isVolumeMuted = false
-                    showToast("$volumeLabel: ${previousVolume.toInt()}%")
-                } else {
-                    previousVolume = currentVolume
-                    playerController?.setVolume(0f)
-                    isVolumeMuted = true
-                    showToast("$volumeLabel: 0%")
-                }
-            },
             modifier = Modifier.fillMaxSize(),
         )
     }
@@ -831,7 +780,6 @@ private fun PlayerScreenRuntime.handlePlayerControlsAction(action: PlayerControl
         PlayerControlsAction.KeyboardVolumeUp -> {
             return false
         }
-        PlayerControlsAction.Volume -> showVolumeModal = true
         PlayerControlsAction.ResizeMode -> cycleResizeMode()
         PlayerControlsAction.Speed -> cyclePlaybackSpeed()
         PlayerControlsAction.Subtitles -> {
@@ -867,9 +815,6 @@ private fun PlayerScreenRuntime.handlePlayerControlsAction(action: PlayerControl
         }
         PlayerControlsAction.DoubleTapSeekForward -> {
             prepareDoubleTapSeekForNativeFallback(PlayerSeekDirection.Forward)
-            return false
-        }
-        PlayerControlsAction.Fullscreen -> {
             return false
         }
     }
@@ -1038,7 +983,7 @@ private fun PlayerScreenRuntime.handlePlayerControlsEvent(type: String, value: D
         }
         "subtitleFontSizeDelta" -> {
             PlayerSettingsRepository.setSubtitleStyle(
-                subtitleStyle.copy(fontSizeSp = (subtitleStyle.fontSizeSp + value.toInt()).coerceIn(12, 40)),
+                subtitleStyle.copy(fontSizeSp = (subtitleStyle.fontSizeSp + value.toInt()).coerceIn(subtitleFontSizeRangeSp)),
             )
         }
         "subtitleOutlineToggle" -> {
@@ -1652,7 +1597,10 @@ private fun BoxScope.RenderPlaybackOverlays(
             metrics = metrics,
             horizontalSafePadding = horizontalSafePadding,
             onUnlock = { unlockPlayerControls() },
-            showOpeningOverlay = false,
+            showOpeningOverlay = playerSettingsUiState.showLoadingOverlay &&
+                !initialLoadCompleted &&
+                errorMessage == null &&
+                !suppressOpeningOverlay,
             backdropArtwork = background ?: poster,
             logo = logo,
             title = title,
@@ -1666,7 +1614,7 @@ private fun BoxScope.RenderPlaybackOverlays(
             renderedGestureFeedback = renderedGestureFeedback,
             initialLoadCompleted = initialLoadCompleted,
             pausedOverlayVisible = pausedOverlayVisible,
-            activeSkipInterval = activeSkipInterval.takeUnless { isDesktop && !isLinux },
+            activeSkipInterval = activeSkipInterval.takeUnless { isDesktop },
             skipIntervalDismissed = skipIntervalDismissed,
             controlsVisible = controlsVisible,
             onSkipInterval = { interval ->
@@ -1682,7 +1630,7 @@ private fun BoxScope.RenderPlaybackOverlays(
             overlayBottomPadding = overlayBottomPadding,
             isSeries = isSeries,
             nextEpisodeInfo = nextEpisodeInfo,
-            showNextEpisodeCard = showNextEpisodeCard && !(isDesktop && !isLinux),
+            showNextEpisodeCard = showNextEpisodeCard && !isDesktop,
             nextEpisodeAutoPlaySearching = nextEpisodeAutoPlaySearching,
             nextEpisodeAutoPlaySourceName = nextEpisodeAutoPlaySourceName,
             nextEpisodeAutoPlayCountdown = nextEpisodeAutoPlayCountdown,
@@ -1770,13 +1718,6 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         onAutoSyncCueSelected = { cue -> applySubtitleAutoSyncCue(cue) },
         onAutoSyncReload = { loadSubtitleAutoSyncCues(force = true) },
         onSubtitleModalDismissed = { showSubtitleModal = false },
-        showVolumeModal = showVolumeModal,
-        currentVolume = currentVolume,
-        onVolumeChanged = { volume ->
-            currentVolume = volume
-            playerController?.setVolume(volume)
-        },
-        onVolumeModalDismissed = { showVolumeModal = false },
         showVideoSettingsModal = showVideoSettingsModal,
         playerSettings = playerSettingsUiState,
         onVideoSettingsChanged = {

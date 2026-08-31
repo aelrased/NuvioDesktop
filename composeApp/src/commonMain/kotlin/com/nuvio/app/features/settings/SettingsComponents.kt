@@ -166,13 +166,13 @@ internal fun SettingsSidebarItem(
     val iconChip = if (selected) primary.copy(alpha = tokens.opacity.selected) else Color.Transparent
     val contentColor = if (selected) tokens.colors.textPrimary else tokens.colors.textMuted
 
-    val settingsSidebarShape = RoundedCornerShape(NuvioTokens.Space.s10)
+    val sidebarItemShape = RoundedCornerShape(NuvioTokens.Space.s10)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = tokens.spacing.listGap, vertical = NuvioTokens.Space.s2)
-            .background(background, settingsSidebarShape)
-            .nuvioFocusBorder(settingsSidebarShape)
+            .background(background, sidebarItemShape)
+            .nuvioFocusBorder(sidebarItemShape)
             .clickable(onClick = onClick)
             .padding(horizontal = tokens.spacing.screenHorizontal, vertical = tokens.spacing.listGap),
         verticalAlignment = Alignment.CenterVertically,
@@ -246,11 +246,10 @@ internal fun SettingsNavigationRow(
     val verticalPadding = if (isTablet) 16.dp else 14.dp
     val horizontalPadding = if (isTablet) 20.dp else 16.dp
 
-    val navRowShape = RoundedCornerShape(NuvioTokens.Radius.md)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .nuvioFocusBorder(navRowShape)
+            .nuvioFocusBorder(RoundedCornerShape(NuvioTokens.Space.s4))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = horizontalPadding, vertical = verticalPadding)
             .alpha(if (enabled) NuvioTokens.Opacity.visible else tokens.opacity.medium),
@@ -328,11 +327,10 @@ internal fun SettingsSwitchRow(
     val verticalPadding = if (isTablet) 16.dp else 14.dp
     val horizontalPadding = if (isTablet) 20.dp else 16.dp
 
-    val switchRowShape = RoundedCornerShape(NuvioTokens.Radius.md)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .nuvioFocusBorder(switchRowShape)
+            .nuvioFocusBorder(RoundedCornerShape(NuvioTokens.Space.s4))
             .clickable(enabled = enabled) { onCheckedChange(!checked) }
             .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         horizontalArrangement = Arrangement.Start,

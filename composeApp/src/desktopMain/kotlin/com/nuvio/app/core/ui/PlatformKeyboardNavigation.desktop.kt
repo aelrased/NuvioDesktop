@@ -13,31 +13,21 @@ actual fun PlatformKeyboardNavigation() {
     val focusManager = LocalFocusManager.current
 
     DisposableEffect(Unit) {
-        val dispatcher = KeyEventDispatcher { event ->
+        val dispatcher = KeyEventDispatcher { event: KeyEvent ->
             if (event.id != KeyEvent.KEY_PRESSED) return@KeyEventDispatcher false
-
-            val direction = when (event.keyCode) {
-                KeyEvent.VK_LEFT -> FocusDirection.Left
-                KeyEvent.VK_RIGHT -> FocusDirection.Right
-                KeyEvent.VK_UP -> FocusDirection.Up
-                KeyEvent.VK_DOWN -> FocusDirection.Down
-                else -> null
-            }
-
-            if (direction != null) {
-                if (!focusManager.moveFocus(direction)) {
-                    focusManager.moveFocus(FocusDirection.Next)
-                }
-                true
-            } else {
-                false
+            when (event.keyCode) {
+                KeyEvent.VK_LEFT -> { focusManager.moveFocus(FocusDirection.Left); true }
+                KeyEvent.VK_RIGHT -> { focusManager.moveFocus(FocusDirection.Right); true }
+                KeyEvent.VK_UP -> { focusManager.moveFocus(FocusDirection.Up); true }
+                KeyEvent.VK_DOWN -> { focusManager.moveFocus(FocusDirection.Down); true }
+                else -> false
             }
         }
-
-        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(dispatcher)
-
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            .addKeyEventDispatcher(dispatcher)
         onDispose {
-            KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(dispatcher)
+            KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                .removeKeyEventDispatcher(dispatcher)
         }
     }
 }

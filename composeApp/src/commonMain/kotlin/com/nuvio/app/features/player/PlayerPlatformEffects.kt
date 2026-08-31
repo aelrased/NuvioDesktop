@@ -32,8 +32,3 @@ expect fun rememberIsInPictureInPicture(): Boolean
 
 @Composable
 expect fun rememberPlayerGestureController(): PlayerGestureController?
-
-/** Desktop-only: set the global back navigation handler for side mouse buttons. */
-expect fun setDesktopBackHandler(handler: (() -> Unit)?)
-
-

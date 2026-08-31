@@ -3,7 +3,6 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import com.nuvio.app.features.details.MetaDetailsUiState
 import com.nuvio.app.features.details.MetaVideo
-import com.nuvio.app.isDesktop
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.p2p.P2pConsentDialog
 import com.nuvio.app.features.p2p.P2pSettingsRepository
@@ -45,10 +44,6 @@ internal fun PlayerScreenModalHosts(
     onAutoSyncCueSelected: (SubtitleSyncCue) -> Unit,
     onAutoSyncReload: () -> Unit,
     onSubtitleModalDismissed: () -> Unit,
-    showVolumeModal: Boolean,
-    currentVolume: Float,
-    onVolumeChanged: (Float) -> Unit,
-    onVolumeModalDismissed: () -> Unit,
     showVideoSettingsModal: Boolean,
     playerSettings: PlayerSettingsUiState,
     onVideoSettingsChanged: () -> Unit,
@@ -152,28 +147,12 @@ internal fun PlayerScreenModalHosts(
         onDismiss = onSubtitleModalDismissed,
     )
 
-    VolumeModal(
-        visible = showVolumeModal,
-        initialVolume = currentVolume,
-        onVolumeChanged = onVolumeChanged,
-        onDismiss = onVolumeModalDismissed,
+    IosVideoSettingsModal(
+        visible = showVideoSettingsModal,
+        settings = playerSettings,
+        onSettingsChanged = onVideoSettingsChanged,
+        onDismiss = onVideoSettingsModalDismissed,
     )
-
-    if (isDesktop) {
-        DesktopVideoSettingsModal(
-            visible = showVideoSettingsModal,
-            settings = playerSettings,
-            onSettingsChanged = onVideoSettingsChanged,
-            onDismiss = onVideoSettingsModalDismissed,
-        )
-    } else {
-        IosVideoSettingsModal(
-            visible = showVideoSettingsModal,
-            settings = playerSettings,
-            onSettingsChanged = onVideoSettingsChanged,
-            onDismiss = onVideoSettingsModalDismissed,
-        )
-    }
 
     PlayerSourcesPanel(
         visible = showSourcesPanel,

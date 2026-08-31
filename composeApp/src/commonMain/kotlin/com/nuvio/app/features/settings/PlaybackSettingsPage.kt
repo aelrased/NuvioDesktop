@@ -379,14 +379,15 @@ private fun PlaybackSettingsSection(
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsNavigationRow(
                         title = stringResource(Res.string.settings_playback_player_preference),
-                        description = when {
-                            autoPlayPlayerSettings.externalPlayerEnabled -> stringResource(Res.string.settings_playback_player_preference_external)
-                            else -> stringResource(Res.string.settings_playback_player_preference_internal)
+                        description = if (autoPlayPlayerSettings.externalPlayerEnabled) {
+                            stringResource(Res.string.settings_playback_player_preference_external)
+                        } else {
+                            stringResource(Res.string.settings_playback_player_preference_internal)
                         },
                         isTablet = isTablet,
                         onClick = { showExternalPlayerDialog = true },
                     )
-                    if (autoPlayPlayerSettings.externalPlayerEnabled) {
+                    if (isIos && autoPlayPlayerSettings.externalPlayerEnabled) {
                         SettingsGroupDivider(isTablet = isTablet)
                         SettingsNavigationRow(
                             title = stringResource(Res.string.settings_playback_external_player_app),
@@ -1459,14 +1460,10 @@ private fun PlaybackSettingsSection(
     }
 
     if (showExternalPlayerDialog) {
-        val currentKind = when {
-            autoPlayPlayerSettings.externalPlayerEnabled -> PlayerKind.EXTERNAL
-            else -> PlayerKind.INTERNAL
-        }
         PlayerPreferenceDialog(
-            currentKind = currentKind,
-            onKindSelected = { kind ->
-                PlayerSettingsRepository.setExternalPlayerEnabled(kind == PlayerKind.EXTERNAL)
+            isExternal = autoPlayPlayerSettings.externalPlayerEnabled,
+            onPreferenceSelected = { external ->
+                PlayerSettingsRepository.setExternalPlayerEnabled(external)
                 showExternalPlayerDialog = false
             },
             onDismiss = { showExternalPlayerDialog = false },
@@ -1718,13 +1715,11 @@ private data class LanguageSelectionOption(
     val description: String? = null,
 )
 
-private enum class PlayerKind { INTERNAL, EXTERNAL }
-
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun PlayerPreferenceDialog(
-    currentKind: PlayerKind,
-    onKindSelected: (PlayerKind) -> Unit,
+    isExternal: Boolean,
+    onPreferenceSelected: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     BasicAlertDialog(
@@ -1757,12 +1752,13 @@ private fun PlayerPreferenceDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     // Internal option
+                    val internalSelected = !isExternal
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onKindSelected(PlayerKind.INTERNAL) },
+                            .clickable { onPreferenceSelected(false) },
                         shape = RoundedCornerShape(12.dp),
-                        color = if (currentKind == PlayerKind.INTERNAL) {
+                        color = if (internalSelected) {
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                         } else {
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
@@ -1784,7 +1780,7 @@ private fun PlayerPreferenceDialog(
                                 modifier = Modifier.size(24.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (currentKind == PlayerKind.INTERNAL) {
+                                if (internalSelected) {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
                                         contentDescription = null,
@@ -1799,9 +1795,9 @@ private fun PlayerPreferenceDialog(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onKindSelected(PlayerKind.EXTERNAL) },
+                            .clickable { onPreferenceSelected(true) },
                         shape = RoundedCornerShape(12.dp),
-                        color = if (currentKind == PlayerKind.EXTERNAL) {
+                        color = if (isExternal) {
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                         } else {
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
@@ -1823,7 +1819,7 @@ private fun PlayerPreferenceDialog(
                                 modifier = Modifier.size(24.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (currentKind == PlayerKind.EXTERNAL) {
+                                if (isExternal) {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
                                         contentDescription = null,

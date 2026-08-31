@@ -1478,7 +1478,19 @@ internal fun MainAppContent(
                 entry<EntityBrowseRoute> { route ->
                     EntityDestination(route = route, navController = navController)
                 }
-                entry<StreamRoute> { route ->
+                entry<StreamRoute>(
+                    metadata = if (isDesktop) {
+                        NavDisplay.transitionSpec {
+                            fadeIn(animationSpec = tween(160)) togetherWith
+                                fadeOut(animationSpec = tween(160))
+                        } + NavDisplay.popTransitionSpec {
+                            fadeIn(animationSpec = tween(160)) togetherWith
+                                fadeOut(animationSpec = tween(160))
+                        }
+                    } else {
+                        emptyMap()
+                    },
+                ) { route ->
                     StreamDestination(
                         route = route,
                         navController = navController,

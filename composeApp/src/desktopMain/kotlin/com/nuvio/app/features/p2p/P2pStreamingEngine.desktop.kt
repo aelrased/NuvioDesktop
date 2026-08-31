@@ -1,15 +1,8 @@
 package com.nuvio.app.features.p2p
 
 import co.touchlab.kermit.Logger
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.timeout
-import io.ktor.client.request.get
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.contentType
+import com.nuvio.app.core.i18n.localizedP2pUnknownTorrentError
+import com.nuvio.app.core.storage.DesktopStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,12 +17,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -37,15 +29,21 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
 import java.io.File
+import java.net.URI
 import java.net.URLEncoder
-import java.net.URL
-import java.net.HttpURLConnection
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.time.Duration
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
-private val TAG = "P2pStreamingEngine"
-private val log = Logger.withTag(TAG)
 private val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "avi", "webm", "ts", "m4v", "mov", "wmv", "flv")
 
 actual object P2pStreamingEngine {
+    private val log = Logger.withTag("P2pStreamingEngine")
     private val _state = MutableStateFlow<P2pStreamingState>(P2pStreamingState.Idle)
     actual val state: StateFlow<P2pStreamingState> = _state.asStateFlow()
     private val _cacheState = MutableStateFlow(P2pCacheUiState(hasMeasurement = true))
@@ -59,6 +57,18 @@ actual object P2pStreamingEngine {
     private var streamGeneration = 0L
     private val binary = TorrServerBinary()
     private val api = TorrServerApi(binary)
+
+    init {
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                runCatching {
+                    runBlocking { stopStreamNow(stopBinary = true) }
+                }
+            }.apply {
+                name = "nuvio-torrserver-shutdown"
+            },
+        )
+    }
 
     actual suspend fun startStream(request: P2pStreamRequest): String = withContext(Dispatchers.IO) {
         stopStreamNow(stopBinary = false)
@@ -89,7 +99,7 @@ actual object P2pStreamingEngine {
             ensureCurrentGeneration(generation)
 
             val streamUrl = api.getStreamUrl(magnetLink, resolvedIdx)
-            println("$TAG: Stream URL: $streamUrl")
+            log.d { "Stream URL: $streamUrl" }
 
             startStatsPolling(hash, generation)
 
@@ -109,7 +119,7 @@ actual object P2pStreamingEngine {
             throw e
         } catch (e: Exception) {
             if (isCurrentGeneration(generation)) {
-                _state.value = P2pStreamingState.Error(e.message ?: "Unknown P2P error")
+                _state.value = P2pStreamingState.Error(e.message ?: localizedP2pUnknownTorrentError())
             }
             throw e
         }
@@ -176,7 +186,7 @@ actual object P2pStreamingEngine {
             try {
                 api.dropTorrent(it)
             } catch (e: Exception) {
-                println("$TAG: Error dropping torrent: ${e.message}")
+                log.w(e) { "Error dropping torrent" }
             }
         }
 
@@ -184,7 +194,7 @@ actual object P2pStreamingEngine {
             try {
                 binary.stop()
             } catch (e: Exception) {
-                println("$TAG: Error stopping TorrServer: ${e.message}")
+                log.w(e) { "Error stopping TorrServer" }
             }
         }
         _cacheState.value = P2pCacheUiState(hasMeasurement = true)
@@ -224,13 +234,14 @@ actual object P2pStreamingEngine {
         while (System.currentTimeMillis() < deadline) {
             files = api.getTorrentStats(hash)?.files ?: emptyList()
             if (files.isNotEmpty()) break
-            println("$TAG: Waiting for torrent metadata...")
+            log.d { "Waiting for torrent metadata..." }
             delay(1_000L)
         }
 
         if (files.isEmpty()) {
-            println("$TAG: No files after metadata timeout, guessing index ${requestedIdx?.plus(1) ?: 1}")
-            return requestedIdx?.plus(1) ?: 1
+            val fallback = requestedIdx?.plus(1) ?: 1
+            log.w { "No files after metadata timeout, guessing index $fallback" }
+            return fallback
         }
 
         if (!filename.isNullOrBlank()) {
@@ -239,7 +250,7 @@ actual object P2pStreamingEngine {
                 file.path.substringAfterLast('/').equals(name, ignoreCase = true)
             }
             if (exact != null) {
-                println("$TAG: File resolved by exact filename match: ${exact.path} -> id=${exact.id}")
+                log.d { "File resolved by exact filename match: ${exact.path} -> id=${exact.id}" }
                 return exact.id
             }
 
@@ -247,7 +258,7 @@ actual object P2pStreamingEngine {
                 file.path.contains(name, ignoreCase = true)
             }
             if (contains != null) {
-                println("$TAG: File resolved by filename contains match: ${contains.path} -> id=${contains.id}")
+                log.d { "File resolved by filename contains match: ${contains.path} -> id=${contains.id}" }
                 return contains.id
             }
         }
@@ -255,14 +266,14 @@ actual object P2pStreamingEngine {
         if (requestedIdx != null) {
             val torrServerIndex = requestedIdx + 1
             if (files.any { it.id == torrServerIndex }) {
-                println("$TAG: File resolved by ID offset: id=$torrServerIndex")
+                log.d { "File resolved by ID offset: id=$torrServerIndex" }
                 return torrServerIndex
             }
         }
 
         if (requestedIdx != null && requestedIdx in files.indices) {
             val positionalFile = files[requestedIdx]
-            println("$TAG: File resolved by positional index: [$requestedIdx] -> ${positionalFile.path} (id=${positionalFile.id})")
+            log.d { "File resolved by positional index: [$requestedIdx] -> ${positionalFile.path} (id=${positionalFile.id})" }
             return positionalFile.id
         }
 
@@ -274,7 +285,7 @@ actual object P2pStreamingEngine {
             .maxByOrNull { it.length }
 
         val result = videoFile?.id ?: files.maxByOrNull { it.length }?.id ?: 1
-        println("$TAG: File resolved by largest video fallback: id=$result")
+        log.d { "File resolved by largest video fallback: id=$result" }
         return result
     }
 
@@ -311,7 +322,7 @@ actual object P2pStreamingEngine {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    println("$TAG: Stats polling error: ${e.message}")
+                    log.w(e) { "Stats polling error" }
                 }
                 delay(1_000L)
             }
@@ -327,61 +338,53 @@ actual object P2pStreamingEngine {
     )
 
     private class TorrServerBinary {
+        private val log = Logger.withTag("TorrServerBinary")
+        private val healthClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(2))
+            .build()
         private var process: Process? = null
-        private val httpClient = HttpClient(CIO) {
-            engine {
-                requestTimeout = 5_000
-            }
-            expectSuccess = false
-        }
 
         val baseUrl: String get() = "http://127.0.0.1:$PORT"
 
-        private fun binaryName(): String {
-            val os = System.getProperty("os.name").lowercase()
-            return when {
-                os.contains("win") -> "torrserver.exe"
-                else -> "torrserver"
-            }
-        }
-
-        private fun configDir(): File {
-            val home = System.getProperty("user.home") ?: System.getProperty("java.io.tmpdir")
-            return File(home, ".nuvio/torrserver").also { it.mkdirs() }
-        }
-
         suspend fun start() = withContext(Dispatchers.IO) {
             if (isRunning()) {
-                println("$TAG: TorrServer already running")
+                log.d { "TorrServer already running" }
                 return@withContext
             }
 
             killOrphanedProcess()
 
-            val binaryFile = resolveBinary()
-            val configDir = configDir()
+            val binaryFile = resolveBinaryFile()
+            if (!binaryFile.canExecute()) {
+                binaryFile.setExecutable(true)
+            }
+
+            val configDir = DesktopStorage.rootDir.resolve("torrserver").toFile().also { it.mkdirs() }
             val processBuilder = ProcessBuilder(
                 binaryFile.absolutePath,
                 "--port",
                 PORT.toString(),
+                "--ip",
+                "127.0.0.1",
                 "--path",
                 configDir.absolutePath,
             )
             processBuilder.directory(configDir)
             processBuilder.redirectErrorStream(true)
 
-            println("$TAG: Starting TorrServer on port $PORT from ${binaryFile.absolutePath}")
+            log.d { "Starting TorrServer on port $PORT from ${binaryFile.absolutePath}" }
             process = processBuilder.start()
 
             val proc = process!!
             Thread {
                 try {
                     proc.inputStream.bufferedReader().forEachLine { line ->
-                        println("$TAG: [server] $line")
+                        log.d { "[server] $line" }
                     }
                 } catch (_: Exception) {
                 }
             }.apply {
+                name = "nuvio-torrserver-output"
                 isDaemon = true
                 start()
             }
@@ -389,7 +392,7 @@ actual object P2pStreamingEngine {
             val deadline = System.currentTimeMillis() + STARTUP_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
                 if (isRunning()) {
-                    println("$TAG: TorrServer started successfully")
+                    log.d { "TorrServer started successfully" }
                     return@withContext
                 }
                 if (!isProcessAlive(process)) {
@@ -404,115 +407,31 @@ actual object P2pStreamingEngine {
             throw P2pStreamingException("TorrServer failed to start within ${STARTUP_TIMEOUT_MS / 1000}s")
         }
 
-        private fun resolveBinary(): File {
-            val name = binaryName()
-
-            val candidates = listOf(
-                File("composeApp/build/native/torrserver/$name"),
-                File("build/native/torrserver/$name"),
-                File("native/torrserver/$name"),
-            )
-            candidates.firstOrNull { it.exists() }?.let { return it }
-
-            val tempDir = File(System.getProperty("java.io.tmpdir"), "nuvio-torrserver").apply { mkdirs() }
-            val extracted = File(tempDir, name)
-            if (extracted.exists()) return extracted
-
-            val resourcePath = "/native/torrserver/$name"
-            val input = P2pStreamingEngine::class.java.getResourceAsStream(resourcePath)
-
-            if (input != null) {
-                input.use { source ->
-                    extracted.outputStream().use { target ->
-                        source.copyTo(target)
-                    }
-                }
-                if (System.getProperty("os.name").lowercase().contains("win").not()) {
-                    extracted.setExecutable(true)
-                }
-                println("$TAG: Extracted TorrServer binary to ${extracted.absolutePath}")
-                return extracted
-            }
-
-            println("$TAG: TorrServer binary not found locally, downloading from GitHub releases...")
-            return downloadBinary(tempDir, name)
-        }
-
-        private fun downloadBinary(tempDir: File, binaryName: String): File {
-            val os = System.getProperty("os.name").lowercase()
-            val arch = System.getProperty("os.arch").lowercase()
-
-            val osPart = when {
-                os.contains("linux") -> "linux"
-                os.contains("mac") || os.contains("darwin") -> "darwin"
-                os.contains("win") -> "windows"
-                else -> throw P2pStreamingException("Unsupported OS: $os")
-            }
-
-            val archPart = when {
-                arch.contains("aarch64") || arch.contains("arm64") -> "arm64"
-                arch.contains("amd64") || arch.contains("x86_64") -> "amd64"
-                arch.contains("x86") || arch.contains("386") -> "386"
-                else -> throw P2pStreamingException("Unsupported architecture: $arch")
-            }
-
-            val tagName = "MatriX.141.5"
-            val assetName = if (osPart == "windows") "TorrServer-$osPart-$archPart.exe" else "TorrServer-$osPart-$archPart"
-            val downloadUrl = "https://github.com/YouROK/TorrServer/releases/download/$tagName/$assetName"
-
-            println("$TAG: Downloading TorrServer from $downloadUrl")
-
-            val downloaded = File(tempDir, binaryName)
-            val connection = URL(downloadUrl).openConnection() as HttpURLConnection
+        fun isRunning(): Boolean =
             try {
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 60_000
-                connection.readTimeout = 120_000
-                connection.instanceFollowRedirects = true
-
-                val responseCode = connection.responseCode
-                if (responseCode != 200) {
-                    throw P2pStreamingException("Failed to download TorrServer: HTTP $responseCode")
-                }
-
-                connection.inputStream.use { input ->
-                    downloaded.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            } finally {
-                connection.disconnect()
-            }
-
-            if (System.getProperty("os.name").lowercase().contains("win").not()) {
-                downloaded.setExecutable(true)
-            }
-
-            println("$TAG: Downloaded TorrServer binary to ${downloaded.absolutePath}")
-            return downloaded
-        }
-
-        suspend fun isRunning(): Boolean {
-            return try {
-                val response = httpClient.get("$baseUrl/echo")
-                response.status.value in 200..399
-            } catch (e: Exception) {
+                val request = HttpRequest.newBuilder(URI.create("$baseUrl/echo"))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build()
+                val response = healthClient.send(request, HttpResponse.BodyHandlers.discarding())
+                response.statusCode() in 200..299
+            } catch (_: Exception) {
                 false
             }
-        }
 
         fun stop() {
             try {
-                runBlocking {
-                    httpClient.get("$baseUrl/shutdown")
-                }
+                val request = HttpRequest.newBuilder(URI.create("$baseUrl/shutdown"))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build()
+                healthClient.send(request, HttpResponse.BodyHandlers.discarding())
             } catch (_: Exception) {
             }
 
             process?.let { proc ->
                 try {
-                    Thread.sleep(3_000L)
-                    if (isProcessAlive(proc)) {
+                    if (!proc.waitFor(3_000L, TimeUnit.MILLISECONDS) && isProcessAlive(proc)) {
                         proc.destroyForcibly()
                     }
                 } catch (_: Exception) {
@@ -520,30 +439,83 @@ actual object P2pStreamingEngine {
                 }
             }
             process = null
-            println("$TAG: TorrServer stopped")
+            log.d { "TorrServer stopped" }
         }
 
         private fun killOrphanedProcess() {
             try {
-                runBlocking {
-                    httpClient.get("$baseUrl/shutdown")
-                }
+                val request = HttpRequest.newBuilder(URI.create("$baseUrl/shutdown"))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build()
+                healthClient.send(request, HttpResponse.BodyHandlers.discarding())
                 Thread.sleep(1_000L)
-                println("$TAG: Shut down orphaned TorrServer instance")
+                log.d { "Shut down orphaned TorrServer instance" }
             } catch (_: Exception) {
             }
         }
 
-        private fun isProcessAlive(proc: Process?): Boolean {
-            if (proc == null) return false
-            return try {
-                proc.exitValue()
-                false
-            } catch (_: IllegalThreadStateException) {
-                true
-            } catch (_: Exception) {
-                false
+        private fun isProcessAlive(proc: Process?): Boolean =
+            proc?.isAlive == true
+
+        private fun resolveBinaryFile(): File {
+            configuredBinaryPath()?.let { configured ->
+                val file = File(configured)
+                if (file.exists()) return file
+                throw P2pStreamingException("Configured TorrServer binary was not found at ${file.absolutePath}")
             }
+
+            val platform = DesktopTorrServerPlatform.current()
+            localBinaryCandidates(platform)
+                .firstOrNull(File::exists)
+                ?.let { return it }
+
+            extractBundledBinary(platform)?.let { return it }
+
+            throw P2pStreamingException(
+                "TorrServer desktop binary not found for ${platform.resourceDir}. " +
+                    "Set -Dnuvio.torrserver.binary=/absolute/path/to/TorrServer or " +
+                    "NUVIO_TORRSERVER_BINARY, or bundle /torrserver/${platform.resourceDir}/${platform.binaryName}.",
+            )
+        }
+
+        private fun configuredBinaryPath(): String? =
+            System.getProperty("nuvio.torrserver.binary")
+                ?.takeIf { it.isNotBlank() }
+                ?: System.getenv("NUVIO_TORRSERVER_BINARY")?.takeIf { it.isNotBlank() }
+
+        private fun localBinaryCandidates(platform: DesktopTorrServerPlatform): List<File> =
+            listOf(
+                File("composeApp/build/native/torrserver/${platform.resourceDir}/${platform.binaryName}"),
+                File("build/native/torrserver/${platform.resourceDir}/${platform.binaryName}"),
+                File("composeApp/src/desktopMain/native/torrserver/${platform.resourceDir}/${platform.binaryName}"),
+                File("composeApp/src/desktopMain/torrserver/${platform.resourceDir}/${platform.binaryName}"),
+                File("composeApp/src/desktopMain/resources/torrserver/${platform.resourceDir}/${platform.binaryName}"),
+                File("vendor/TorrServer/dist/${platform.distFileName}"),
+                File("vendor/TorrServer/dist/${platform.binaryName}"),
+            )
+
+        private fun extractBundledBinary(platform: DesktopTorrServerPlatform): File? {
+            val resource = "/torrserver/${platform.resourceDir}/${platform.binaryName}"
+            val input = P2pStreamingEngine::class.java.getResourceAsStream(resource) ?: return null
+            val dir = DesktopStorage.rootDir.resolve("torrserver/bin/${platform.resourceDir}").toFile().apply { mkdirs() }
+            val file = File(dir, platform.binaryName)
+            val tempFile = File(dir, "${platform.binaryName}.tmp")
+            input.use { source ->
+                tempFile.outputStream().use { target -> source.copyTo(target) }
+            }
+            runCatching {
+                Files.move(
+                    tempFile.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            }.getOrElse {
+                Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            file.setExecutable(true)
+            return file
         }
 
         companion object {
@@ -552,6 +524,42 @@ actual object P2pStreamingEngine {
             private const val HEALTH_CHECK_INTERVAL_MS = 200L
         }
     }
+
+    private data class DesktopTorrServerPlatform(
+        val resourceDir: String,
+        val distFileName: String,
+        val binaryName: String,
+    ) {
+        companion object {
+            fun current(): DesktopTorrServerPlatform {
+                val osName = System.getProperty("os.name").orEmpty().lowercase(Locale.ROOT)
+                val arch = System.getProperty("os.arch").orEmpty().lowercase(Locale.ROOT)
+                val os = when {
+                    osName.contains("mac") -> DesktopTorrServerOs(resourceName = "macos", distName = "darwin")
+                    osName.contains("win") -> DesktopTorrServerOs(resourceName = "windows", distName = "windows")
+                    osName.contains("linux") -> DesktopTorrServerOs(resourceName = "linux", distName = "linux")
+                    else -> throw P2pStreamingException("Unsupported desktop OS for TorrServer: $osName")
+                }
+                val archName = when (arch) {
+                    "aarch64", "arm64" -> "arm64"
+                    "amd64", "x86_64", "x64" -> "amd64"
+                    "x86", "i386", "i686" -> "386"
+                    else -> throw P2pStreamingException("Unsupported desktop architecture for TorrServer: $arch")
+                }
+                val extension = if (os.distName == "windows") ".exe" else ""
+                return DesktopTorrServerPlatform(
+                    resourceDir = "${os.resourceName}-$archName",
+                    distFileName = "TorrServer-${os.distName}-$archName$extension",
+                    binaryName = "TorrServer$extension",
+                )
+            }
+        }
+    }
+
+    private data class DesktopTorrServerOs(
+        val resourceName: String,
+        val distName: String,
+    )
 
     private data class TorrServerFile(
         val id: Int,
@@ -573,14 +581,11 @@ actual object P2pStreamingEngine {
     private class TorrServerApi(
         private val binary: TorrServerBinary,
     ) {
-        private val httpClient = HttpClient(CIO) {
-            engine {
-                requestTimeout = 30_000
-            }
-            expectSuccess = false
-        }
-
+        private val log = Logger.withTag("TorrServerApi")
         private val json = Json { ignoreUnknownKeys = true }
+        private val client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build()
 
         private val baseUrl: String get() = binary.baseUrl
 
@@ -593,21 +598,16 @@ actual object P2pStreamingEngine {
             }
 
             try {
-                val response = httpClient.post("$baseUrl/torrents") {
-                    contentType(ContentType.Application.Json)
-                    setBody(body.toString())
-                }
-                if (response.status.value !in 200..399) {
-                    println("$TAG: addTorrent failed: ${response.status}")
+                val response = postJson("/torrents", body)
+                if (response == null) {
+                    log.e { "addTorrent failed" }
                     return@withContext null
                 }
-                val responseBody = response.bodyAsText()
-                val json = json.parseToJsonElement(responseBody).jsonObject
-                val hash = json["hash"]?.jsonPrimitive?.content ?: ""
-                println("$TAG: Torrent added: $hash")
-                hash.ifEmpty { null }
+                val hash = response.stringOrNull("hash")
+                log.d { "Torrent added: $hash" }
+                hash?.takeIf { it.isNotBlank() }
             } catch (e: Exception) {
-                println("$TAG: addTorrent error: ${e.message}")
+                log.e(e) { "addTorrent error" }
                 null
             }
         }
@@ -619,39 +619,28 @@ actual object P2pStreamingEngine {
             }
 
             try {
-                val response = httpClient.post("$baseUrl/torrents") {
-                    contentType(ContentType.Application.Json)
-                    setBody(body.toString())
-                }
-                if (response.status.value !in 200..399) return@withContext null
-                val responseBody = response.bodyAsText()
-                val jsonObject = json.parseToJsonElement(responseBody).jsonObject
-
-                val files = mutableListOf<TorrServerFile>()
-                val fileList = jsonObject["file_stats"]?.jsonArray ?: buildJsonArray { }
-                for (i in 0 until fileList.size) {
-                    val file = fileList[i].jsonObject
-                    files.add(
-                        TorrServerFile(
-                            id = file["id"]?.jsonPrimitive?.int ?: (i + 1),
-                            path = file["path"]?.jsonPrimitive?.content ?: "",
-                            length = file["length"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                        ),
+                val json = postJson("/torrents", body) ?: return@withContext null
+                val files = json.arrayOrEmpty("file_stats").mapIndexed { index, file ->
+                    val obj = file.jsonObject
+                    TorrServerFile(
+                        id = obj.intOrDefault("id", index + 1),
+                        path = obj.stringOrNull("path").orEmpty(),
+                        length = obj.longOrDefault("length", 0L),
                     )
                 }
 
                 TorrServerStats(
-                    downloadSpeed = jsonObject["download_speed"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    uploadSpeed = jsonObject["upload_speed"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    peers = jsonObject["active_peers"]?.jsonPrimitive?.int ?: 0,
-                    seeds = jsonObject["connected_seeders"]?.jsonPrimitive?.int ?: 0,
-                    preloadedBytes = jsonObject["preloaded_bytes"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    loadedSize = jsonObject["loaded_size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    torrentSize = jsonObject["torrent_size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                    downloadSpeed = json.longOrDefault("download_speed", 0L),
+                    uploadSpeed = json.longOrDefault("upload_speed", 0L),
+                    peers = json.intOrDefault("active_peers", 0),
+                    seeds = json.intOrDefault("connected_seeders", 0),
+                    preloadedBytes = json.longOrDefault("preloaded_bytes", 0L),
+                    loadedSize = json.longOrDefault("loaded_size", 0L),
+                    torrentSize = json.longOrDefault("torrent_size", 0L),
                     files = files,
                 )
             } catch (e: Exception) {
-                println("$TAG: getTorrentStats error: ${e.message}")
+                log.w(e) { "getTorrentStats error" }
                 null
             }
         }
@@ -663,19 +652,32 @@ actual object P2pStreamingEngine {
             }
 
             try {
-                httpClient.post("$baseUrl/torrents") {
-                    contentType(ContentType.Application.Json)
-                    setBody(body.toString())
-                }
-                println("$TAG: Torrent dropped: $hash")
+                postJson("/torrents", body)
+                log.d { "Torrent dropped: $hash" }
             } catch (e: Exception) {
-                println("$TAG: dropTorrent error: ${e.message}")
+                log.w(e) { "dropTorrent error" }
             }
         }
 
         fun getStreamUrl(magnetLink: String, fileIdx: Int): String {
-            val encodedLink = URLEncoder.encode(magnetLink, "UTF-8")
+            val encodedLink = URLEncoder.encode(magnetLink, Charsets.UTF_8.name())
             return "$baseUrl/stream?link=$encodedLink&index=$fileIdx&play"
+        }
+
+        private fun postJson(path: String, body: JsonObject): JsonObject? {
+            val request = HttpRequest.newBuilder(URI.create("$baseUrl$path"))
+                .timeout(Duration.ofSeconds(30))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() !in 200..299) return null
+            // TorrServer answers some actions -- "drop" among them -- with 2xx and an
+            // empty body, which is not a JSON document. Parsing it threw on every
+            // dropTorrent call. No body means no object to return.
+            val raw = response.body().orEmpty()
+            if (raw.isBlank()) return null
+            return json.parseToJsonElement(raw).jsonObject
         }
     }
 
@@ -683,11 +685,15 @@ actual object P2pStreamingEngine {
         if (total > 0L) (toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
 }
 
+private fun JsonObject.stringOrNull(key: String): String? =
+    this[key]?.jsonPrimitive?.contentOrNull
 
 private fun JsonObject.intOrDefault(key: String, default: Int): Int =
     this[key]?.jsonPrimitive?.intOrNull ?: default
 
 private fun JsonObject.longOrDefault(key: String, default: Long): Long =
+    // TorrServer reports rate fields (download_speed/upload_speed) as floats, so
+    // longOrNull returns null for them; fall back to the double value truncated.
     this[key]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() } ?: default
 
 private fun JsonObject.arrayOrEmpty(key: String): JsonArray =

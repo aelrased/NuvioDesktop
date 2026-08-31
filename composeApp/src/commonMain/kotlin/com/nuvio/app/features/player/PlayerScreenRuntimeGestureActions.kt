@@ -4,8 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.geometry.Offset
-import com.nuvio.app.core.ui.toggleFullscreenAction
-import com.nuvio.app.isDesktop
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import kotlinx.coroutines.delay
@@ -43,17 +41,6 @@ internal fun PlayerScreenRuntime.showGestureFeedback(feedback: GestureFeedbackSt
 
 internal fun PlayerScreenRuntime.showGestureMessage(message: String) {
     showGestureFeedback(GestureFeedbackState(message = message))
-}
-
-internal fun PlayerScreenRuntime.showToast(message: String) {
-    toastJob?.cancel()
-    toastMessage = message
-    toastVisible = true
-    toastJob = scope.launch {
-        delay(1800)
-        toastVisible = false
-        toastMessage = null
-    }
 }
 
 internal fun PlayerScreenRuntime.clearLiveGestureFeedback() {
@@ -262,14 +249,14 @@ internal fun PlayerScreenRuntime.cycleResizeMode() {
     resizeMode = nextMode
     lastSyncedSettingsResizeMode = nextMode
     PlayerSettingsRepository.setResizeMode(nextMode)
-    val label = when (nextMode) {
-        PlayerResizeMode.Fit -> resizeModeFitLabel
-        PlayerResizeMode.Fill -> resizeModeFillLabel
-        PlayerResizeMode.Zoom -> resizeModeZoomLabel
-        PlayerResizeMode.Stretch -> resizeModeStretchLabel
-    }
-    showGestureMessage(label)
-    showToast(label)
+    showGestureMessage(
+        when (nextMode) {
+            PlayerResizeMode.Fit -> resizeModeFitLabel
+            PlayerResizeMode.Fill -> resizeModeFillLabel
+            PlayerResizeMode.Zoom -> resizeModeZoomLabel
+            PlayerResizeMode.Stretch -> resizeModeStretchLabel
+        },
+    )
     controlsVisible = true
 }
 
@@ -278,9 +265,7 @@ internal fun PlayerScreenRuntime.cyclePlaybackSpeed() {
     val current = playbackSnapshot.playbackSpeed
     val next = speeds.firstOrNull { it > current + 0.01f } ?: speeds.first()
     playerController?.setPlaybackSpeed(next)
-    val label = formatPlaybackSpeedLabel(next)
-    showGestureMessage(label)
-    showToast(label)
+    showGestureMessage(formatPlaybackSpeedLabel(next))
     controlsVisible = true
 }
 
@@ -329,10 +314,6 @@ internal fun PlayerScreenRuntime.rememberSurfaceGestureCallbacks(): PlayerSurfac
     val onSurfaceDoubleTap = rememberUpdatedState { offset: Offset ->
         if (playerControlsLocked) {
             revealLockedOverlay()
-            return@rememberUpdatedState
-        }
-        if (isDesktop) {
-            toggleFullscreenAction()
             return@rememberUpdatedState
         }
         if (!playerSettingsUiState.touchGesturesEnabled) {

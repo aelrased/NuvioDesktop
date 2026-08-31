@@ -23,7 +23,6 @@ import com.nuvio.app.features.player.SubtitleColorSwatches
 import com.nuvio.app.features.player.SubtitleOutlineColorSwatches
 import com.nuvio.app.features.player.SubtitleStyleState
 import com.nuvio.app.features.player.SubtitleTrack
-import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.player.inferForcedSubtitleTrack
 import com.nuvio.app.features.player.toStorageHexString
 import kotlinx.serialization.Serializable
@@ -48,12 +47,12 @@ internal typealias NativePlayerCreate = (
 ) -> Long
 
 internal class NativePlayerController(
-    private val host: PlayerHost,
+    private val host: NativePlayerHost,
     private val nativeCreate: NativePlayerCreate = NativePlayerBridge::create,
     private val nativeDispose: (Long) -> Unit = NativePlayerBridge::dispose,
     private val nativeSeekTo: (Long, Long) -> Unit = NativePlayerBridge::seekTo,
-    private val isHostDisplayable: () -> Boolean = { (host as? java.awt.Component)?.isDisplayable == true },
-    private val resolveHostView: () -> Long = { AwtNativeViewResolver.resolveNativeViewPointer(host as java.awt.Component) },
+    private val isHostDisplayable: () -> Boolean = { host.isDisplayable },
+    private val resolveHostView: () -> Long = { AwtNativeViewResolver.resolveNativeViewPointer(host) },
     private val createWaitTimeoutMs: Long = 5_000L,
     private val releaseTimeoutMs: Long = 10_000L,
     private val onCreateWaitCompleted: () -> Unit = {},
@@ -81,7 +80,6 @@ internal class NativePlayerController(
 
     @Volatile
     private var handle: Long = 0L
-    private var _volume: Float = 50f // 0..100 range
 
     /** Native teardown of the previous player, if one is still running. */
     @Volatile
@@ -98,6 +96,8 @@ internal class NativePlayerController(
     private var releaseTimedOut: Boolean = false
     private var terminalReleaseFailure: String? = null
     private var controlsState = PlayerControlsState()
+    @Volatile
+    private var currentVolumeLevel = rememberedVolumeLevel.coerceDesktopPlayerVolumeLevel()
     private var pendingSubtitleDelayMs: Int? = null
     private var pendingSubtitleStyle: SubtitleStyleState? = null
     private var pendingUseLibass: Boolean = false
@@ -107,25 +107,8 @@ internal class NativePlayerController(
     private var onScrubChange: (Long) -> Boolean = { false }
     private var onScrubFinished: (Long) -> Boolean = { false }
     private val eventSink = NativePlayerEventSink { type, value ->
-        if (DesktopHostOs.current == DesktopHostOs.LINUX) {
+        SwingUtilities.invokeLater {
             handlePlayerEvent(type, value)
-        } else {
-            SwingUtilities.invokeLater {
-                handlePlayerEvent(type, value)
-            }
-        }
-    }
-
-    init {
-        host.onMouseClick = {
-            onAction(PlayerControlsAction.ToggleChrome)
-        }
-        host.onDoubleClick = {
-            val window = (host as? java.awt.Component)?.let {
-                SwingUtilities.getWindowAncestor(it)
-            }
-            toggleDesktopAppFullscreen(window)
-            lastSentControlsStructureKey = null
         }
     }
 
@@ -134,8 +117,8 @@ internal class NativePlayerController(
         sourceHeaders: Map<String, String>,
         playWhenReady: Boolean,
         initialPositionMs: Long,
-        decoderPriority: Int = 0,
-        nvidiaRtxSuperResolutionEnabled: Boolean = false,
+        decoderPriority: Int,
+        nvidiaRtxSuperResolutionEnabled: Boolean,
         onError: (String?) -> Unit,
     ) {
         val pending = PendingSource(
@@ -395,66 +378,6 @@ internal class NativePlayerController(
         }
     }
 
-    private fun attachPendingAwt(pending: PendingSource, nativeHost: NativePlayerHost) {
-        disposePlayerHandle()
-        runCatching {
-            val hostViewPtr = AwtNativeViewResolver.resolveNativeViewPointer(nativeHost)
-            val resolvedSource = resolveSourceUrl(pending.sourceUrl)
-            handle = NativePlayerBridge.create(
-                hostViewPtr = hostViewPtr,
-                sourceUrl = resolvedSource,
-                headerLines = pending.headerLines.toTypedArray(),
-                playWhenReady = pending.playWhenReady,
-                initialPositionMs = pending.initialPositionMs,
-                controlsPageUrl = NativePlayerBridge.controlsPageUrl,
-                decoderPriority = pending.decoderPriority,
-                nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
-                eventSink = eventSink,
-            )
-            if (handle == 0L) error("Native player did not return a handle.")
-            nativeHost.nativeHandle = handle
-            nativeHost.onResize = { w, h ->
-                NativePlayerBridge.resizeNativeView(handle, w, h)
-            }
-            updateControls(controlsState)
-        }.onFailure { error ->
-            pending.onError(error.message)
-        }
-    }
-
-    private fun attachPendingDirect(pending: PendingSource) {
-        disposePlayerHandle()
-        runCatching {
-            val resolvedSource = resolveSourceUrl(pending.sourceUrl)
-            handle = NativePlayerBridge.create(
-                hostViewPtr = 0L,
-                sourceUrl = resolvedSource,
-                headerLines = pending.headerLines.toTypedArray(),
-                playWhenReady = pending.playWhenReady,
-                initialPositionMs = pending.initialPositionMs,
-                controlsPageUrl = "",
-                decoderPriority = pending.decoderPriority,
-                nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
-                eventSink = eventSink,
-            )
-            if (handle == 0L) error("Native player did not return a handle.")
-            host.nativeHandle = handle
-            updateControls(controlsState)
-        }.onFailure { error ->
-            pending.onError(error.message)
-        }
-    }
-
-    private fun resolveSourceUrl(sourceUrl: String): String =
-        if (sourceUrl.startsWith("file:", ignoreCase = true)) {
-            runCatching { java.io.File(java.net.URI(sourceUrl)).absolutePath }.getOrElse {
-                val stripped = sourceUrl.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
-                runCatching { java.net.URLDecoder.decode(stripped, "UTF-8") }.getOrDefault(stripped)
-            }
-        } else {
-            sourceUrl
-        }
-
     fun setControlCallbacks(
         onAction: (PlayerControlsAction) -> Boolean,
         onEvent: (String, Double) -> Boolean,
@@ -486,6 +409,7 @@ internal class NativePlayerController(
         return { window.removeWindowFocusListener(listener) }
     }
 
+    @Synchronized
     fun updateControls(state: PlayerControlsState) {
         host.setControlsVisible(state.controlsVisible)
         val currentHandle = handle
@@ -493,15 +417,16 @@ internal class NativePlayerController(
             controlsState = state
             return
         }
-        val stateWithVolume = if (state.volumeLevel == null) {
-            state.copy(volumeLevel = NativePlayerBridge.volume(current).coerceIn(0f, 1f))
-        } else {
-            state
-        }
+        val stateWithVolume = state.copy(
+            volumeLevel = resolveDesktopPlayerVolumeLevel(
+                requestedLevel = state.volumeLevel,
+                currentLevel = currentVolumeLevel,
+                rememberedLevel = rememberedVolumeLevel,
+            ),
+        )
+        currentVolumeLevel = stateWithVolume.volumeLevel ?: currentVolumeLevel
         controlsState = stateWithVolume
-        val isFullscreen = (host as? java.awt.Component)?.let {
-            isDesktopAppFullscreen(SwingUtilities.getWindowAncestor(it))
-        } ?: false
+        val isFullscreen = isDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
         val structureKey = NativeControlsStructureKey(
             state = stateWithVolume.nativeControlsStructureKey(),
             isFullscreen = isFullscreen,
@@ -524,10 +449,9 @@ internal class NativePlayerController(
     }
 
     private fun requestKeyboardFocus() {
-        val awtHost = host as? java.awt.Component ?: return
         SwingUtilities.invokeLater {
-            if (!awtHost.isDisplayable) return@invokeLater
-            awtHost.requestFocusInWindow()
+            if (!isHostDisplayable()) return@invokeLater
+            host.requestFocusInWindow()
             val current = handle.takeIf { it != 0L } ?: return@invokeLater
             NativePlayerBridge.requestFocus(current)
         }
@@ -569,16 +493,15 @@ internal class NativePlayerController(
                 }
             }
             "toggleFullscreen" -> {
-                val window = (host as? java.awt.Component)?.let {
-                    SwingUtilities.getWindowAncestor(it)
-                }
-                toggleDesktopAppFullscreen(window)
-                lastSentControlsStructureKey = null
-                updateControls(controlsState)
+                toggleDesktopAppFullscreen(SwingUtilities.getWindowAncestor(host))
                 onDesktopFullscreenChanged()
             }
             "volumeChange" -> setFallbackVolume(value.toFloat())
             "volumeChangeTemporary" -> setTemporaryVolume(value.toFloat())
+            "setPlaybackSpeed" -> {
+                val speed = value.toFloat()
+                setPlaybackSpeed(speed)
+            }
             else -> {
                 val eventHandled = onEvent(type, value)
                 if (type.shouldLogNativeControlEvent()) {
@@ -596,6 +519,7 @@ internal class NativePlayerController(
         }
     }
 
+    @Synchronized
     private fun updateLocalProgress(positionMs: Long) {
         controlsState = controlsState.copy(positionMs = positionMs)
         updateControls(controlsState)
@@ -621,34 +545,34 @@ internal class NativePlayerController(
             PlayerControlsAction.KeyboardSeekBack -> fallbackSeekBy(-10_000L)
             PlayerControlsAction.SeekForward,
             PlayerControlsAction.KeyboardSeekForward -> fallbackSeekBy(10_000L)
-            PlayerControlsAction.KeyboardVolumeDown -> adjustFallbackVolume(-5f)
-            PlayerControlsAction.KeyboardVolumeUp -> adjustFallbackVolume(5f)
+            PlayerControlsAction.KeyboardVolumeDown -> adjustFallbackVolume(-10f)
+            PlayerControlsAction.KeyboardVolumeUp -> adjustFallbackVolume(10f)
             PlayerControlsAction.Speed -> cycleFallbackSpeed()
-            PlayerControlsAction.Fullscreen -> {
-                val window = (host as? java.awt.Component)?.let {
-                    SwingUtilities.getWindowAncestor(it)
-                }
-                toggleDesktopAppFullscreen(window)
-                lastSentControlsStructureKey = null
-            }
             else -> Unit
         }
     }
 
+    @Synchronized
     private fun adjustFallbackVolume(delta: Float) {
         val current = handle
         if (current != 0L) {
-            val currentLevel = controlsState.volumeLevel ?: NativePlayerBridge.volume(current).coerceIn(0f, 1f)
-            val nextLevel = (currentLevel + (delta / 100f)).coerceIn(0f, 1f)
+            val currentLevel = resolveDesktopPlayerVolumeLevel(
+                requestedLevel = null,
+                currentLevel = currentVolumeLevel,
+                rememberedLevel = rememberedVolumeLevel,
+            )
+            val nextLevel = (currentLevel + (delta / 100f)).coerceDesktopPlayerVolumeLevel()
             setFallbackVolume(nextLevel)
         }
     }
 
+    @Synchronized
     private fun setFallbackVolume(level: Float) {
         val current = handle
         if (current != 0L) {
-            val nextLevel = level.coerceIn(0f, 1f)
+            val nextLevel = level.coerceDesktopPlayerVolumeLevel()
             rememberedVolumeLevel = nextLevel
+            currentVolumeLevel = nextLevel
             DesktopPlayerVolumeStorage.saveVolumeLevel(nextLevel)
             NativePlayerBridge.setVolume(current, nextLevel)
             controlsState = controlsState.copy(volumeLevel = nextLevel)
@@ -656,34 +580,29 @@ internal class NativePlayerController(
         }
     }
 
+    @Synchronized
     private fun setTemporaryVolume(level: Float) {
         val current = handle
         if (current != 0L) {
-            val nextLevel = level.coerceIn(0f, 1f)
+            val nextLevel = level.coerceDesktopPlayerVolumeLevel()
+            currentVolumeLevel = nextLevel
             NativePlayerBridge.setVolume(current, nextLevel)
             controlsState = controlsState.copy(volumeLevel = nextLevel)
             updateControls(controlsState)
         }
     }
 
-    override fun setVolume(volume: Float) {
-        _volume = volume.coerceIn(0f, 100f)
-        val current = handle
-        if (current != 0L) {
-            NativePlayerBridge.setProperty(current, "volume", (_volume * 2f).toInt().toString())
-        }
-    }
-
-    override fun getVolume(): Float = _volume
-
+    @Synchronized
     private fun applyRememberedVolume() {
         val current = handle
         if (current == 0L) return
-        val level = rememberedVolumeLevel.coerceIn(0f, 1f)
+        val level = rememberedVolumeLevel.coerceDesktopPlayerVolumeLevel()
+        currentVolumeLevel = level
         NativePlayerBridge.setVolume(current, level)
         controlsState = controlsState.copy(volumeLevel = level)
         log.d { "applied remembered volume level=$level handle=$current" }
     }
+
     private fun fallbackSeekBy(offsetMs: Long) {
         val current = handle
         if (current != 0L) {
@@ -912,7 +831,6 @@ internal class NativePlayerController(
     private fun detachPlayerHandle(): Long = synchronized(lifecycleLock) {
         val current = handle
         handle = 0L
-        host.nativeHandle = 0L
         lastSentControlsStructureKey = null
         current
     }
@@ -1098,39 +1016,6 @@ internal class NativePlayerController(
         }
     }
 
-    override fun configureIosVideoOutput(settings: PlayerSettingsUiState) {
-        handle.takeIf { it != 0L }?.let { current ->
-            NativePlayerBridge.setProperty(current, "brightness", settings.iosBrightness.toString())
-            NativePlayerBridge.setProperty(current, "contrast", settings.iosContrast.toString())
-            NativePlayerBridge.setProperty(current, "saturation", settings.iosSaturation.toString())
-            NativePlayerBridge.setProperty(current, "gamma", settings.iosGamma.toString())
-            if (settings.iosDebandEnabled) {
-                NativePlayerBridge.setProperty(current, "deband", "yes")
-            } else {
-                NativePlayerBridge.setProperty(current, "deband", "no")
-            }
-            if (settings.iosInterpolationEnabled) {
-                NativePlayerBridge.setProperty(current, "video-sync", "display-resample")
-                NativePlayerBridge.setProperty(current, "interpolation", "yes")
-            } else {
-                NativePlayerBridge.setProperty(current, "interpolation", "no")
-                NativePlayerBridge.setProperty(current, "video-sync", "audio")
-            }
-            NativePlayerBridge.setProperty(current, "hwdec", settings.desktopHwdecMode.mpvValue)
-            settings.customMpvProperties.lines().forEach { line ->
-                val trimmed = line.trim()
-                if (trimmed.isBlank() || trimmed.startsWith("#")) return@forEach
-                val eq = trimmed.indexOf('=')
-                if (eq <= 0) return@forEach
-                val name = trimmed.substring(0, eq).trim()
-                val value = trimmed.substring(eq + 1).trim()
-                if (name.isNotBlank()) {
-                    NativePlayerBridge.setProperty(current, name, value)
-                }
-            }
-        }
-    }
-
     private fun applyPendingSubtitleSettings() {
         val current = handle.takeIf { it != 0L } ?: return
         pendingSubtitleDelayMs?.let { delayMs ->
@@ -1155,6 +1040,7 @@ internal class NativePlayerController(
             stripSdh = style.stripSdh,
         )
     }
+
     private fun decodeTracks(readJson: (Long) -> String): List<NativeMpvTrack> {
         val current = handle.takeIf { it != 0L } ?: return emptyList()
         return runCatching {
@@ -1389,6 +1275,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("p2pConsentEnableLabel", p2pConsentEnableLabel)
         append(',')
         appendJsonField("p2pConsentCancelLabel", p2pConsentCancelLabel)
+        append(',')
+        appendJsonField("speedPanelTitle", speedPanelTitle)
         append(',')
         appendJsonField("audioTracksPanelTitle", audioTracksPanelTitle)
         append(',')

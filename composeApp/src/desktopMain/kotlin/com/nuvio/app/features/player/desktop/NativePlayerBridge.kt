@@ -105,30 +105,6 @@ internal object NativePlayerBridge {
     external fun shutdownWebView2Warmup()
     external fun setWindowsDisplaySleepInhibited(inhibited: Boolean): Boolean
 
-    // Linux-specific native methods
-    external fun renderFrame(handle: Long, dstPixels: IntArray, dstW: Int, dstH: Int): Boolean
-    external fun renderFrameBytes(handle: Long, dstBytes: ByteArray, dstW: Int, dstH: Int): Boolean
-    external fun renderFrameDirect(handle: Long, dstBuffer: java.nio.ByteBuffer, dstW: Int, dstH: Int): Boolean
-    external fun setDirectBufferDst(handle: Long, dstBuffer: java.nio.ByteBuffer?, dstW: Int, dstH: Int)
-    external fun renderFrameTexture(handle: Long, outSize: IntArray): Long
-    external fun captureSkiaEglContext()
-    external fun resizeNativeView(handle: Long, width: Int, height: Int)
-    external fun isWaylandSession(): Boolean
-    external fun setProperty(handle: Long, name: String, value: String)
-
-    // Property observation (mpc-qt pattern)
-    external fun observeProperty(handle: Long, name: String): Boolean
-    external fun unobserveProperty(handle: Long, name: String): Boolean
-    external fun getPropertyJson(handle: Long, name: String): String
-
-    // Cached property getters (mpc-qt throttling pattern)
-    external fun cachedDurationMs(handle: Long): Long
-    external fun cachedPositionMs(handle: Long): Long
-    external fun cachedVolume(handle: Long): Float
-    external fun cachedIsPaused(handle: Long): Boolean
-    external fun cachedIsEof(handle: Long): Boolean
-    external fun cachedMediaTitle(handle: Long): String
-
     val controlsPageUrl: String by lazy { controlsPageAssets.url }
     private val controlsPageAssets: ControlsPageAssets by lazy { exportControlsPageAssets() }
 

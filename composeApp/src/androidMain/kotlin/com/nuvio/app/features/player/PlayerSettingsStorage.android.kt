@@ -89,8 +89,7 @@ actual object PlayerSettingsStorage {
     private const val iosContrastKey = "ios_contrast"
     private const val iosSaturationKey = "ios_saturation"
     private const val iosGammaKey = "ios_gamma"
-    private const val desktopHwdecModeKey = "desktop_hwdec_mode"
-    private const val customMpvPropertiesKey = "custom_mpv_properties"
+    private const val nvidiaRtxSuperResolutionEnabledKey = "nvidia_rtx_super_resolution_enabled"
     private val syncKeys = listOf(
         showLoadingOverlayKey,
         showParentalGuideKey,
@@ -162,8 +161,6 @@ actual object PlayerSettingsStorage {
         iosContrastKey,
         iosSaturationKey,
         iosGammaKey,
-        desktopHwdecModeKey,
-        customMpvPropertiesKey,
     )
 
     private var preferences: SharedPreferences? = null
@@ -1123,25 +1120,23 @@ actual object PlayerSettingsStorage {
         saveIosInt(iosGammaKey, value)
     }
 
-    actual fun loadDesktopHwdecMode(): String? =
-        preferences?.getString(ProfileScopedKey.of(desktopHwdecModeKey), null)
+    actual fun loadNvidiaRtxSuperResolutionEnabled(): Boolean? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(nvidiaRtxSuperResolutionEnabledKey)
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getBoolean(key, false)
+            } else {
+                null
+            }
+        }
 
-    actual fun saveDesktopHwdecMode(mode: String) {
+    actual fun saveNvidiaRtxSuperResolutionEnabled(enabled: Boolean) {
         preferences
             ?.edit()
-            ?.putString(ProfileScopedKey.of(desktopHwdecModeKey), mode)
+            ?.putBoolean(ProfileScopedKey.of(nvidiaRtxSuperResolutionEnabledKey), enabled)
             ?.apply()
     }
 
-    actual fun loadCustomMpvProperties(): String? =
-        preferences?.getString(ProfileScopedKey.of(customMpvPropertiesKey), null)
-
-    actual fun saveCustomMpvProperties(props: String) {
-        preferences
-            ?.edit()
-            ?.putString(ProfileScopedKey.of(customMpvPropertiesKey), props)
-            ?.apply()
-    }
 
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadShowLoadingOverlay()?.let { put(showLoadingOverlayKey, encodeSyncBoolean(it)) }
@@ -1214,8 +1209,7 @@ actual object PlayerSettingsStorage {
         loadIosContrast()?.let { put(iosContrastKey, encodeSyncInt(it)) }
         loadIosSaturation()?.let { put(iosSaturationKey, encodeSyncInt(it)) }
         loadIosGamma()?.let { put(iosGammaKey, encodeSyncInt(it)) }
-        loadDesktopHwdecMode()?.let { put(desktopHwdecModeKey, encodeSyncString(it)) }
-        loadCustomMpvProperties()?.let { put(customMpvPropertiesKey, encodeSyncString(it)) }
+        loadNvidiaRtxSuperResolutionEnabled()?.let { put(nvidiaRtxSuperResolutionEnabledKey, encodeSyncBoolean(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -1294,7 +1288,6 @@ actual object PlayerSettingsStorage {
         payload.decodeSyncInt(iosContrastKey)?.let(::saveIosContrast)
         payload.decodeSyncInt(iosSaturationKey)?.let(::saveIosSaturation)
         payload.decodeSyncInt(iosGammaKey)?.let(::saveIosGamma)
-        payload.decodeSyncString(desktopHwdecModeKey)?.let(::saveDesktopHwdecMode)
-        payload.decodeSyncString(customMpvPropertiesKey)?.let(::saveCustomMpvProperties)
+        payload.decodeSyncBoolean(nvidiaRtxSuperResolutionEnabledKey)?.let(::saveNvidiaRtxSuperResolutionEnabled)
     }
 }
