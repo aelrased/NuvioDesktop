@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -52,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -111,6 +113,8 @@ import com.nuvio.app.features.details.components.DetailProductionSection
 import com.nuvio.app.features.details.components.DetailSeriesContent
 import com.nuvio.app.features.details.components.DesktopDetailBackdrop
 import com.nuvio.app.features.details.components.DesktopDetailHero
+import com.nuvio.app.features.details.components.DetailSeriesListEpisode
+import com.nuvio.app.features.details.components.DetailSeriesListHeader
 import com.nuvio.app.features.details.components.DetailTrailersSection
 import com.nuvio.app.features.details.components.EpisodeWatchedActionSheet
 import com.nuvio.app.features.details.components.SeasonWatchedActionSheet
@@ -631,6 +635,29 @@ fun MetaDetailsScreen(
                     seriesActionVideo?.id?.takeIf { it.isNotBlank() } ?: action.videoId
                 }
                 val hasEpisodes = meta.videos.any { it.season != null || it.episode != null }
+                val episodeListGroupedEpisodes = remember(
+                    meta.videos,
+                    meta.type,
+                    metaScreenSettingsUiState.episodeCardStyle,
+                ) {
+                    if (metaScreenSettingsUiState.episodeCardStyle == MetaEpisodeCardStyle.List) {
+                        meta.groupedEpisodesForDisplay()
+                    } else {
+                        emptyMap()
+                    }
+                }
+                val episodeListSeasons = remember(episodeListGroupedEpisodes) {
+                    episodeListGroupedEpisodes.keys.sortedBy(::seasonSortKey)
+                }
+                var selectedEpisodeListSeason by rememberSaveable(meta.id) {
+                    mutableStateOf<Int?>(null)
+                }
+                val defaultEpisodeListSeason = seriesAction?.seasonNumber
+                    ?.takeIf { it in episodeListGroupedEpisodes }
+                    ?: episodeListSeasons.firstOrNull()
+                val currentEpisodeListSeason = selectedEpisodeListSeason
+                    ?.takeIf { it in episodeListGroupedEpisodes }
+                    ?: defaultEpisodeListSeason
                 val hasProductionSection = remember(meta) {
                     meta.productionCompanies.isNotEmpty() || meta.networks.isNotEmpty()
                 }
@@ -983,6 +1010,10 @@ fun MetaDetailsScreen(
                     val dominantColorEnabled = backgroundMode == MetaScreenBackgroundMode.DominantColor &&
                         deferredMetaWorkAllowed &&
                         !backdropUrl.isNullOrBlank()
+                    val adaptiveScrollbarColorEnabled = useDesktopDetailLayout &&
+                        deferredMetaWorkAllowed &&
+                        !backdropUrl.isNullOrBlank()
+                    val backdropColorExtractionEnabled = dominantColorEnabled || adaptiveScrollbarColorEnabled
                     var dominantBackdropPainter by remember(meta.id, backdropUrl) {
                         mutableStateOf<Painter?>(null)
                     }
@@ -997,10 +1028,10 @@ fun MetaDetailsScreen(
                         defaultColor = colorScheme.background,
                         defaultOnColor = colorScheme.onBackground,
                     )
-                    LaunchedEffect(dominantColorEnabled, dominantBackdropImageBitmap, dominantBackdropPainter) {
+                    LaunchedEffect(backdropColorExtractionEnabled, dominantBackdropImageBitmap, dominantBackdropPainter) {
                         val imageBitmap = dominantBackdropImageBitmap
                         val painter = dominantBackdropPainter
-                        if (dominantColorEnabled) {
+                        if (backdropColorExtractionEnabled) {
                             when {
                                 imageBitmap != null -> runCatching {
                                     dominantImageBitmapColorState.updateFrom(imageBitmap)
@@ -1197,6 +1228,10 @@ fun MetaDetailsScreen(
                                     commentsPageCount = commentsPageCount,
                                     commentsError = commentsError,
                                     episodeImdbRatings = episodeImdbRatings,
+                                    episodeListGroupedEpisodes = episodeListGroupedEpisodes,
+                                    episodeListSeasons = episodeListSeasons,
+                                    episodeListCurrentSeason = currentEpisodeListSeason,
+                                    onEpisodeListSeasonSelect = { selectedEpisodeListSeason = it },
                                     onRetryComments = {
                                         detailsScope.launch {
                                             isCommentsLoading = true
@@ -1317,6 +1352,10 @@ fun MetaDetailsScreen(
                                     commentsPageCount = commentsPageCount,
                                     commentsError = commentsError,
                                     episodeImdbRatings = episodeImdbRatings,
+                                    episodeListGroupedEpisodes = episodeListGroupedEpisodes,
+                                    episodeListSeasons = episodeListSeasons,
+                                    episodeListCurrentSeason = currentEpisodeListSeason,
+                                    onEpisodeListSeasonSelect = { selectedEpisodeListSeason = it },
                                     onRetryComments = {
                                         detailsScope.launch {
                                             isCommentsLoading = true
@@ -1372,6 +1411,7 @@ fun MetaDetailsScreen(
                         }
                         NuvioDesktopVerticalScrollbar(
                             state = listState,
+                            backgroundColor = extractedDominantColor.takeIf { adaptiveScrollbarColorEnabled },
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
@@ -2002,6 +2042,10 @@ private fun LazyListScope.configuredMetaSectionItems(
     commentsPageCount: Int,
     commentsError: String?,
     episodeImdbRatings: Map<Pair<Int, Int>, Double>,
+    episodeListGroupedEpisodes: Map<Int, List<MetaVideo>>,
+    episodeListSeasons: List<Int>,
+    episodeListCurrentSeason: Int?,
+    onEpisodeListSeasonSelect: (Int) -> Unit,
     onRetryComments: () -> Unit,
     onLoadMoreComments: () -> Unit,
     onCommentClick: (TraktCommentReview) -> Unit,
@@ -2098,14 +2142,80 @@ private fun LazyListScope.configuredMetaSectionItems(
         }
     }
 
+    fun addLazyEpisodeListItems(key: String) {
+        val currentSeason = episodeListCurrentSeason ?: return
+        val episodes = episodeListGroupedEpisodes[currentSeason].orEmpty()
+        if (episodes.isEmpty()) return
+
+        item(
+            key = "$key-header",
+            contentType = "detail-episode-header",
+        ) {
+            DetailSectionContainer(
+                horizontalPadding = contentHorizontalPadding,
+                contentMaxWidth = contentMaxWidth,
+                bottomPadding = 12.dp,
+            ) {
+                DetailSeriesListHeader(
+                    meta = meta,
+                    groupedEpisodes = episodeListGroupedEpisodes,
+                    seasons = episodeListSeasons,
+                    currentSeason = currentSeason,
+                    horizontalScrollPadding = contentHorizontalPadding,
+                    onSeasonSelect = onEpisodeListSeasonSelect,
+                    onSeasonLongPress = onSeasonLongPress,
+                )
+            }
+        }
+        itemsIndexed(
+            items = episodes,
+            key = { index, episode ->
+                "$key-episode-$currentSeason-${episode.episode}-${episode.id}-$index"
+            },
+            contentType = { _, _ -> "detail-episode" },
+        ) { index, episode ->
+            DetailSectionContainer(
+                horizontalPadding = contentHorizontalPadding,
+                contentMaxWidth = contentMaxWidth,
+                bottomPadding = if (index == episodes.lastIndex) 20.dp else 12.dp,
+            ) {
+                DetailSeriesListEpisode(
+                    meta = meta,
+                    episode = episode,
+                    progressByVideoId = progressByVideoId,
+                    watchedKeys = watchedKeys,
+                    episodeRatings = episodeImdbRatings,
+                    blurUnwatchedEpisodes = blurUnwatchedEpisodes,
+                    onEpisodeClick = onEpisodeClick,
+                    onEpisodeLongPress = onEpisodeLongPress,
+                )
+            }
+        }
+    }
+
+    fun addStandaloneSection(
+        section: MetaScreenSectionItem,
+        key: String,
+        forceTabLayout: Boolean = false,
+    ) {
+        if (section.key == MetaScreenSectionKey.EPISODES && settings.episodeCardStyle == MetaEpisodeCardStyle.List) {
+            addLazyEpisodeListItems(key)
+        } else {
+            addSectionItem(
+                key = key,
+                sectionItems = listOf(section),
+                forceTabLayout = forceTabLayout,
+            )
+        }
+    }
+
     if (!settings.tabLayout) {
         enabledItems
             .filter { sectionHasContent(it.key) }
             .forEach { section ->
-                addSectionItem(
+                addStandaloneSection(
+                    section = section,
                     key = "detail-section-${section.key.name}",
-                    sectionItems = listOf(section),
-                    forceTabLayout = false,
                 )
             }
         return
@@ -2113,26 +2223,33 @@ private fun LazyListScope.configuredMetaSectionItems(
 
     val processedGroups = mutableSetOf<Int>()
     enabledItems.forEach { section ->
-        val groupId = section.tabGroup
+        val groupId = section.tabGroupForRendering(settings.episodeCardStyle)
         if (groupId == null) {
             if (sectionHasContent(section.key)) {
-                addSectionItem(
+                addStandaloneSection(
+                    section = section,
                     key = "detail-section-${section.key.name}",
-                    sectionItems = listOf(section),
                     forceTabLayout = true,
                 )
             }
         } else if (groupId !in processedGroups) {
             processedGroups.add(groupId)
             val groupMembers = enabledItems.filter { item ->
-                item.tabGroup == groupId && sectionHasContent(item.key)
+                item.tabGroupForRendering(settings.episodeCardStyle) == groupId && sectionHasContent(item.key)
             }
             if (groupMembers.isNotEmpty()) {
-                addSectionItem(
-                    key = "detail-section-group-$groupId",
-                    sectionItems = groupMembers,
-                    forceTabLayout = groupMembers.size > 1,
-                )
+                if (groupMembers.size == 1) {
+                    addStandaloneSection(
+                        section = groupMembers.single(),
+                        key = "detail-section-group-$groupId",
+                    )
+                } else {
+                    addSectionItem(
+                        key = "detail-section-group-$groupId",
+                        sectionItems = groupMembers,
+                        forceTabLayout = true,
+                    )
+                }
             }
         }
     }
@@ -2142,13 +2259,14 @@ private fun LazyListScope.configuredMetaSectionItems(
 private fun DetailSectionContainer(
     horizontalPadding: Dp,
     contentMaxWidth: Dp,
+    bottomPadding: Dp = 20.dp,
     content: @Composable () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = horizontalPadding)
-            .padding(bottom = 20.dp),
+            .padding(bottom = bottomPadding),
         contentAlignment = Alignment.Center,
     ) {
         Box(

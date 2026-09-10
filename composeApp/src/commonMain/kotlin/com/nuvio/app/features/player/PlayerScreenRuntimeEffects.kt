@@ -45,15 +45,20 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     }
 
     LaunchedEffect(parentMetaType, parentMetaId) {
-        playerMetaVideos = MetaDetailsRepository.peek(parentMetaType, parentMetaId)?.videos ?: emptyList()
+        playerMeta = MetaDetailsRepository.peek(parentMetaType, parentMetaId)
+        playerMetaVideos = playerMeta?.videos.orEmpty()
         if (playerMetaVideos.isEmpty()) {
-            playerMetaVideos = MetaDetailsRepository.fetch(parentMetaType, parentMetaId)?.videos ?: emptyList()
+            MetaDetailsRepository.fetch(parentMetaType, parentMetaId)?.let { meta ->
+                playerMeta = meta
+                playerMetaVideos = meta.videos
+            }
         }
     }
 
     LaunchedEffect(metaUiState.meta, parentMetaType, parentMetaId) {
         val currentMeta = metaUiState.meta ?: return@LaunchedEffect
         if (currentMeta.type == parentMetaType && currentMeta.id == parentMetaId) {
+            playerMeta = currentMeta
             playerMetaVideos = currentMeta.videos
         }
     }
@@ -89,9 +94,14 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         accumulatedSeekState = null
         speedBoostRestoreSpeed = null
         preferredAudioSelectionApplied = false
+        appliedAudioPreferences = null
         preferredSubtitleSelectionApplied = false
+        isUserExplicitAudioSelection = false
         isUserExplicitSubtitleSelection = false
         hasScannedTextTracksOnce = false
+        selectedSubtitleIndex = -1
+        selectedAddonSubtitleId = null
+        useCustomSubtitles = false
         showSourcesPanel = false
         showEpisodesPanel = false
         episodeStreamsPanelState = EpisodeStreamsPanelState()
@@ -250,7 +260,13 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         fetchAddonSubtitlesForActiveItem()
     }
 
-    LaunchedEffect(playbackSnapshot.isLoading, playerController) {
+    LaunchedEffect(playerController, playerControllerSourceUrl, activeSourceUrl, preferredAudioLanguageTargets) {
+        if (playerControllerSourceUrl == activeSourceUrl) {
+            applyPreferredAudioTrack(preferredAudioLanguageTargets)
+        }
+    }
+
+    LaunchedEffect(playbackSnapshot.isLoading, playerController, preferredAudioLanguageTargets) {
         if (!playbackSnapshot.isLoading && playerController != null) {
             refreshTracks()
         }
@@ -450,6 +466,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         activeVideoId,
         activeSeasonNumber,
         activeEpisodeNumber,
+        parentMetaId,
         playerSettingsUiState.skipIntroEnabled,
     ) {
         skipIntervals = emptyList()
@@ -458,6 +475,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         autoSkippedIntervalKeys.clear()
         playerNotificationMessage = ""
         showNextEpisodeCard = false
+        nextEpisodeCardDismissed = false
         nextEpisodeAutoPlayJob?.cancel()
         nextEpisodeAutoPlaySearching = false
 
@@ -470,6 +488,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         ) ?: return@LaunchedEffect
 
         launch {
+            val imdbFromContent = parentMetaId.takeIf { it.startsWith("tt") }
             val intervals = when (lookup) {
                 is SkipIntervalLookup.Imdb -> SkipIntroRepository.getSkipIntervals(
                     imdbId = lookup.imdbId,
@@ -479,10 +498,16 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                 is SkipIntervalLookup.Mal -> SkipIntroRepository.getSkipIntervalsForMal(
                     malId = lookup.malId,
                     episode = lookup.episode,
+                    imdbId = imdbFromContent,
+                    imdbSeason = activeSeasonNumber,
+                    imdbEpisode = activeEpisodeNumber ?: lookup.episode,
                 )
                 is SkipIntervalLookup.Kitsu -> SkipIntroRepository.getSkipIntervalsForKitsu(
                     kitsuId = lookup.kitsuId,
                     episode = lookup.episode,
+                    imdbId = imdbFromContent,
+                    imdbSeason = activeSeasonNumber,
+                    imdbEpisode = activeEpisodeNumber ?: lookup.episode,
                 )
             }
             skipIntervals = intervals
@@ -615,6 +640,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         playerSettingsUiState.nextEpisodeThresholdMode,
         playerSettingsUiState.nextEpisodeThresholdPercent,
         playerSettingsUiState.nextEpisodeThresholdMinutesBeforeEnd,
+        nextEpisodeCardDismissed,
     ) {
         if (nextEpisodeInfo == null || playbackSnapshot.durationMs <= 0L) {
             showNextEpisodeCard = false
@@ -628,7 +654,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
             thresholdPercent = playerSettingsUiState.nextEpisodeThresholdPercent,
             thresholdMinutesBeforeEnd = playerSettingsUiState.nextEpisodeThresholdMinutesBeforeEnd,
         )
-        if (shouldShow && !showNextEpisodeCard) {
+        if (shouldShow && !showNextEpisodeCard && !nextEpisodeCardDismissed) {
             showNextEpisodeCard = true
             if (playerSettingsUiState.streamAutoPlayNextEpisodeEnabled && nextEpisodeInfo?.hasAired == true) {
                 playNextEpisode()
@@ -638,8 +664,13 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         }
     }
 
-    LaunchedEffect(playbackSnapshot.isEnded, nextEpisodeInfo) {
-        if (playbackSnapshot.isEnded && nextEpisodeInfo != null && !showNextEpisodeCard) {
+    LaunchedEffect(playbackSnapshot.isEnded, nextEpisodeInfo, nextEpisodeCardDismissed) {
+        if (
+            playbackSnapshot.isEnded &&
+            nextEpisodeInfo != null &&
+            !showNextEpisodeCard &&
+            !nextEpisodeCardDismissed
+        ) {
             showNextEpisodeCard = true
             if (playerSettingsUiState.streamAutoPlayNextEpisodeEnabled && nextEpisodeInfo?.hasAired == true) {
                 playNextEpisode()

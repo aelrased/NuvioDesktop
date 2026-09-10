@@ -1,11 +1,6 @@
 package com.nuvio.app.features.library
 
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -37,7 +32,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.ViewAgenda
-import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.DisintegratingContainer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -56,8 +51,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -66,16 +59,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
-import com.nuvio.app.core.ui.DisintegratingContainer
 import com.nuvio.app.core.ui.DisintegrationRequest
 import com.nuvio.app.core.ui.NuvioDropdownChip
 import com.nuvio.app.core.ui.NuvioDropdownOption
-import com.nuvio.app.core.ui.NuvioScreen
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import com.nuvio.app.core.ui.NuvioNetworkOfflineCard
+import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
-import com.nuvio.app.core.ui.NuvioViewAllPillSize
 import com.nuvio.app.core.ui.NuvioShelfSection
+import com.nuvio.app.core.ui.NuvioViewAllPillSize
 import com.nuvio.app.core.ui.ScopedDisintegrationTracker
+import com.nuvio.app.core.ui.SkeletonBlock
 import com.nuvio.app.core.ui.nuvioConsumePointerEvents
 import com.nuvio.app.core.ui.posterGridColumnCountForViewport
 import com.nuvio.app.features.home.components.posterGridColumnCountForWidth
@@ -365,7 +359,7 @@ fun LibraryScreen(
                         } else {
                             items(3) {
                                 HomeSkeletonRow(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
+                                    horizontalPadding = 16.dp,
                                 )
                             }
                         }
@@ -397,27 +391,19 @@ fun LibraryScreen(
 
                     uiState.sections.isEmpty() -> {
                         item {
-                            if (networkStatusUiState.isOfflineLike && isRemoteSource) {
-                                NuvioNetworkOfflineCard(
-                                    condition = networkStatusUiState.condition,
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    onRetry = retryLibraryLoad,
-                                )
-                            } else {
-                                HomeEmptyStateCard(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    title = when (uiState.sourceMode) {
-                                        LibrarySourceMode.LOCAL -> stringResource(Res.string.library_empty_title)
-                                        LibrarySourceMode.TRAKT -> stringResource(Res.string.library_trakt_empty_title)
-                                        LibrarySourceMode.SIMKL -> stringResource(Res.string.library_simkl_empty_title)
-                                    },
-                                    message = when (uiState.sourceMode) {
-                                        LibrarySourceMode.LOCAL -> stringResource(Res.string.library_empty_message)
-                                        LibrarySourceMode.TRAKT -> stringResource(Res.string.library_trakt_empty_message)
-                                        LibrarySourceMode.SIMKL -> stringResource(Res.string.library_simkl_empty_message)
-                                    },
-                                )
-                            }
+                            HomeEmptyStateCard(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                title = when (uiState.sourceMode) {
+                                    LibrarySourceMode.LOCAL -> stringResource(Res.string.library_empty_title)
+                                    LibrarySourceMode.TRAKT -> stringResource(Res.string.library_trakt_empty_title)
+                                    LibrarySourceMode.SIMKL -> stringResource(Res.string.library_simkl_empty_title)
+                                },
+                                message = when (uiState.sourceMode) {
+                                    LibrarySourceMode.LOCAL -> stringResource(Res.string.library_empty_message)
+                                    LibrarySourceMode.TRAKT -> stringResource(Res.string.library_trakt_empty_message)
+                                    LibrarySourceMode.SIMKL -> stringResource(Res.string.library_simkl_empty_message)
+                                },
+                            )
                         }
                     }
 
@@ -525,6 +511,7 @@ private fun LazyListScope.cloudLibraryContent(
             // Local filter over the already-loaded library. Matches the item name or any of its
             // file names, since the useful identifier is often in the filename, not the title.
             val trimmedQuery = searchQuery.trim()
+            val hasActiveFilter = selectedProviderId != null || effectiveSelectedType != null || trimmedQuery.isNotEmpty()
             val filteredItems = if (trimmedQuery.isEmpty()) {
                 typeFilteredItems
             } else {
@@ -565,31 +552,46 @@ private fun LazyListScope.cloudLibraryContent(
                     )
                 }
 
-                uiState.providers
-                    .filter { providerState -> selectedProviderId == null || providerState.providerId == selectedProviderId }
-                    .filter { providerState -> !providerState.errorMessage.isNullOrBlank() && providerState.items.isEmpty() }
-                    .forEach { providerState ->
-                        item(key = "cloud-error-${providerState.providerId}") {
-                            HomeEmptyStateCard(
-                                modifier = Modifier.padding(horizontal = 16.dp),
-                                title = stringResource(Res.string.cloud_library_load_failed, providerState.providerName),
-                                message = providerState.errorMessage.orEmpty(),
-                                actionLabel = stringResource(Res.string.action_retry),
-                                onActionClick = onRefresh,
-                            )
-                        }
+                val visibleProviderStates = uiState.providers.filter { providerState ->
+                    selectedProviderId == null || providerState.providerId == selectedProviderId
+                }
+                val failedProviderStates = visibleProviderStates.filter { providerState ->
+                    !providerState.errorMessage.isNullOrBlank() && providerState.items.isEmpty()
+                }
+                failedProviderStates.forEach { providerState ->
+                    item(key = "cloud-error-${providerState.providerId}") {
+                        HomeEmptyStateCard(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            title = stringResource(Res.string.cloud_library_load_failed, providerState.providerName),
+                            message = providerState.errorMessage.orEmpty(),
+                            actionLabel = stringResource(Res.string.action_retry),
+                            onActionClick = onRefresh,
+                        )
                     }
+                }
 
                 if (uiState.isRefreshing && filteredItems.isEmpty()) {
                     cloudLibrarySkeletonItems()
-                } else if (filteredItems.isEmpty()) {
+                } else if (filteredItems.isEmpty() && failedProviderStates.isEmpty()) {
                     item {
                         HomeEmptyStateCard(
                             modifier = Modifier.padding(horizontal = 16.dp),
-                            title = stringResource(Res.string.cloud_library_empty_title),
-                            message = stringResource(Res.string.cloud_library_empty_message),
-                            actionLabel = stringResource(Res.string.action_retry),
-                            onActionClick = onRefresh,
+                            title = stringResource(
+                                if (hasActiveFilter) {
+                                    Res.string.cloud_library_no_matches_title
+                                } else {
+                                    Res.string.cloud_library_empty_title
+                                },
+                            ),
+                            message = stringResource(
+                                if (hasActiveFilter) {
+                                    Res.string.cloud_library_no_matches_message
+                                } else {
+                                    Res.string.cloud_library_empty_message
+                                },
+                            ),
+                            actionLabel = if (hasActiveFilter) null else stringResource(Res.string.action_retry),
+                            onActionClick = if (hasActiveFilter) null else onRefresh,
                         )
                     }
                 } else {
@@ -1077,7 +1079,6 @@ private fun String.toDisplayStatus(): String =
 private fun CloudLibrarySkeletonToolbar(
     modifier: Modifier = Modifier,
 ) {
-    val brush = rememberCloudLibrarySkeletonBrush()
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -1087,8 +1088,8 @@ private fun CloudLibrarySkeletonToolbar(
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            CloudSkeletonBlock(brush = brush, width = 112.dp, height = 36.dp, cornerRadius = 12.dp)
-            CloudSkeletonBlock(brush = brush, width = 92.dp, height = 36.dp, cornerRadius = 12.dp)
+            SkeletonBlock(width = 112.dp, height = 36.dp, cornerRadius = 12.dp)
+            SkeletonBlock(width = 92.dp, height = 36.dp, cornerRadius = 12.dp)
         }
     }
 }
@@ -1097,7 +1098,6 @@ private fun CloudLibrarySkeletonToolbar(
 private fun CloudLibrarySkeletonRow(
     modifier: Modifier = Modifier,
 ) {
-    val brush = rememberCloudLibrarySkeletonBrush()
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -1120,72 +1120,26 @@ private fun CloudLibrarySkeletonRow(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    CloudSkeletonBlock(
-                        brush = brush,
+                    SkeletonBlock(
                         modifier = Modifier.fillMaxWidth(0.74f),
                         height = 18.dp,
                         cornerRadius = 6.dp,
                     )
-                    CloudSkeletonBlock(
-                        brush = brush,
+                    SkeletonBlock(
                         modifier = Modifier.fillMaxWidth(0.9f),
                         height = 14.dp,
                         cornerRadius = 6.dp,
                     )
-                    CloudSkeletonBlock(
-                        brush = brush,
+                    SkeletonBlock(
                         modifier = Modifier.fillMaxWidth(0.52f),
                         height = 12.dp,
                         cornerRadius = 6.dp,
                     )
                 }
-                CloudSkeletonBlock(brush = brush, width = 48.dp, height = 48.dp, cornerRadius = 24.dp)
+                SkeletonBlock(width = 48.dp, height = 48.dp, cornerRadius = 24.dp)
             }
         }
     }
-}
-
-@Composable
-private fun rememberCloudLibrarySkeletonBrush(): Brush {
-    val shimmerColors = listOf(
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-    )
-    val transition = rememberInfiniteTransition()
-    val translateAnim by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1000f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-    )
-    return Brush.linearGradient(
-        colors = shimmerColors,
-        start = Offset(translateAnim - 200f, 0f),
-        end = Offset(translateAnim, 0f),
-    )
-}
-
-@Composable
-private fun CloudSkeletonBlock(
-    brush: Brush,
-    modifier: Modifier = Modifier,
-    width: Dp? = null,
-    height: Dp,
-    cornerRadius: Dp,
-) {
-    val sizeModifier = if (width != null) {
-        modifier.size(width = width, height = height)
-    } else {
-        modifier.height(height)
-    }
-    Box(
-        modifier = sizeModifier
-            .clip(RoundedCornerShape(cornerRadius))
-            .background(brush),
-    )
 }
 
 private enum class LibraryViewMode {

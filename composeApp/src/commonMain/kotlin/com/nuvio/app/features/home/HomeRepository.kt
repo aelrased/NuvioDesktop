@@ -214,12 +214,13 @@ object HomeRepository {
             emptyList()
         }
 
-        _uiState.value = HomeUiState(
+        val nextState = HomeUiState(
             isLoading = isLoading,
             heroItems = heroItems,
             sections = sections,
             errorMessage = if (sections.isEmpty()) lastErrorMessage else null,
         )
+        if (_uiState.value != nextState) _uiState.value = nextState
     }
 
     private suspend fun HomeCatalogDefinition.toSection(forceRefresh: Boolean): HomeCatalogSection {

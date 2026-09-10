@@ -23,7 +23,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.NuvioBackButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,7 +50,6 @@ import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.ui.NuvioNetworkOfflineCard
 import com.nuvio.app.core.ui.NuvioAsyncImage as AsyncImage
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
-import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.NuvioDesktopVerticalScrollbar
 import com.nuvio.app.core.ui.NuvioCardDepthSurface
 import com.nuvio.app.core.ui.NuvioPosterWatchedOverlay
@@ -63,12 +62,17 @@ import com.nuvio.app.core.ui.desktopPosterHoverScale
 import com.nuvio.app.core.ui.nuvioCardDepth
 import com.nuvio.app.core.ui.posterCardClickable
 import com.nuvio.app.core.ui.posterGridColumnCountForViewport
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.SkeletonPoster
 import com.nuvio.app.core.ui.nuvioSafeBottomPadding
+import com.nuvio.app.core.ui.posterCardClickable
+import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
 import com.nuvio.app.isDesktop
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.home.components.HomeEmptyStateCard
 import com.nuvio.app.features.home.components.HomePosterHoverPreview
 import com.nuvio.app.features.home.components.HomePosterCard
 import com.nuvio.app.features.home.stableKey
@@ -225,7 +229,11 @@ fun CatalogScreen(
                                 },
                             )
                         } else {
-                            CatalogSkeletonTile(cornerRadiusDp = posterCardStyle.cornerRadiusDp)
+                            SkeletonPoster(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = posterCardStyle.cornerRadiusDp.dp,
+                                showLabels = !posterCardStyle.hideLabelsEnabled,
+                            )
                         }
                     }
                 } else if (uiState.items.isEmpty()) {
@@ -468,7 +476,10 @@ private fun CatalogEmptyState(
     networkCondition: NetworkCondition,
     onRetry: (() -> Unit)? = null,
 ) {
-    if (networkCondition == NetworkCondition.NoInternet || networkCondition == NetworkCondition.ServersUnreachable) {
+    if (
+        !errorMessage.isNullOrBlank() &&
+        (networkCondition == NetworkCondition.NoInternet || networkCondition == NetworkCondition.ServersUnreachable)
+    ) {
         NuvioNetworkOfflineCard(
             condition = networkCondition,
             onRetry = onRetry,
@@ -476,24 +487,15 @@ private fun CatalogEmptyState(
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 48.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            text = stringResource(Res.string.catalog_empty_title),
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Text(
-            text = errorMessage ?: stringResource(Res.string.catalog_empty_message),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    val loadFailed = !errorMessage.isNullOrBlank()
+    HomeEmptyStateCard(
+        title = stringResource(
+            if (loadFailed) Res.string.catalog_load_failed_title else Res.string.catalog_empty_title,
+        ),
+        message = errorMessage ?: stringResource(Res.string.catalog_empty_message),
+        actionLabel = if (loadFailed) stringResource(Res.string.action_retry) else null,
+        onActionClick = if (loadFailed) onRetry else null,
+    )
 }
 
 @Composable

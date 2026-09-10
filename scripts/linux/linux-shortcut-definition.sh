@@ -5,6 +5,7 @@ readonly NUVIO_LINUX_SHORTCUT_NAME="Nuvio"
 readonly NUVIO_LINUX_SHORTCUT_COMMENT="Nuvio Media Player"
 readonly NUVIO_LINUX_SHORTCUT_CATEGORIES="AudioVideo;"
 readonly NUVIO_LINUX_SHORTCUT_STARTUP_NOTIFY="true"
+readonly NUVIO_LINUX_SHORTCUT_STARTUP_WM_CLASS="com-nuvio-app-MainKt"
 
 nuvio_linux_desktop_entry_exists() {
     if [[ $# -ne 1 ]]; then
@@ -13,6 +14,21 @@ nuvio_linux_desktop_entry_exists() {
 
     local root_dir="$1"
     find "$root_dir" -type f -path "*/${NUVIO_LINUX_SHORTCUT_RELATIVE_PATH}" | grep -q .
+}
+
+nuvio_linux_ensure_startup_wm_class() {
+    if [[ $# -ne 1 ]]; then
+        return 2
+    fi
+
+    local desktop_file="$1/$NUVIO_LINUX_SHORTCUT_RELATIVE_PATH"
+    [[ -f "$desktop_file" ]] || return 1
+
+    if grep -q '^StartupWMClass=' "$desktop_file"; then
+        sed -i "s|^StartupWMClass=.*$|StartupWMClass=${NUVIO_LINUX_SHORTCUT_STARTUP_WM_CLASS}|" "$desktop_file"
+    else
+        printf 'StartupWMClass=%s\n' "$NUVIO_LINUX_SHORTCUT_STARTUP_WM_CLASS" >> "$desktop_file"
+    fi
 }
 
 # This apparently gets stripped during repackaging (that's done to patch the deps for deb/rpm) so we need to add the shortcut again.
@@ -46,6 +62,7 @@ Icon=__NUVIO_ICON__
 Terminal=false
 Categories=__NUVIO_CATEGORIES__
 StartupNotify=__NUVIO_STARTUP_NOTIFY__
+StartupWMClass=__NUVIO_STARTUP_WM_CLASS__
 EOF
 
     sed -i \
@@ -55,5 +72,6 @@ EOF
         -e "s|__NUVIO_ICON__|${icon_path}|g" \
         -e "s|__NUVIO_CATEGORIES__|${NUVIO_LINUX_SHORTCUT_CATEGORIES}|g" \
         -e "s|__NUVIO_STARTUP_NOTIFY__|${NUVIO_LINUX_SHORTCUT_STARTUP_NOTIFY}|g" \
+        -e "s|__NUVIO_STARTUP_WM_CLASS__|${NUVIO_LINUX_SHORTCUT_STARTUP_WM_CLASS}|g" \
         "$desktop_file"
 }
