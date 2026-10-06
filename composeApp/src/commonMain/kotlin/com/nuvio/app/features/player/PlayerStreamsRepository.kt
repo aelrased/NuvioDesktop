@@ -106,6 +106,53 @@ object PlayerStreamsRepository {
         )
     }
 
+    fun stopSourcesLoading() {
+        PluginRepository.setLocalPluginSearchPaused(true)
+        cancelSourceJob()
+    }
+
+    fun pauseSearchForPlayback() {
+        PluginRepository.setLocalPluginSearchPaused(true)
+        cancelSourceJob()
+        cancelEpisodeStreamsJob()
+    }
+
+    private fun cancelSourceJob() {
+        val job = sourceJob ?: return
+        job.cancel()
+        sourceJob = null
+        sourceRequestKey = null
+        _sourceState.update { current ->
+            current.copy(
+                isAnyLoading = false,
+                groups = current.groups.map { group ->
+                    if (group.isLoading) group.copy(isLoading = false) else group
+                },
+            )
+        }
+    }
+
+    private fun cancelEpisodeStreamsJob() {
+        val job = episodeStreamsJob ?: return
+        job.cancel()
+        episodeStreamsJob = null
+        // Keep requestKey and loaded results intact so that a preloaded next
+        // episode cache hit is not discarded when the current episode starts
+        // playback (pauseSearchForPlayback). Only clear if still loading.
+        val current = _episodeStreamsState.value
+        if (current.isAnyLoading) {
+            episodeStreamsRequestKey = null
+            _episodeStreamsState.update {
+                it.copy(
+                    isAnyLoading = false,
+                    groups = it.groups.map { group ->
+                        if (group.isLoading) group.copy(isLoading = false) else group
+                    },
+                )
+            }
+        }
+    }
+
     fun selectSourceFilter(addonId: String?) {
         _sourceState.update { it.copy(selectedFilter = addonId) }
     }
@@ -115,12 +162,14 @@ object PlayerStreamsRepository {
     }
 
     fun clearEpisodeStreams() {
+        PluginRepository.setLocalPluginSearchPaused(true)
         episodeStreamsJob?.cancel()
         episodeStreamsRequestKey = null
         _episodeStreamsState.value = StreamsUiState()
     }
 
     fun clearAll() {
+        PluginRepository.setLocalPluginSearchPaused(true)
         sourceJob?.cancel()
         sourceRequestKey = null
         _sourceState.value = StreamsUiState()
@@ -147,10 +196,12 @@ object PlayerStreamsRepository {
             PluginsUiState(pluginsEnabled = false)
         }
         val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
+        PluginRepository.setLocalPluginSearchPaused(false)
         val current = stateFlow.value
+        val cachedKey = requestKeyHolder()
         if (
             !forceRefresh &&
-            requestKeyHolder() == requestKey &&
+            cachedKey == requestKey &&
             (current.groups.isNotEmpty() || current.emptyStateReason != null || current.isAnyLoading)
         ) {
             log.d { "skip $panelName request=$requestKey reason=already-active ${current.streamDiagnostics()}" }

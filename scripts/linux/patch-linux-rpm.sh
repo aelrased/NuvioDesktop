@@ -65,6 +65,7 @@ if ! nuvio_linux_desktop_entry_exists "$payload_dir"; then
     nuvio_linux_write_desktop_entry "$payload_dir"
 fi
 nuvio_linux_ensure_startup_wm_class "$payload_dir"
+nuvio_linux_ensure_uri_handler "$payload_dir"
 
 name="$(rpm -qp --qf '%{NAME}\n' "$rpm_path")"
 version="$(rpm -qp --qf '%{VERSION}\n' "$rpm_path")"

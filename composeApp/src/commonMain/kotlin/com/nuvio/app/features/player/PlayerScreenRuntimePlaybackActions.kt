@@ -10,14 +10,52 @@ import com.nuvio.app.features.watchprogress.WatchProgressClock
 import com.nuvio.app.features.watchprogress.WatchProgressPlaybackSession
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
+import com.nuvio.app.features.watching.domain.isShortPlaceholderDuration
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+internal fun PlayerScreenRuntime.finishTimelineScrub(positionMs: Long) {
+    lastManualSkipSeekPositions = playbackSnapshot.positionMs to positionMs
+    isScrubbingTimeline = false
+    scrubbingPositionMs = positionMs.takeIf { playbackSnapshot.isLoading }
+}
+
+internal fun PlayerScreenRuntime.updatePlaybackSnapshot(
+    snapshot: PlayerPlaybackSnapshot,
+    playbackKey: PlaybackKey = activePlaybackKey,
+): Boolean {
+    if (playbackKey != activePlaybackKey) return false
+    playbackSnapshot = if (snapshot.durationMs <= 0L && playbackSnapshotKey == playbackKey) {
+        snapshot.copy(durationMs = playbackSnapshot.durationMs)
+    } else {
+        snapshot
+    }
+    playbackSnapshotKey = playbackKey
+    val targetPositionMs = scrubbingPositionMs ?: return true
+    if (!isScrubbingTimeline && (
+            !snapshot.isLoading || snapshot.isEnded ||
+                abs(snapshot.positionMs - targetPositionMs) <= 1_000L
+            )
+    ) {
+        scrubbingPositionMs = null
+    }
+    return true
+}
 
 internal val PlayerScreenRuntime.activePlaybackIdentity: String
     get() = activeTorrentInfoHash
         ?.let { hash -> "torrent:$hash:${activeTorrentFileIdx ?: -1}" }
         ?: activeSourceUrl
+
+internal val PlayerScreenRuntime.activePlaybackKey: PlaybackKey
+    get() = PlaybackKey(
+        sourceIdentity = activePlaybackIdentity,
+        videoId = activeVideoId,
+        seasonNumber = activeSeasonNumber,
+        episodeNumber = activeEpisodeNumber,
+    )
 
 internal val PlayerScreenRuntime.playbackSession: WatchProgressPlaybackSession
     get() = WatchProgressPlaybackSession(
@@ -47,8 +85,39 @@ internal val PlayerScreenRuntime.playbackSession: WatchProgressPlaybackSession
         lastSourceUrl = activeSourceUrl,
     )
 
+internal fun PlayerScreenRuntime.currentLaunch(launch: PlayerLaunch): PlayerLaunch {
+    val positionMs = playbackSnapshot.positionMs.takeIf {
+        it > 0L && initialSeekApplied && playbackSnapshotKey == activePlaybackKey
+    }
+    return launch.copy(
+        sourceUrl = activeSourceUrl,
+        sourceAudioUrl = activeSourceAudioUrl,
+        sourceHeaders = activeSourceHeaders,
+        sourceResponseHeaders = activeSourceResponseHeaders,
+        externalSubtitles = externalSubtitles,
+        streamType = activeStreamType,
+        seasonNumber = activeSeasonNumber,
+        episodeNumber = activeEpisodeNumber,
+        episodeTitle = activeEpisodeTitle,
+        episodeThumbnail = activeEpisodeThumbnail,
+        streamTitle = activeStreamTitle,
+        streamSubtitle = activeStreamSubtitle,
+        bingeGroup = currentStreamBingeGroup,
+        pauseDescription = activePauseDescription,
+        providerName = activeProviderName,
+        providerAddonId = activeProviderAddonId,
+        videoId = activeVideoId,
+        torrentInfoHash = activeTorrentInfoHash,
+        torrentFileIdx = activeTorrentFileIdx,
+        torrentFilename = activeTorrentFilename,
+        torrentTrackers = activeTorrentTrackers,
+        initialPositionMs = positionMs ?: activeInitialPositionMs,
+        initialProgressFraction = activeInitialProgressFraction.takeIf { positionMs == null },
+    )
+}
+
 internal fun PlayerScreenRuntime.resetIdentityStateIfNeeded() {
-    val identity = activePlaybackIdentity
+    val identity = activePlaybackKey
     if (lastResetPlaybackIdentity != identity) {
         lastResetPlaybackIdentity = identity
         shouldPlay = true
@@ -133,12 +202,14 @@ internal fun PlayerScreenRuntime.currentTrackingMedia(): TrackingMediaReference 
     snapshotTrackingScrobbleItemInputs().buildMedia()
 
 internal fun PlayerScreenRuntime.emitTrackingScrobbleStart() {
+    if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return
     if (hasRequestedScrobbleStartForCurrentItem) return
     hasRequestedScrobbleStartForCurrentItem = true
     val requestGeneration = scrobbleStartRequestGeneration + 1L
     scrobbleStartRequestGeneration = requestGeneration
 
     scope.launch {
+        if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return@launch
         val media = currentTrackingMedia()
         if (!media.hasResolvableIdentity) {
             hasRequestedScrobbleStartForCurrentItem = false
@@ -177,6 +248,7 @@ private fun PlayerScreenRuntime.emitTrackingScrobbleTerminal(
     action: TrackingScrobbleAction,
     progressPercent: Float?,
 ) {
+    if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return
     val provided = progressPercent
     if (!hasRequestedScrobbleStartForCurrentItem && (provided ?: 0f) < 80f) return
 
@@ -199,6 +271,7 @@ private fun PlayerScreenRuntime.emitTrackingScrobbleTerminal(
 }
 
 internal fun PlayerScreenRuntime.emitStopScrobbleForCurrentProgress() {
+    if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return
     val progressPercent = currentPlaybackProgressPercent()
     if (!shouldSendStopScrobble(hasRequestedScrobbleStartForCurrentItem, progressPercent)) {
         return
@@ -225,9 +298,11 @@ internal fun shouldUpdateTrackingScrobbleAfterSeek(
 ): Boolean = hasActiveScrobble && progressPercent >= 1f && progressPercent < 80f
 
 internal fun PlayerScreenRuntime.emitTrackingSeekScrobbleStart() {
+    if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return
     val mediaSnapshot = currentTrackingMedia
     val inputsSnapshot = snapshotTrackingScrobbleItemInputs()
     scope.launch {
+        if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return@launch
         val media = mediaSnapshot ?: inputsSnapshot.buildMedia()
         if (!media.hasResolvableIdentity) return@launch
         TrackingScrobbleCoordinator.scrobbleSeek(
@@ -253,6 +328,12 @@ internal fun PlayerScreenRuntime.tryShowParentalGuide() {
 internal suspend fun PlayerScreenRuntime.resolveParentalGuideImdbId(): String? {
     val candidates = listOf(parentMetaId, activeVideoId)
     candidates.firstNotNullOfOrNull(::extractParentalGuideImdbId)?.let { return it }
+    // Fallback: use imdb_id from addon meta response
+    val metaImdbId = (metaUiState.meta ?: playerMeta)
+        ?.takeIf { it.id == parentMetaId }
+        ?.imdbId
+        ?.takeIf { it.startsWith("tt") }
+    if (metaImdbId != null) return metaImdbId
     val tmdbId = candidates.firstNotNullOfOrNull(::extractParentalGuideTmdbId) ?: return null
     return TmdbService.tmdbToImdb(
         tmdbId = tmdbId,
@@ -279,6 +360,7 @@ internal fun PlayerScreenRuntime.scheduleProgressSyncAfterSeek() {
     seekProgressSyncJob?.cancel()
     seekProgressSyncJob = scope.launch {
         delay(PlayerSeekProgressSyncDebounceMs)
+        if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return@launch
         WatchProgressRepository.upsertPlaybackProgress(
             session = playbackSession,
             snapshot = playbackSnapshot,
@@ -301,12 +383,15 @@ internal fun PlayerScreenRuntime.scheduleProgressSyncAfterSeek() {
             progressPercent = progressPercent.toDouble(),
         )
         scope.launch {
+            if (isShortPlaceholderDuration(playbackSnapshot.durationMs)) return@launch
             TrackingScrobbleCoordinator.scrobbleSeek(
                 profileId = profileId,
                 action = TrackingScrobbleAction.STOP,
                 event = stopEvent,
             )
-            if (!shouldRestartScrobbleAfterSeek || !shouldPlay || playbackSnapshot.isEnded) return@launch
+            if (!shouldRestartScrobbleAfterSeek || !shouldPlay || playbackSnapshot.isEnded ||
+                isShortPlaceholderDuration(playbackSnapshot.durationMs)
+            ) return@launch
             if (playbackSnapshot.isPlaying) {
                 pendingSeekScrobbleRestart = false
                 TrackingScrobbleCoordinator.scrobbleSeek(

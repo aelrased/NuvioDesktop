@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hidsystem/ev_keymap.h>
+#import <MediaPlayer/MediaPlayer.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -82,6 +83,40 @@ static constexpr double kMaxVolumePercent = 200.0;
 @property(nonatomic, weak) MpvWebPlayer *player;
 @end
 
+@interface PlayerControlsWebView : WKWebView
+@end
+
+@implementation PlayerControlsWebView
+
+- (BOOL)isTitleBarPoint:(NSPoint)point {
+    NSWindow *window = self.window;
+    if (!window
+        || !(window.styleMask & NSWindowStyleMaskTitled)
+        || !(window.styleMask & NSWindowStyleMaskFullSizeContentView)
+        || (window.styleMask & NSWindowStyleMaskFullScreen)) {
+        return NO;
+    }
+    NSRect boundsInWindow = [self convertRect:self.bounds toView:nil];
+    return NSPointInRect(point, boundsInWindow)
+        && point.y >= NSMaxY(window.contentLayoutRect);
+}
+
+- (NSView *)hitTest:(NSPoint)point {
+    NSView *view = [super hitTest:point];
+    NSPoint pointInWindow = [self.superview convertPoint:point toView:nil];
+    return view && [self isTitleBarPoint:pointInWindow] ? self : view;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    if ([self isTitleBarPoint:event.locationInWindow]) {
+        [self.window performWindowDragWithEvent:event];
+        return;
+    }
+    [super mouseDown:event];
+}
+
+@end
+
 @interface MpvWebPlayer : NSObject
 - (instancetype)initWithHostView:(NSView *)hostView
                        sourceUrl:(NSString *)sourceUrl
@@ -96,6 +131,8 @@ static constexpr double kMaxVolumePercent = 200.0;
 - (void)shutdown;
 - (void)updateControlsJson:(NSString *)controlsJson;
 - (void)requestFocus;
+- (void)beginWindowDrag;
+- (void)reparentSurfaceToHostView:(NSView *)hostView;
 - (void)setPaused:(BOOL)paused;
 - (BOOL)isPaused;
 - (void)seekToMilliseconds:(long long)positionMs;
@@ -128,9 +165,23 @@ static constexpr double kMaxVolumePercent = 200.0;
                                useLibass:(BOOL)useLibass
                                 stripSdh:(BOOL)stripSdh;
 - (void)handleScriptMessage:(NSDictionary *)message;
+- (void)startMpvEventDrain;
+- (void)applyVolumeSplit:(double)percent;
+- (void)scheduleMpvEventDrain;
+- (void)drainMpvEvents;
+- (void)stopMpvEventDrain;
 - (void)focusControlsWebViewIfNeeded;
 - (void)layoutNativeSubviews;
 - (void)dispatchMediaKeyPlayerEvent:(NSString *)type;
+- (void)activateRemoteCommands;
+- (void)deactivateRemoteCommands;
+- (void)setNowPlayingArtworkUrlString:(NSString *)urlString;
+- (void)setNowPlayingTitle:(NSString *)title subtitle:(NSString *)subtitle artworkUrl:(NSString *)artworkUrl;
+- (void)updateNowPlayingWithTitle:(NSString *)title
+                         duration:(double)duration
+                         position:(double)position
+                           paused:(BOOL)paused
+                            speed:(double)speed;
 - (void)layoutControlsWebViewToBounds:(NSRect)bounds immediate:(BOOL)immediate;
 - (void)hostViewBoundsDidChange:(NSNotification *)notification;
 - (void)hostViewFrameDidChange:(NSNotification *)notification;
@@ -1032,12 +1083,33 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     NSTimer *_resizeSettleTimer;
     NSTimer *_fullscreenTransitionTimer;
     id _mediaKeyMonitor;
+    BOOL _remoteCommandsActive;
+    NSString *_lastNowPlayingTitle;
+    BOOL _lastNowPlayingPaused;
+    double _lastNowPlayingDuration;
+    double _lastNowPlayingPosition;
+    double _lastNowPlayingSpeed;
+    NSTimeInterval _lastNowPlayingPushedAt;
+    NSString *_nowPlayingArtworkUrl;
+    MPMediaItemArtwork *_nowPlayingArtwork;
+    NSURLSessionDataTask *_nowPlayingArtworkTask;
+    NSString *_nowPlayingTitleOverride;
+    NSString *_nowPlayingSubtitle;
+    BOOL _nowPlayingMetadataDirty;
     JavaVM *_javaVm;
     jobject _eventSink;
     jmethodID _eventMethod;
     NSString *_lastConfiguredHdrKey;
     NSString *_lastResizeRefreshKey;
     dispatch_queue_t _mpvEventQueue;
+    // Drains mpv's event queue (property observations, async replies, log lines).
+    dispatch_queue_t _mpvDrainQueue;
+    std::atomic_bool _mpvDrainStopped;
+    // True once mpv reports current-ao == avfoundation. That AO buffers deeply
+    // inside AVSampleBufferAudioRenderer, so softvol changes lag; its own
+    // renderer volume (ao-volume) applies instantly.
+    std::atomic_bool _aoIsAvfoundation;
+    std::atomic<double> _requestedVolumePercent;
     BOOL _didFocusControlsWebView;
     BOOL _controlsWebReady;
     BOOL _fullscreenTransitionActive;
@@ -1091,6 +1163,10 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     _cachedLoading.store(true);
     _cachedEnded.store(false);
     _mpvEventQueue = dispatch_queue_create("com.nuvio.desktop.mpv-events", DISPATCH_QUEUE_SERIAL);
+    _mpvDrainQueue = dispatch_queue_create("com.nuvio.desktop.mpv-drain", DISPATCH_QUEUE_SERIAL);
+    _mpvDrainStopped.store(false);
+    _aoIsAvfoundation.store(false);
+    _requestedVolumePercent.store(100.0);
     _javaVm = javaVm;
     _eventSink = eventSink;
     _eventMethod = eventMethod;
@@ -1111,7 +1187,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
     configuration.userContentController = contentController;
-    _webView = [[WKWebView alloc] initWithFrame:_hostView.bounds configuration:configuration];
+    _webView = [[PlayerControlsWebView alloc] initWithFrame:_hostView.bounds configuration:configuration];
     _webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _webView.wantsLayer = YES;
     [_webView setValue:@NO forKey:@"drawsBackground"];
@@ -1160,6 +1236,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         }
         return [strongSelf handleMediaKeyEvent:event];
     }];
+    [self activateRemoteCommands];
     [self layoutNativeSubviews];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self focusControlsWebViewIfNeeded];
@@ -1191,6 +1268,43 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     }
     _didFocusControlsWebView = YES;
     [_webView.window makeFirstResponder:_webView];
+}
+
+- (void)beginWindowDrag {
+    // AppKit requires the original mouse event for performWindowDragWithEvent:;
+    // the native view remains movable through the window manager on macOS.
+}
+
+- (void)reparentSurfaceToHostView:(NSView *)newHostView {
+    if (!newHostView || !newHostView.window) return;
+    NSView *oldHostView = _hostView;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                      name:NSViewFrameDidChangeNotification
+                                                    object:oldHostView];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                      name:NSViewBoundsDidChangeNotification
+                                                    object:oldHostView];
+    [_videoView removeFromSuperview];
+    [_webView removeFromSuperview];
+    _hostView = newHostView;
+    _hostView.wantsLayer = YES;
+    _hostView.layer.backgroundColor = NSColor.blackColor.CGColor;
+    [_hostView setPostsFrameChangedNotifications:YES];
+    [_hostView setPostsBoundsChangedNotifications:YES];
+    [_hostView addSubview:_videoView];
+    [_hostView addSubview:_webView positioned:NSWindowAbove relativeTo:_videoView];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(hostViewFrameDidChange:)
+                                                 name:NSViewFrameDidChangeNotification
+                                               object:_hostView];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(hostViewBoundsDidChange:)
+                                                 name:NSViewBoundsDidChangeNotification
+                                               object:_hostView];
+    _didFocusControlsWebView = NO;
+    [self layoutNativeSubviews];
+    [_videoView updateMetalLayerLayout];
+    [self requestFocus];
 }
 
 - (void)layoutControlsWebViewToBounds:(NSRect)bounds immediate:(BOOL)immediate {
@@ -1470,6 +1584,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         NSString *reason = [NSString stringWithFormat:@"mpv_initialize failed: %s", mpv_error_string(initResult)];
         @throw [NSException exceptionWithName:@"PlayerBridgeError" reason:reason userInfo:nil];
     }
+    [self startMpvEventDrain];
 
     NSString *renderError = nil;
     if (![_videoView createMpvRenderContext:_mpv error:&renderError]) {
@@ -1528,6 +1643,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
             double speed = [self rawSpeed];
             NSString *audioTracks = [self audioTracksJson] ?: @"[]";
             NSString *subtitleTracks = [self subtitleTracksJson] ?: @"[]";
+            NSString *mediaTitle = [self stringProperty:"media-title" fallback:@""];
             NSString *gamma = [[self stringProperty:"video-params/gamma" fallback:@""] lowercaseString];
             NSString *primaries = [[self stringProperty:"video-params/primaries" fallback:@""] lowercaseString];
             [self updateCachedDuration:duration
@@ -1544,6 +1660,11 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                     return;
                 }
                 [self applyHdrForPolledGamma:gamma primaries:primaries reason:@"sync" force:NO];
+                [self updateNowPlayingWithTitle:mediaTitle
+                                       duration:duration
+                                       position:position
+                                         paused:paused
+                                          speed:speed];
                 NSString *script = [NSString stringWithFormat:
                     @"window.playerUpdate({duration:%0.3f,position:%0.3f,volumeLevel:%0.3f,paused:%@,loading:%@,audioTracks:%@,subtitleTracks:%@})",
                     duration,
@@ -1764,11 +1885,13 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         [NSEvent removeMonitor:_mediaKeyMonitor];
         _mediaKeyMonitor = nil;
     }
+    [self deactivateRemoteCommands];
     _controlsWebReady = NO;
     _pendingControlsJson = nil;
     if (_mpvEventQueue) {
         dispatch_sync(_mpvEventQueue, ^{});
     }
+    [self stopMpvEventDrain];
     [_videoView destroyMpvRenderContext];
     if (_mpv) {
         mpv_terminate_destroy(_mpv);
@@ -1845,22 +1968,129 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     return [self doubleProperty:"speed" fallback:_cachedSpeed.load()];
 }
 
+static void nuvioMpvWakeup(void *ctx) {
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)ctx;
+    [player scheduleMpvEventDrain];
+}
+
+- (void)startMpvEventDrain {
+    mpv_handle *mpv = _mpv;
+    if (!mpv) return;
+    _mpvDrainStopped.store(false);
+    mpv_observe_property(mpv, 2, "current-ao", MPV_FORMAT_STRING);
+    mpv_set_wakeup_callback(mpv, nuvioMpvWakeup, (__bridge void *)self);
+}
+
+- (void)scheduleMpvEventDrain {
+    if (_mpvDrainStopped.load()) return;
+    dispatch_queue_t queue = _mpvDrainQueue;
+    if (!queue) return;
+    dispatch_async(queue, ^{
+        [self drainMpvEvents];
+    });
+}
+
+- (void)drainMpvEvents {
+    if (_mpvDrainStopped.load()) return;
+    mpv_handle *mpv = _mpv;
+    if (!mpv) return;
+    for (;;) {
+        mpv_event *event = mpv_wait_event(mpv, 0);
+        if (!event || event->event_id == MPV_EVENT_NONE) break;
+        switch (event->event_id) {
+            case MPV_EVENT_PROPERTY_CHANGE: {
+                mpv_event_property *prop = (mpv_event_property *)event->data;
+                if (event->reply_userdata == 2 && prop && prop->format == MPV_FORMAT_STRING) {
+                    const char *ao = prop->data ? *(const char **)prop->data : NULL;
+                    BOOL isAvf = ao && strcmp(ao, "avfoundation") == 0;
+                    BOOL was = _aoIsAvfoundation.exchange(isAvf);
+                    if (isAvf && !was) {
+                        // The AO just came up: move the requested level onto the
+                        // renderer volume now, so the first user change later does
+                        // not have to migrate it (which would dip audibly while the
+                        // old softvol drained out of the renderer's queue).
+                        [self applyVolumeSplit:_requestedVolumePercent.load()];
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+- (void)stopMpvEventDrain {
+    _mpvDrainStopped.store(true);
+    if (_mpv) {
+        mpv_set_wakeup_callback(_mpv, NULL, NULL);
+    }
+    if (_mpvDrainQueue) {
+        dispatch_sync(_mpvDrainQueue, ^{});
+    }
+}
+
 - (void)adjustVolume:(double)delta {
     if (!_mpv) return;
-    double current = [self doubleProperty:"volume" fallback:100.0];
-    double next = fmax(0.0, fmin(kMaxVolumePercent, current + delta));
-    mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+    double current = [self volume] * 100.0;
+    [self writeVolumePercent:current + delta];
 }
 
 - (void)setVolume:(double)level {
     if (!_mpv) return;
-    double next = fmax(0.0, fmin(kMaxVolumePercent, level * 100.0));
-    mpv_set_property(_mpv, "volume", MPV_FORMAT_DOUBLE, &next);
+    [self writeVolumePercent:level * 100.0];
+}
+
+/**
+ * Posts the write straight to the mpv core from whatever thread asked.
+ *
+ * mpv_set_property_async enqueues the request and returns — unlike
+ * mpv_set_property it never waits on the core — so there is nothing to move off
+ * the calling thread.
+ *
+ * In particular this must NOT be dispatched to _mpvEventQueue. That queue is
+ * serial and also carries the 500ms syncControls batch, which makes a dozen
+ * *blocking* property reads (track lists, HDR params). Queueing a volume write
+ * behind that batch reintroduces exactly the latency this path exists to remove,
+ * and during a sustained scroll the whole gesture serialises behind it.
+ */
+- (void)writeVolumePercent:(double)percent {
+    double next = fmax(0.0, fmin(kMaxVolumePercent, percent));
+    _requestedVolumePercent.store(next);
+    [self applyVolumeSplit:next];
+}
+
+/**
+ * Applies a requested level to mpv.
+ *
+ * With avfoundation the audible path is: softvol gain -> mpv buffer ->
+ * AVSampleBufferAudioRenderer's queue -> output. mpv reports that AO as
+ * "device buffer: 96000 samples" plus a 96000-sample soft buffer — at 48 kHz
+ * that is up to ~4 s of audio already carrying the old gain, which is how long a
+ * softvol change took to become audible. The renderer's own volume applies at
+ * the output instantly, and mpv exposes it as ao-volume (0..100). So the
+ * 0..100% part of the level rides ao-volume and softvol stays at unity; only
+ * the boost above 100% goes through softvol, where the lag is tolerable.
+ *
+ * With any other AO everything goes through softvol, as before.
+ */
+- (void)applyVolumeSplit:(double)percent {
+    mpv_handle *mpv = _mpv;
+    if (!mpv) return;
+    if (_aoIsAvfoundation.load()) {
+        double device = fmin(100.0, percent);
+        double soft = fmax(100.0, percent);
+        mpv_set_property_async(mpv, 0, "ao-volume", MPV_FORMAT_DOUBLE, &device);
+        mpv_set_property_async(mpv, 0, "volume", MPV_FORMAT_DOUBLE, &soft);
+    } else {
+        mpv_set_property_async(mpv, 0, "volume", MPV_FORMAT_DOUBLE, &percent);
+    }
 }
 
 - (double)volume {
-    double level = [self doubleProperty:"volume" fallback:100.0];
-    return fmax(0.0, fmin(kMaxVolumePercent, level)) / 100.0;
+    double soft = [self doubleProperty:"volume" fallback:100.0];
+    double device = _aoIsAvfoundation.load() ? [self doubleProperty:"ao-volume" fallback:100.0] : 100.0;
+    return fmax(0.0, fmin(kMaxVolumePercent, soft * device / 100.0)) / 100.0;
 }
 
 - (void)setResizeMode:(int)mode {
@@ -2433,10 +2663,195 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     int keyState = (keyFlags & 0x0000FF00) >> 8;
     BOOL isKeyDown = keyState == 0x0A;
     BOOL isRepeat = (keyFlags & 0x1) != 0;
-    if (isKeyDown && !isRepeat) {
+    if (isKeyDown && !isRepeat && !_remoteCommandsActive) {
         [self dispatchMediaKeyPlayerEvent:eventType];
     }
     return nil;
+}
+
+// Registers with the system's now-playing infrastructure so macOS (rcd) routes
+// hardware media keys here instead of launching the default media app (Music).
+// While registration is active, the local NSSystemDefined monitor only swallows
+// the raw key events; playback commands arrive through these handlers.
+- (void)activateRemoteCommands {
+    if (_remoteCommandsActive) {
+        return;
+    }
+    _remoteCommandsActive = YES;
+    __weak MpvWebPlayer *weakSelf = self;
+    MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
+    [center.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        MpvWebPlayer *strongSelf = weakSelf;
+        if (strongSelf && strongSelf->_cachedPaused.load()) {
+            [strongSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        }
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        MpvWebPlayer *strongSelf = weakSelf;
+        if (strongSelf && !strongSelf->_cachedPaused.load()) {
+            [strongSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        }
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardSeekForward"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardSeekBack"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.playbackState = MPNowPlayingPlaybackStatePlaying;
+}
+
+- (void)deactivateRemoteCommands {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    _remoteCommandsActive = NO;
+    MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
+    [center.togglePlayPauseCommand removeTarget:nil];
+    [center.playCommand removeTarget:nil];
+    [center.pauseCommand removeTarget:nil];
+    [center.nextTrackCommand removeTarget:nil];
+    [center.previousTrackCommand removeTarget:nil];
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.playbackState = MPNowPlayingPlaybackStateStopped;
+    info.nowPlayingInfo = nil;
+    _lastNowPlayingTitle = nil;
+    [_nowPlayingArtworkTask cancel];
+    _nowPlayingArtworkTask = nil;
+    _nowPlayingArtwork = nil;
+    _nowPlayingArtworkUrl = nil;
+    _nowPlayingTitleOverride = nil;
+    _nowPlayingSubtitle = nil;
+}
+
+- (void)setNowPlayingArtworkUrlString:(NSString *)urlString {
+    NSString *cleaned = urlString ?: @"";
+    if ([cleaned isEqualToString:_nowPlayingArtworkUrl ?: @""]) {
+        return;
+    }
+    _nowPlayingArtworkUrl = cleaned;
+    [_nowPlayingArtworkTask cancel];
+    _nowPlayingArtworkTask = nil;
+    _nowPlayingArtwork = nil;
+    NSURL *url = (cleaned.length > 0) ? [NSURL URLWithString:cleaned] : nil;
+    if (!url) {
+        [self pushNowPlayingArtwork];
+        return;
+    }
+    __weak MpvWebPlayer *weakSelf = self;
+    _nowPlayingArtworkTask = [[NSURLSession sharedSession] dataTaskWithURL:url
+                                                         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error || !data) {
+            return;
+        }
+        NSImage *image = [[NSImage alloc] initWithData:data];
+        if (!image) {
+            return;
+        }
+        MPMediaItemArtwork *artwork = [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
+                                                                      requestHandler:^NSImage *(CGSize size) {
+            return image;
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MpvWebPlayer *strongSelf = weakSelf;
+            if (!strongSelf || ![cleaned isEqualToString:strongSelf->_nowPlayingArtworkUrl ?: @""]) {
+                return;
+            }
+            strongSelf->_nowPlayingArtwork = artwork;
+            strongSelf->_nowPlayingArtworkTask = nil;
+            [strongSelf pushNowPlayingArtwork];
+        });
+    }];
+    [_nowPlayingArtworkTask resume];
+}
+
+// Title/subtitle come from the app's own metadata (show name, "S1E4 - Episode")
+// rather than mpv's media-title, which for streams is just the file name.
+- (void)setNowPlayingTitle:(NSString *)title subtitle:(NSString *)subtitle artworkUrl:(NSString *)artworkUrl {
+    NSString *cleanTitle = title ?: @"";
+    NSString *cleanSubtitle = subtitle ?: @"";
+    if (![cleanTitle isEqualToString:_nowPlayingTitleOverride ?: @""]
+        || ![cleanSubtitle isEqualToString:_nowPlayingSubtitle ?: @""]) {
+        _nowPlayingTitleOverride = cleanTitle;
+        _nowPlayingSubtitle = cleanSubtitle;
+        _nowPlayingMetadataDirty = YES;
+    }
+    [self setNowPlayingArtworkUrlString:artworkUrl];
+}
+
+// Merges the artwork into whatever now-playing info is currently published,
+// without waiting for the next periodic update.
+- (void)pushNowPlayingArtwork {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    NSMutableDictionary *nowPlaying = [info.nowPlayingInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (_nowPlayingArtwork) {
+        nowPlaying[MPMediaItemPropertyArtwork] = _nowPlayingArtwork;
+    } else {
+        [nowPlaying removeObjectForKey:MPMediaItemPropertyArtwork];
+    }
+    info.nowPlayingInfo = nowPlaying;
+}
+
+- (void)updateNowPlayingWithTitle:(NSString *)title
+                         duration:(double)duration
+                         position:(double)position
+                           paused:(BOOL)paused
+                            speed:(double)speed {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    // The system extrapolates elapsed time from rate, so only push an update on
+    // a real change (state, title, duration, speed, or a seek).
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    double expectedPosition = _lastNowPlayingPosition
+        + (_lastNowPlayingPaused ? 0.0 : (now - _lastNowPlayingPushedAt) * _lastNowPlayingSpeed);
+    BOOL seeked = fabs(position - expectedPosition) > 3.0;
+    NSString *displayTitle = (_nowPlayingTitleOverride.length > 0) ? _nowPlayingTitleOverride : title;
+    BOOL changed = _nowPlayingMetadataDirty
+        || paused != _lastNowPlayingPaused
+        || fabs(duration - _lastNowPlayingDuration) > 0.5
+        || fabs(speed - _lastNowPlayingSpeed) > 0.01
+        || seeked
+        || (displayTitle && ![displayTitle isEqualToString:_lastNowPlayingTitle ?: @""]);
+    if (!changed) {
+        return;
+    }
+    _nowPlayingMetadataDirty = NO;
+    _lastNowPlayingPaused = paused;
+    _lastNowPlayingDuration = duration;
+    _lastNowPlayingPosition = position;
+    _lastNowPlayingSpeed = speed;
+    _lastNowPlayingTitle = displayTitle;
+    _lastNowPlayingPushedAt = now;
+    NSMutableDictionary *nowPlaying = [NSMutableDictionary dictionary];
+    nowPlaying[MPNowPlayingInfoPropertyMediaType] = @(MPNowPlayingInfoMediaTypeVideo);
+    nowPlaying[MPMediaItemPropertyTitle] = (displayTitle.length > 0) ? displayTitle : @"Nuvio";
+    if (_nowPlayingSubtitle.length > 0) {
+        nowPlaying[MPMediaItemPropertyArtist] = _nowPlayingSubtitle;
+    }
+    if (duration > 0.0) {
+        nowPlaying[MPMediaItemPropertyPlaybackDuration] = @(duration);
+    }
+    nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(position);
+    nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = @(paused ? 0.0 : speed);
+    if (_nowPlayingArtwork) {
+        nowPlaying[MPMediaItemPropertyArtwork] = _nowPlayingArtwork;
+    }
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.nowPlayingInfo = nowPlaying;
+    info.playbackState = paused ? MPNowPlayingPlaybackStatePaused : MPNowPlayingPlaybackStatePlaying;
 }
 
 - (void)dispatchMediaKeyPlayerEvent:(NSString *)type {
@@ -2638,6 +3053,27 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_updateControls(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setNowPlayingMetadata(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jlong handle,
+    jstring title,
+    jstring subtitle,
+    jstring artworkUrl
+) {
+    if (handle == 0) return;
+    std::string titleText = jstringToString(env, title);
+    std::string subtitleText = jstringToString(env, subtitle);
+    std::string url = jstringToString(env, artworkUrl);
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player setNowPlayingTitle:[NSString stringWithUTF8String:titleText.c_str()]
+                          subtitle:[NSString stringWithUTF8String:subtitleText.c_str()]
+                        artworkUrl:[NSString stringWithUTF8String:url.c_str()]];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(
     JNIEnv *,
     jobject,
@@ -2648,6 +3084,48 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(
     runOnMainAsync(^{
         [player requestFocus];
     });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_beginWindowDrag(
+    JNIEnv *, jobject, jlong handle
+) {
+    if (handle == 0) return;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowResizable(
+    JNIEnv *, jobject, jlong, jboolean
+) {
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowAspectRatio(
+    JNIEnv *, jobject, jlong, jfloat
+) {
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_layoutNativeSubviews(
+    JNIEnv *, jobject, jlong
+) {
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_reparentSurfaceNative(
+    JNIEnv *, jobject, jlong handle, jlong hostViewPtr
+) {
+    if (handle == 0 || hostViewPtr == 0) return;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    NSView *hostView = (__bridge NSView *)(void *)(intptr_t)hostViewPtr;
+    // AWT can query Java focus while the PiP window becomes key. Its main thread
+    // then waits in AWTRunLoopMode for the EDT, which is waiting here. GCD's main
+    // queue is not serviced in that mode; schedule the move in AWT's loop too.
+    // Keep the move synchronous so the old window is not disposed before it ends.
+    [player performSelectorOnMainThread:@selector(reparentSurfaceToHostView:)
+                            withObject:hostView
+                         waitUntilDone:YES
+                                 modes:@[NSRunLoopCommonModes, @"AWTRunLoopMode"]];
 }
 
 extern "C" JNIEXPORT void JNICALL
