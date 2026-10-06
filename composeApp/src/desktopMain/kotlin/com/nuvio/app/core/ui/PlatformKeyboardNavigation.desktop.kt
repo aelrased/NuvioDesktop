@@ -9,8 +9,10 @@ import java.awt.KeyboardFocusManager
 import java.awt.event.KeyEvent
 
 @Composable
-actual fun PlatformKeyboardNavigation() {
+actual fun PlatformKeyboardNavigationHost() {
     val focusManager = LocalFocusManager.current
+
+    DesktopKeyboardShortcutHost()
 
     DisposableEffect(Unit) {
         val dispatcher = KeyEventDispatcher { event: KeyEvent ->
