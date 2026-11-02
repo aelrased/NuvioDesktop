@@ -115,8 +115,9 @@ fun <T> NuvioShelfSection(
         LazyRow(
             state = state,
             modifier = rowModifier
+                .nuvioHorizontalScrollBleed(LocalVerticalBarPadding.current)
                 .nuvioDesktopDragScroll(state),
-            contentPadding = rowContentPadding,
+            contentPadding = rowContentPadding.withVerticalBar(),
             horizontalArrangement = Arrangement.spacedBy(itemSpacing),
         ) {
             if (duplicateSafeEntries != null) {
@@ -303,6 +304,7 @@ fun NuvioPosterCard(
                     contentDescription = title,
                     modifier = Modifier.matchParentSize(),
                     contentScale = ContentScale.Crop,
+                    desktopAnimation = posterCardStyle.animatedArtworkMode.toDesktopAnimation(),
                 )
             } else {
                 Text(

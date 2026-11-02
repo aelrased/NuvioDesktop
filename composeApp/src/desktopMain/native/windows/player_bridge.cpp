@@ -1210,6 +1210,10 @@ public:
         return flagProperty("eof-reached", false);
     }
 
+    std::string mpvStringProperty(const char *name) {
+        return stringProperty(name, "");
+    }
+
     std::string audioTracksJson() {
         return tracksJsonForType("audio");
     }
@@ -2866,6 +2870,12 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_audioTracksJson(JNIEnv *env, jobject, jlong handle) {
     auto player = playerFromHandle(handle);
     return newJavaStringUtf8(env, player ? player->audioTracksJson() : "[]");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_stringProperty(JNIEnv *env, jobject, jlong handle, jstring name) {
+    auto player = playerFromHandle(handle);
+    return newJavaStringUtf8(env, player ? player->mpvStringProperty(jstringToUtf8(env, name).c_str()) : "");
 }
 
 extern "C" JNIEXPORT jstring JNICALL

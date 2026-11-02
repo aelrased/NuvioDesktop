@@ -21,9 +21,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import com.nuvio.app.core.i18n.localizedByteUnit
+import com.nuvio.app.core.ui.NuvioDesktopAnimation
+import com.nuvio.app.core.ui.NuvioAsyncImage
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import kotlin.math.round
@@ -69,6 +70,14 @@ internal enum class StreamBadgeChipSize(
         horizontalPadding = 3.dp,
         verticalPadding = 2.dp,
     ),
+    PLAYER(
+        containerHeight = 17.dp,
+        imageHeight = 13.dp,
+        minImageWidth = 28.dp,
+        maxImageWidth = 78.dp,
+        horizontalPadding = 3.dp,
+        verticalPadding = 2.dp,
+    ),
     PREVIEW(
         containerHeight = 24.dp,
         imageHeight = 18.dp,
@@ -110,7 +119,7 @@ internal fun StreamBadgeChip(
         contentAlignment = Alignment.Center,
     ) {
         val platformContext = LocalPlatformContext.current
-        AsyncImage(
+        NuvioAsyncImage(
             model = imageURL,
             imageLoader = BadgeImageLoader.get(platformContext),
             contentDescription = name,
@@ -119,19 +128,23 @@ internal fun StreamBadgeChip(
                 .widthIn(min = size.minImageWidth, max = size.maxImageWidth)
                 .clip(shape),
             contentScale = ContentScale.Fit,
+            desktopAnimation = NuvioDesktopAnimation.Always,
         )
     }
 }
 
 @Composable
-internal fun StreamBadgeImage(badge: StreamBadge) {
+internal fun StreamBadgeImage(
+    badge: StreamBadge,
+    size: StreamBadgeChipSize = StreamBadgeChipSize.STREAM,
+) {
     StreamBadgeChip(
         imageURL = badge.imageURL,
         name = badge.name,
         tagColor = badge.tagColor,
         tagStyle = badge.tagStyle,
         borderColor = badge.borderColor,
-        size = StreamBadgeChipSize.STREAM,
+        size = size,
     )
 }
 
