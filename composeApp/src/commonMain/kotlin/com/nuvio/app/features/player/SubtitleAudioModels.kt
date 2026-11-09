@@ -123,6 +123,7 @@ data class SubtitleAutoSyncUiState(
     val cues: List<SubtitleSyncCue> = emptyList(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
+    val autoSyncNote: String? = null,
 )
 
 val SubtitleColorSwatches = listOf(

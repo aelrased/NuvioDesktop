@@ -1697,6 +1697,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean, onImageRea
         append(',')
         appendJsonField("subtitleAutoSyncErrorMessage", subtitleAutoSyncErrorMessage)
         append(',')
+        appendJsonField("subtitleAutoSyncNote", subtitleAutoSyncNote)
+        append(',')
         appendJsonField("subtitleStyle", subtitleStyle)
         append(',')
         appendJsonArrayField("subtitleColorSwatches", SubtitleColorSwatches.map { it.toStorageHexString() }) { append(it.toJsonString()) }

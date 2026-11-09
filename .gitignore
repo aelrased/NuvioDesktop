@@ -38,3 +38,8 @@ iosApp/Configuration/DeviceSigning.local.json
 
 # Local MPVKit iOS build environment (sparse APFS image, see MPVKit docs)
 .mpvkit-build.sparseimage
+
+# Large files
+release-assets/
+composeApp/src/desktopMain/torrserver/
+hs_err_pid*.log

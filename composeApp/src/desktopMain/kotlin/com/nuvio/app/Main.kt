@@ -259,6 +259,20 @@ private fun configureDesktopChrome() {
         // before AWT starts; otherwise it would be drawn inside our full-window-content window.
         System.setProperty("apple.laf.useScreenMenuBar", "true")
     }
+    if (System.getProperty("os.name").contains("linux", ignoreCase = true)) {
+        configureLinuxDpiScaling()
+    }
+}
+
+private fun configureLinuxDpiScaling() {
+    val env = System.getenv("NUVIO_SCALE_FACTOR")
+    if (!env.isNullOrBlank()) {
+        System.setProperty("sun.java2d.uiScale", env)
+        return
+    }
+    val existingScale = System.getProperty("sun.java2d.uiScale")
+    if (!existingScale.isNullOrBlank()) return
+    System.setProperty("sun.java2d.uiScale", "2.0")
 }
 
 // application {} applies Compose's Swing globals, which on Linux include Skiko's

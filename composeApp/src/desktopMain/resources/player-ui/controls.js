@@ -380,6 +380,7 @@ let state = {
   subtitleAutoSyncCues: [],
   subtitleAutoSyncIsLoading: false,
   subtitleAutoSyncErrorMessage: "",
+  subtitleAutoSyncNote: "",
   subtitleStyle: {
     textColor: "#FFFFFFFF",
     outlineColor: "#FF000000",
@@ -1445,6 +1446,8 @@ const renderAutoSyncCues = () => {
     autoSyncStatus.textContent = state.loadingSubtitleLinesLabel || "Loading subtitle lines...";
   } else if (state.subtitleAutoSyncErrorMessage) {
     autoSyncStatus.textContent = state.subtitleAutoSyncErrorMessage;
+  } else if (state.subtitleAutoSyncNote) {
+    autoSyncStatus.textContent = state.subtitleAutoSyncNote;
   } else if (Number(state.subtitleAutoSyncCapturedPositionMs) >= 0 && normalizeItems(state.subtitleAutoSyncCues).length === 0) {
     autoSyncStatus.textContent = state.noSubtitleLinesFoundLabel || "No subtitle lines found";
   } else {
@@ -4371,6 +4374,23 @@ document.addEventListener("keydown", event => {
       return;
     }
     clearSpaceHoldTimer();
+    isSpaceBoosting = false;
+    spaceHoldTimer = window.setTimeout(() => {
+      isSpaceBoosting = true;
+      startSpeedBoost();
+    }, 220);
+    return;
+  }
+  if (event.code === "Space") {
+    event.preventDefault();
+    if (event.repeat) {
+      if (!isSpeedBoosting) {
+        isSpaceBoosting = true;
+        startSpeedBoost();
+      }
+      return;
+    }
+    if (spaceHoldTimer) window.clearTimeout(spaceHoldTimer);
     isSpaceBoosting = false;
     spaceHoldTimer = window.setTimeout(() => {
       isSpaceBoosting = true;
