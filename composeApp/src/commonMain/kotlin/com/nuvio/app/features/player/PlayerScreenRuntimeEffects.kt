@@ -32,6 +32,7 @@ import com.nuvio.app.features.player.skip.SkipIntervalLookup
 import com.nuvio.app.features.player.skip.autoSkipKey
 import com.nuvio.app.features.player.skip.autoSkipKeysCompletedBy
 import com.nuvio.app.features.player.skip.resolveSkipIntervalLookup
+import com.nuvio.app.features.player.skip.segmentCategory
 import com.nuvio.app.features.player.skip.shouldAutoSkip
 import com.nuvio.app.features.player.skip.internalSkipAction
 import com.nuvio.app.features.player.skip.intervalsAtSeekPositions
@@ -155,6 +156,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         showChaptersPanel = false
         chapters = emptyList()
         chaptersLoadedForSourceUrl = null
+        clearChapterSkipState()
         episodeStreamsPanelState = EpisodeStreamsPanelState()
         PlayerStreamsRepository.clearEpisodeStreams()
         SubtitleRepository.clear()
@@ -240,6 +242,9 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playerController?.setSubtitleDelayMs(subtitleDelayMs)
     }
 
+    BindAudioDelayEffects()
+    BindAudioAmplificationEffects()
+
     LaunchedEffect(selectedAddonSubtitleId, useCustomSubtitles, activeSourceUrl) {
         subtitleAutoSyncState = SubtitleAutoSyncUiState()
     }
@@ -317,15 +322,20 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
 
     LaunchedEffect(
         activeSourceUrl,
+        p2pResolvedSourceUrl,
         addonSubtitleFetchKey,
         networkCondition,
     ) {
         if (activeSourceUrl.startsWith("file:") && externalSubtitles.isNotEmpty()) return@LaunchedEffect
         val fetchKey = addonSubtitleFetchKey ?: return@LaunchedEffect
-        if (autoFetchedAddonSubtitlesForKey == fetchKey) return@LaunchedEffect
+        // For P2P streams, wait until the local engine URL is available before
+        // triggering the fetch so that hash computation can use the real HTTP URL.
+        if (activeTorrentInfoHash != null && p2pResolvedSourceUrl == null) return@LaunchedEffect
+        val effectiveFetchKey = if (p2pResolvedSourceUrl != null) "$fetchKey|p2p" else fetchKey
+        if (autoFetchedAddonSubtitlesForKey == effectiveFetchKey) return@LaunchedEffect
         // Offline: leave the key unset so the fetch can run once connectivity returns.
         if (isNetworkOffline()) return@LaunchedEffect
-        autoFetchedAddonSubtitlesForKey = fetchKey
+        autoFetchedAddonSubtitlesForKey = effectiveFetchKey
         fetchAddonSubtitlesForActiveItem()
     }
 
@@ -647,6 +657,8 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         networkCondition,
     ) {
         skipIntervals = emptyList()
+        apiSkipIntervals = emptyList()
+        clearChapterSkipState()
         autoSkippedIntervals.clear()
         lastManualSkipSeekPositions = null
         activeSkipInterval = null
@@ -660,7 +672,9 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         if (!playerSettingsUiState.skipIntroEnabled) return@LaunchedEffect
 
         if ((contentType ?: parentMetaType).equals("movie", ignoreCase = true)) {
-            skipIntervals = SkipIntroRepository.getMovieSkipIntervals(parentMetaId, activeVideoId)
+            val api = SkipIntroRepository.getMovieSkipIntervals(parentMetaId, activeVideoId)
+            apiSkipIntervals = api
+            recomputeMergedSkipIntervals()
             return@LaunchedEffect
         }
 
@@ -699,8 +713,9 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                         imdbEpisode = activeEpisodeNumber ?: lookup.episode,
                     )
                 }
-            } ?: return@launch
-            skipIntervals = intervals
+            }
+            apiSkipIntervals = intervals ?: return@launch
+            recomputeMergedSkipIntervals()
         }
     }
 
@@ -722,6 +737,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         playerControllerSourceUrl,
         activeSourceUrl,
     ) {
+        recomputeChapterSkipIntervalsIfNeeded()
         if (skipIntervals.isEmpty()) {
             activeSkipInterval = null
             return@LaunchedEffect
@@ -745,8 +761,28 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                 interval.internalSkipAction(skipIntervals, playbackSnapshot.durationMs) != null
         }
         if (current != activeSkipInterval) {
-            activeSkipInterval = current
-            if (current != null) skipIntervalDismissed = false
+            if (current != null) {
+                // Keep dismissed state when replacing same segment type (e.g. API recap -> chapter recap)
+                val keepDismissed = activeSkipInterval != null &&
+                    segmentCategory(activeSkipInterval?.type ?: "") == segmentCategory(current.type)
+                activeSkipInterval = current
+                if (!keepDismissed) skipIntervalDismissed = false
+            } else if (activeSkipInterval != null) {
+                // Position is outside all intervals. Keep the button only if the same type
+                // starts within 2s (chapter replacing API with a slightly later start).
+                val posSec = playbackSnapshot.positionMs / 1000.0
+                val nearby = skipIntervals.firstOrNull {
+                    segmentCategory(it.type) == segmentCategory(activeSkipInterval?.type ?: "") &&
+                        posSec < it.startTime &&
+                        it.startTime - posSec <= 2.0
+                }
+                if (nearby != null) {
+                    activeSkipInterval = nearby
+                } else {
+                    activeSkipInterval = null
+                    skipIntervalDismissed = false
+                }
+            }
         }
         if (current != null) {
             val segmentType = AutoSkipSegmentType.fromSkipIntervalType(current.type)
@@ -1030,6 +1066,7 @@ internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message:
             activeProviderAddonId = stream.addonId
             activeStream = stream
             currentStreamBingeGroup = stream.behaviorHints.bingeGroup
+            activeSubtitleExtras = SubtitleRequestExtras.from(stream.behaviorHints, refreshedUrl)
             currentStreamFilename = stream.behaviorHints.filename
             currentStreamInfoHash = stream.infoHash
             activeInitialPositionMs = savedPositionMs
