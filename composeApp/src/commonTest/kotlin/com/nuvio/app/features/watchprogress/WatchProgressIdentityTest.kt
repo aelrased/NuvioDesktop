@@ -89,8 +89,8 @@ class WatchProgressIdentityTest {
                 "title": "Show",
                 "seasonNumber": 1,
                 "episodeNumber": 2,
-                "lastPositionMs": 1710000,
-                "durationMs": 1800000,
+                "lastPositionMs": 2820000,
+                "durationMs": 3000000,
                 "lastUpdatedEpochMs": 100
               }]
             }
@@ -98,7 +98,7 @@ class WatchProgressIdentityTest {
         )
 
         assertEquals("show_s1e2", decoded.single().progressKey)
-        assertEquals(1710000L, decoded.single().lastPositionMs)
+        assertEquals(2_820_000L, decoded.single().lastPositionMs)
         assertTrue(decoded.single().isCompleted)
     }
 
